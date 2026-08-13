@@ -3,12 +3,17 @@
 所有子命令都必须走真实 PostgreSQL/ObjectStore/event/outbox 管线：`seal-empty --check` 在密封后
 独立复核，legacy run 实际执行全部 checksum registry，再由 `seal` 显式恢复 tenant 上下文密封。
 不提供占位 help 命令；未知 mode 在进入执行前用 Enum 拒绝。
+
+密封的 provenance 绑定真实内容：code/config/schema digest 取自仓库当前源码、配置与 migration
+文件（确定性树摘要），test report 取自已实际执行的 S0 eval 契约测试输出——不写死摘要值。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
@@ -20,7 +25,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from zhiwei.config.settings import Settings, load_settings
-from zhiwei.contracts.canonical import digest_bytes
+from zhiwei.contracts.canonical import digest, digest_bytes
 from zhiwei.evals.domain import EvalMode
 from zhiwei.evals.executors import EmptyExecutor, LegacyExecutor
 from zhiwei.evals.legacy_assets import LegacyAssetInventory
@@ -31,7 +36,7 @@ from zhiwei.evals.runs import (
 )
 from zhiwei.object_store.posix import PosixObjectStore
 from zhiwei.persistence.database import create_database_engine, create_session_factory
-from zhiwei.persistence.models import EvalRun, Run
+from zhiwei.persistence.models import EvalRun, EvalSample, Run
 from zhiwei.persistence.repositories import TenantRepository
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 
@@ -43,6 +48,14 @@ app = typer.Typer(
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _KNOWN_EXECUTORS = frozenset({"legacy", "empty"})
+
+# seal-empty 的 test report 证据范围：S0 eval 单元与 CLI 契约测试。
+# 不含 integration/foundation/test_empty_run.py——该文件本身会调用 seal-empty，纳入会递归。
+_EVAL_EVIDENCE_TARGETS = (
+    "tests/unit/evals",
+    "tests/contract/cli/test_assets_cli.py",
+    "tests/contract/cli/test_eval_cli.py",
+)
 
 SUITE_ARG = Annotated[str, typer.Option("--suite", help="suite 名称")]
 EXECUTOR_ARG = Annotated[str, typer.Option("--executor", help="executor 名称")]
@@ -82,6 +95,56 @@ def _emit_json(payload: dict[str, Any]) -> None:
     click.echo(json.dumps(payload, ensure_ascii=False))
 
 
+def _tree_digest(paths: tuple[Path, ...]) -> str:
+    """对仓库内一组路径做确定性内容摘要：`{相对路径: sha256}` 的 canonical digest。
+
+    目录递归、稳定排序、跳过 `__pycache__`；任何文件内容或相对路径变化都会改变 digest。
+    """
+    entries: dict[str, str] = {}
+    for root in paths:
+        if not root.exists():
+            continue
+        if root.is_file():
+            entries[root.relative_to(REPO_ROOT).as_posix()] = digest_bytes(
+                root.read_bytes()
+            )
+            continue
+        for path in sorted(root.rglob("*")):
+            if not path.is_file() or "__pycache__" in path.parts:
+                continue
+            entries[path.relative_to(REPO_ROOT).as_posix()] = digest_bytes(
+                path.read_bytes()
+            )
+    return digest({"files": [{"path": p, "digest": entries[p]} for p in sorted(entries)]})
+
+
+def _provenance_digests() -> dict[str, str]:
+    """当前仓库的真实 provenance：源码、配置、migration 内容摘要。"""
+    return {
+        "code_digest": _tree_digest((REPO_ROOT / "src",)),
+        "config_digest": _tree_digest(
+            (REPO_ROOT / "pyproject.toml", REPO_ROOT / "config")
+        ),
+        "schema_digest": _tree_digest((REPO_ROOT / "migrations",)),
+    }
+
+
+def _eval_test_evidence() -> dict[str, Any]:
+    """实际执行 S0 eval 契约测试并采集汇总；失败也如实记录，不伪造 passed。"""
+    command = [sys.executable, "-m", "pytest", "-q", *_EVAL_EVIDENCE_TARGETS]
+    completed = subprocess.run(
+        command, cwd=REPO_ROOT, capture_output=True, text=True, timeout=300
+    )
+    combined = (completed.stdout + completed.stderr).splitlines()
+    tail = "\n".join(line for line in combined if line.strip())[-400:]
+    return {
+        "status": "passed" if completed.returncode == 0 else "failed",
+        "exit_code": completed.returncode,
+        "command": " ".join(command),
+        "summary": tail,
+    }
+
+
 def _run_flow(
     sessions: async_sessionmaker, flow: Callable[[Any], Awaitable[dict[str, Any]]], context: TenantContext
 ) -> dict[str, Any]:
@@ -107,22 +170,30 @@ async def _migration_revision(session: Any) -> str:
 async def _seal_empty_flow(session: Any, context: TenantContext, store: PosixObjectStore) -> dict[str, Any]:
     if context.workspace_id is None:
         raise RuntimeError("seal-empty 需要 workspace 上下文")
+    evidence = _eval_test_evidence()
+    if evidence["status"] != "passed":
+        raise RuntimeError(
+            f"S0 eval 契约测试未通过，拒绝密封 empty gate（exit {evidence['exit_code']}）"
+        )
     repository = TenantRepository(session, context)
     await repository.create_organization(context.organization_id, status="active")
     await repository.create_workspace(context.workspace_id, name="S0-T6")
     service = EvalFoundationService(session, context, store)
     migration_revision = await _migration_revision(session)
+    provenance = _provenance_digests()
     sealed = await service.seal_empty(
         SealEmptyCommand(
             mode=EvalMode.FIXTURE,
-            code_digest=digest_bytes(b"zhiwei S0-T6 code revision"),
-            config_digest=digest_bytes(b"zhiwei S0-T6 test config"),
-            schema_digest=digest_bytes(b"0001_foundation schema"),
+            code_digest=provenance["code_digest"],
+            config_digest=provenance["config_digest"],
+            schema_digest=provenance["schema_digest"],
             migration_revision=migration_revision,
             test_report={
-                "status": "passed",
-                "scope": "plumbing",
-                "command": "zhiwei eval seal-empty --check",
+                "status": evidence["status"],
+                "scope": "s0-eval-contract-tests",
+                "command": evidence["command"],
+                "exit_code": evidence["exit_code"],
+                "summary": evidence["summary"],
             },
         )
     )
@@ -171,6 +242,7 @@ async def _run_flow_impl(
     )
     units = inventory.registered_units
     service = EvalFoundationService(session, context, store)
+    provenance = _provenance_digests()
     created = await service.create(
         CreateEvalRunCommand(
             mode=mode,
@@ -182,9 +254,9 @@ async def _run_flow_impl(
                     for unit in units
                 ],
             },
-            code_digest=digest_bytes(b"zhiwei S0-T6 legacy adapter"),
-            config_digest=digest_bytes(b"zhiwei S0-T6 offline config"),
-            schema_digest=digest_bytes(b"0001_foundation schema"),
+            code_digest=provenance["code_digest"],
+            config_digest=provenance["config_digest"],
+            schema_digest=provenance["schema_digest"],
         )
     )
     terminal_units = 0
@@ -219,13 +291,31 @@ async def _seal_flow(
 ) -> dict[str, Any]:
     service = EvalFoundationService(session, context, store)
     migration_revision = await _migration_revision(session)
+    sample_rows = (
+        await session.scalars(
+            select(EvalSample).where(
+                EvalSample.organization_id == context.organization_id,
+                EvalSample.workspace_id == context.workspace_id,
+                EvalSample.eval_run_id == eval_run_id,
+            )
+        )
+    ).all()
+    status_counts = {
+        status: sum(1 for row in sample_rows if row.status == status)
+        for status in sorted({row.status for row in sample_rows})
+    }
+    all_terminal = bool(sample_rows) and all(
+        row.status in {"completed", "failed", "refused", "error"}
+        for row in sample_rows
+    )
     sealed = await service.seal(
         eval_run_id,
         migration_revision=migration_revision,
         test_report={
-            "status": "passed",
-            "scope": "cli",
+            "status": "passed" if all_terminal else "partial",
+            "scope": "run-outcomes",
             "command": "zhiwei eval seal",
+            "sample_status_counts": status_counts,
         },
     )
     eval_run = await session.scalar(
