@@ -23,6 +23,7 @@ from sqlalchemy import (
     UniqueConstraint,
     Uuid,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -53,6 +54,157 @@ class Organization(Base):
     policy_ref: Mapped[str | None] = mapped_column(String(255))
     retention_policy: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, default=dict)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Principal(Base):
+    """跨 Organization 的 identity-global 主体记录（不启用 RLS，不挂租户列）。"""
+
+    __tablename__ = "principals"
+    __table_args__ = (
+        CheckConstraint("kind IN ('user', 'service_account', 'agent_identity')", name="kind"),
+        CheckConstraint("status IN ('active', 'disabled')", name="status"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="active")
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ExternalIdentity(Base):
+    """OIDC (issuer, subject) 稳定键；主键即稳定键，禁止以 email 代替。"""
+
+    __tablename__ = "external_identities"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_external_identities_principal",
+            ondelete="CASCADE",
+        ),
+    )
+
+    issuer: Mapped[str] = mapped_column(String(2048), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(1024), primary_key=True)
+    principal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Membership(Base):
+    """Organization 级角色绑定；与 WorkspaceMembership 分离，role bindings 不跨作用域。"""
+
+    __tablename__ = "memberships"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_memberships_principal",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id"],
+            ["organizations.id"],
+            name="fk_memberships_organization",
+            ondelete="CASCADE",
+        ),
+    )
+
+    principal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
+    role_bindings: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class WorkspaceMembership(Base):
+    """Workspace 级角色绑定；organization_id 与 workspace_id 复合外键保证租户一致。"""
+
+    __tablename__ = "workspace_memberships"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_workspace_memberships_principal",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_workspace_memberships_workspace",
+            ondelete="CASCADE",
+        ),
+    )
+
+    principal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, index=True)
+    role_bindings: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class Group(Base):
+    """Organization 级用户分组；同一 Organization 内名称唯一，跨组织允许重名。"""
+
+    __tablename__ = "groups"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id"],
+            ["organizations.id"],
+            name="fk_groups_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("organization_id", "id", name="uq_groups_org_id"),
+        UniqueConstraint("organization_id", "name", name="uq_groups_org_name"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class GroupMember(Base):
+    """Group 的成员；(group_id, principal_id) 唯一，重试幂等。"""
+
+    __tablename__ = "group_members"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["organization_id", "group_id"],
+            ["groups.organization_id", "groups.id"],
+            name="fk_group_members_group",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_group_members_principal",
+            ondelete="CASCADE",
+        ),
+    )
+
+    group_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    principal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

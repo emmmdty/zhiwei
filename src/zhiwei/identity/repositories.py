@@ -1,0 +1,415 @@
+"""Tenant-explicit identity repositories.
+
+Principal / ExternalIdentity 是 identity-global（无需 tenant context）；memberships、
+workspace_memberships、groups、group_members 是 tenant-owned，repository 必须显式携带
+tenant predicate，RLS 只是纵深防御（PERMISSIONS §5、总设计 §9.2）。
+"""
+
+from __future__ import annotations
+
+from uuid import UUID
+
+from sqlalchemy import delete, select, update
+from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from zhiwei.identity.domain import (
+    ExternalIdentity,
+    ExternalIdentityConflictError,
+    Group,
+    GroupMember,
+    Membership,
+    Principal,
+    PrincipalDisabledError,
+    PrincipalKind,
+    PrincipalNotFoundError,
+    PrincipalStatus,
+    WorkspaceMembership,
+)
+from zhiwei.persistence.models import (
+    ExternalIdentity as ExternalIdentityRow,
+)
+from zhiwei.persistence.models import (
+    Group as GroupRow,
+)
+from zhiwei.persistence.models import (
+    GroupMember as GroupMemberRow,
+)
+from zhiwei.persistence.models import (
+    Membership as MembershipRow,
+)
+from zhiwei.persistence.models import (
+    Principal as PrincipalRow,
+)
+from zhiwei.persistence.models import (
+    WorkspaceMembership as WorkspaceMembershipRow,
+)
+from zhiwei.persistence.tenant import (
+    TenantContext,
+    TenantContextRequired,
+    TenantScopeError,
+)
+
+
+class IdentityRepository:
+    """身份数据访问：identity-global 表不要求 context；tenant-owned 表必须显式作用域。"""
+
+    def __init__(self, session: AsyncSession, context: TenantContext | None) -> None:
+        self._session = session
+        self._context = context
+
+    # ------------------------------------------------------------------ identity-global
+
+    async def create_principal(
+        self,
+        principal_id: UUID,
+        *,
+        kind: PrincipalKind,
+        status: PrincipalStatus = PrincipalStatus.ACTIVE,
+    ) -> Principal:
+        row = PrincipalRow(
+            id=principal_id, kind=kind.value, status=status.value, schema_version=1
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return self._to_principal(row)
+
+    async def get_principal(self, principal_id: UUID) -> Principal | None:
+        row = await self._session.get(PrincipalRow, principal_id)
+        return None if row is None else self._to_principal(row)
+
+    async def disable_principal(self, principal_id: UUID) -> Principal | None:
+        row = (
+            await self._session.execute(
+                update(PrincipalRow)
+                .where(PrincipalRow.id == principal_id)
+                .values(status=PrincipalStatus.DISABLED.value)
+                .returning(PrincipalRow)
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_principal(row)
+
+    async def bind_external_identity(
+        self, *, issuer: str, subject: str, principal_id: UUID
+    ) -> ExternalIdentity:
+        row = (
+            await self._session.execute(
+                insert(ExternalIdentityRow)
+                .values(issuer=issuer, subject=subject, principal_id=principal_id)
+                .on_conflict_do_nothing(constraint="pk_external_identities")
+                .returning(ExternalIdentityRow)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ExternalIdentityConflictError(
+                "external identity is already bound to another principal"
+            )
+        return self._to_external_identity(row)
+
+    async def get_external_identity(
+        self, *, issuer: str, subject: str
+    ) -> ExternalIdentity | None:
+        row = await self._session.get(ExternalIdentityRow, {"issuer": issuer, "subject": subject})
+        return None if row is None else self._to_external_identity(row)
+
+    # ------------------------------------------------------------------ tenant-owned
+
+    async def add_membership(
+        self,
+        *,
+        principal_id: UUID,
+        organization_id: UUID,
+        role_bindings: frozenset[str],
+    ) -> Membership:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        await self._require_active(principal_id)
+        row = MembershipRow(
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=sorted(role_bindings),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return self._to_membership(row)
+
+    async def get_membership(
+        self, *, principal_id: UUID, organization_id: UUID
+    ) -> Membership | None:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        row = (
+            await self._session.execute(
+                select(MembershipRow).where(
+                    MembershipRow.principal_id == principal_id,
+                    MembershipRow.organization_id == organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_membership(row)
+
+    async def list_memberships(self, *, organization_id: UUID) -> list[Membership]:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        rows = await self._session.execute(
+            select(MembershipRow)
+            .where(MembershipRow.organization_id == organization_id)
+            .order_by(MembershipRow.principal_id)
+        )
+        return [self._to_membership(row) for row in rows.scalars()]
+
+    async def remove_membership(
+        self, *, principal_id: UUID, organization_id: UUID
+    ) -> bool:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        result = await self._session.execute(
+            delete(MembershipRow)
+            .where(
+                MembershipRow.principal_id == principal_id,
+                MembershipRow.organization_id == organization_id,
+            )
+            .returning(MembershipRow.principal_id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def add_workspace_membership(
+        self,
+        *,
+        principal_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        role_bindings: frozenset[str],
+    ) -> WorkspaceMembership:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_workspace(workspace_id, context)
+        await self._require_active(principal_id)
+        row = WorkspaceMembershipRow(
+            principal_id=principal_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            role_bindings=sorted(role_bindings),
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return self._to_workspace_membership(row)
+
+    async def get_workspace_membership(
+        self, *, principal_id: UUID, workspace_id: UUID
+    ) -> WorkspaceMembership | None:
+        context = self._require_context()
+        self._require_workspace(workspace_id, context)
+        row = (
+            await self._session.execute(
+                select(WorkspaceMembershipRow).where(
+                    WorkspaceMembershipRow.principal_id == principal_id,
+                    WorkspaceMembershipRow.workspace_id == workspace_id,
+                    WorkspaceMembershipRow.organization_id == context.organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_workspace_membership(row)
+
+    async def list_workspace_memberships(
+        self, *, workspace_id: UUID
+    ) -> list[WorkspaceMembership]:
+        context = self._require_context()
+        self._require_workspace(workspace_id, context)
+        rows = await self._session.execute(
+            select(WorkspaceMembershipRow)
+            .where(
+                WorkspaceMembershipRow.workspace_id == workspace_id,
+                WorkspaceMembershipRow.organization_id == context.organization_id,
+            )
+            .order_by(WorkspaceMembershipRow.principal_id)
+        )
+        return [self._to_workspace_membership(row) for row in rows.scalars()]
+
+    async def create_group(
+        self, group_id: UUID, *, organization_id: UUID, name: str
+    ) -> Group:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        row = GroupRow(id=group_id, organization_id=organization_id, name=name, schema_version=1)
+        self._session.add(row)
+        await self._session.flush()
+        return self._to_group(row)
+
+    async def get_group(self, group_id: UUID, *, organization_id: UUID) -> Group | None:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        row = (
+            await self._session.execute(
+                select(GroupRow).where(
+                    GroupRow.id == group_id,
+                    GroupRow.organization_id == organization_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_group(row)
+
+    async def list_groups(self, *, organization_id: UUID) -> list[Group]:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        rows = await self._session.execute(
+            select(GroupRow)
+            .where(GroupRow.organization_id == organization_id)
+            .order_by(GroupRow.name)
+        )
+        return [self._to_group(row) for row in rows.scalars()]
+
+    async def add_group_member(
+        self, *, group_id: UUID, organization_id: UUID, principal_id: UUID
+    ) -> GroupMember:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        await self._require_active(principal_id)
+        row = (
+            await self._session.execute(
+                insert(GroupMemberRow)
+                .values(
+                    group_id=group_id,
+                    organization_id=organization_id,
+                    principal_id=principal_id,
+                )
+                .on_conflict_do_nothing(constraint="pk_group_members")
+                .returning(GroupMemberRow)
+            )
+        ).scalar_one_or_none()
+        if row is not None:
+            return self._to_group_member(row)
+        existing = (
+            await self._session.execute(
+                select(GroupMemberRow).where(
+                    GroupMemberRow.group_id == group_id,
+                    GroupMemberRow.organization_id == organization_id,
+                    GroupMemberRow.principal_id == principal_id,
+                )
+            )
+        ).scalar_one()
+        return self._to_group_member(existing)
+
+    async def get_group_member(
+        self, *, group_id: UUID, organization_id: UUID, principal_id: UUID
+    ) -> GroupMember | None:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        row = (
+            await self._session.execute(
+                select(GroupMemberRow).where(
+                    GroupMemberRow.group_id == group_id,
+                    GroupMemberRow.organization_id == organization_id,
+                    GroupMemberRow.principal_id == principal_id,
+                )
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_group_member(row)
+
+    async def list_group_members(
+        self, *, group_id: UUID, organization_id: UUID
+    ) -> list[GroupMember]:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        rows = await self._session.execute(
+            select(GroupMemberRow)
+            .where(
+                GroupMemberRow.group_id == group_id,
+                GroupMemberRow.organization_id == organization_id,
+            )
+            .order_by(GroupMemberRow.principal_id)
+        )
+        return [self._to_group_member(row) for row in rows.scalars()]
+
+    # ------------------------------------------------------------------ guards
+
+    def _require_context(self) -> TenantContext:
+        if self._context is None:
+            raise TenantContextRequired("organization context is required")
+        return self._context
+
+    @staticmethod
+    def _require_organization(organization_id: UUID, context: TenantContext) -> None:
+        if organization_id != context.organization_id:
+            raise TenantScopeError("organization target does not match tenant context")
+
+    @staticmethod
+    def _require_workspace(workspace_id: UUID, context: TenantContext) -> None:
+        if context.workspace_id != workspace_id:
+            raise TenantScopeError("workspace target does not match tenant context")
+
+    @staticmethod
+    def _require_org_level(context: TenantContext) -> None:
+        if context.workspace_id is not None:
+            raise TenantScopeError(
+                "organization scope requires organization-level tenant context"
+            )
+
+    async def _require_active(self, principal_id: UUID) -> None:
+        principal = await self.get_principal(principal_id)
+        if principal is None:
+            raise PrincipalNotFoundError("principal not found")
+        if principal.is_disabled:
+            raise PrincipalDisabledError("disabled principals cannot gain new memberships")
+
+    # ------------------------------------------------------------------ converters
+
+    @staticmethod
+    def _to_principal(row: PrincipalRow) -> Principal:
+        return Principal(
+            id=row.id,
+            kind=PrincipalKind(row.kind),
+            status=PrincipalStatus(row.status),
+            schema_version=row.schema_version,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
+    def _to_external_identity(row: ExternalIdentityRow) -> ExternalIdentity:
+        return ExternalIdentity(issuer=row.issuer, subject=row.subject, principal_id=row.principal_id)
+
+    @staticmethod
+    def _to_membership(row: MembershipRow) -> Membership:
+        return Membership(
+            principal_id=row.principal_id,
+            organization_id=row.organization_id,
+            role_bindings=frozenset(row.role_bindings),
+        )
+
+    @staticmethod
+    def _to_workspace_membership(row: WorkspaceMembershipRow) -> WorkspaceMembership:
+        return WorkspaceMembership(
+            principal_id=row.principal_id,
+            organization_id=row.organization_id,
+            workspace_id=row.workspace_id,
+            role_bindings=frozenset(row.role_bindings),
+        )
+
+    @staticmethod
+    def _to_group(row: GroupRow) -> Group:
+        return Group(
+            id=row.id,
+            organization_id=row.organization_id,
+            name=row.name,
+            schema_version=row.schema_version,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
+    def _to_group_member(row: GroupMemberRow) -> GroupMember:
+        return GroupMember(
+            group_id=row.group_id,
+            organization_id=row.organization_id,
+            principal_id=row.principal_id,
+            created_at=row.created_at,
+        )
