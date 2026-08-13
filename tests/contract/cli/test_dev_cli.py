@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
 
 runner = CliRunner()
@@ -118,7 +119,11 @@ def test_doctor_never_probes_the_model_provider(no_network: list[Any]) -> None:
     assert "sk-should-never-be-used" not in json.dumps(payload)
 
 
-def test_doctor_output_never_contains_credentials(no_network: list[Any]) -> None:
+def test_doctor_output_never_contains_credentials() -> None:
+    """doctor 配置了 DB 时会真实查询 revision（S0 Gate 契约），失败的连接与错误信息
+    不得回显 DSN 或密码。此用例不挂 no_network：doctor 允许连配置的数据库，
+    但绝不连接模型 provider（后者由 test_doctor_never_probes_the_model_provider 覆盖）。
+    """
     secret = "sk-doctor-leak-check-771a"
     _, payload = _doctor_json(
         ZHIWEI_PROFILE="test",
