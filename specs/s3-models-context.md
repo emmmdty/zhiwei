@@ -55,6 +55,15 @@ tests/{contract/models,unit/context,integration/context}/
 - **provider 中立**（[ADR-010](../docs/DECISIONS.md#adr-010)）：新增 endpoint 只能通过新增 EndpointProfile +
   attestation 分级完成，不改 Core 代码；architecture test 断言 Core 与 transport 均不含任何具体 endpoint
   名称分支。
+- **分级信任与运行时注册**（[ADR-011](../docs/DECISIONS.md#adr-011)）：`endpoints.yaml` 是已审查档案库
+  而非允许清单。`OPENAI_BASE_URL/MODEL/API_KEY` 是部署期 override，优先级高于配置文件；未登记
+  endpoint 按 `runtime_registration_floor` 落入 `unverified` 档（能用，但 classification_ceiling 降至
+  PUBLIC、能力全 unknown、不可支撑对外声明），并在首次使用时写 canonical event + audit。
+  数据门禁为 `context 实际分类 ≤ endpoint classification_ceiling`，其中 ceiling 由
+  `network_zone`（internal/external/unknown）决定——内网自部署应获得高于公网第三方的许可。
+- **两类热切换**：同 endpoint 换 model 走新 ModelProfile + 新 Attempt，egress 策略不变；跨 endpoint
+  换 model 必须重新 egress 检查（目标 ceiling 低于当前上下文实际分类则拒绝）、重新 attestation，
+  两类跨 epoch 时都生成 `TransitionManifest` 并记录 `cache_invalidated` 与预估重建成本。
 - fallback 默认 off；启用时新 Attempt/new ContextManifest 并在 UI/Audit 显示。
 - live Connection 与 S1/S4 Connection interface 对齐；本阶段可先提供 secure injected reference connection，
   S4 完成用户/工作负载 OAuth 和 secret management。
@@ -71,6 +80,11 @@ tests/{contract/models,unit/context,integration/context}/
 - compaction：注入超大 tool 输出，断言达尝试上界后进入 refusal 而非循环；断言 `authoritative_waived`
   路径的 claim 无法标记为 Fact；断言 epoch 回退生成新 TransitionManifest 而非复用旧 manifest。
 - architecture：Core/transport 无具体 endpoint 名称分支。
+- endpoint 信任档：未登记 base_url 可正常接入且落入 `unverified`（断言 ceiling=PUBLIC、能力 unknown、
+  不可支撑对外声明）；`internal` zone 的 endpoint 获得高于 `external` 的 ceiling；提升 floor 只能经
+  Security Admin 显式动作且写 audit；env override 优先级高于 `default_endpoint_id`。
+- 热切换：同 endpoint 换 model 不重做 egress；跨 endpoint 换 model 在目标 ceiling 低于当前上下文实际
+  分类时**拒绝切换**；两类跨 epoch 均生成 TransitionManifest 且记录 `cache_invalidated`。
 - reducer/context property：arbitrary event rebuild、inventory preservation、compression order、refusal。
 - transition：two-phase commit、old epoch remains on failure、A-prefix once、directional edge identity。
 - router：unknown capability/expired attestation/data classification/budget/no silent fallback。

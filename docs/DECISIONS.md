@@ -22,6 +22,7 @@
 | [ADR-008](#adr-008) | 委托环检测与终止界 | S2、S4 | accepted |
 | [ADR-009](#adr-009) | Memory candidate 的写入去重与队列收敛 | S7 | accepted |
 | [ADR-010](#adr-010) | Provider 中立：OpenCode Go 降为 EndpointProfile 实例 | S3 | accepted |
+| [ADR-011](#adr-011) | Endpoint 分级信任、运行时注册与模型热切换 | S3 | accepted |
 
 ---
 
@@ -539,12 +540,8 @@ OpenCode Go 因订阅成本原因被选作开发期的 base URL，但当前文�
 
 0. **凭据键名采用 OpenAI 兼容生态标准**。Agent 运行时的 provider 统一为 OpenAI 兼容风格，默认
    endpoint 使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`，可直接复用 OpenAI SDK 与既有
-   工具链，也避免每接一个 provider 就发明一个键名。
-   **治理不因键名通用而放宽——这正是 `config/providers/endpoints.yaml` 存在的理由**：
-   `OPENAI_BASE_URL` 的值必须与某个已登记 endpoint 的 `base_url` 规范化后完全一致，`OPENAI_MODEL`
-   必须落在该 endpoint 的 `allowlist ∩ /models ∩ 有效 attestation` 内，任一不满足即 fail closed。
-   一句话：**键名是通用的，值必须是已登记的**。该不变量由 `tests/unit/test_environment.py` 在开发
-   环境即刻断言，S3 的 endpoint allowlist 再做完整规范化比对。
+   工具链，也避免每接一个 provider 就发明一个键名。这三个环境变量的**优先级高于配置文件默认值**；
+   它们指向未登记 endpoint 时如何处理，由 [ADR-011](#adr-011) 定义（不是拒绝接入，而是降级信任档）。
 
 1. `docs/MODELS.md` §1–§6、§9 为 provider-neutral 规范；§7/§8 改写为「附录：当前已配置 endpoint 实例」，
    明确标注可替换、可移除，且移除后规范部分不变。
@@ -558,6 +555,112 @@ OpenCode Go 因订阅成本原因被选作开发期的 base URL，但当前文�
 
 - 项目的可迁移性成为可展示能力：换 provider = 换配置。
 - 影响 `docs/MODELS.md`、`README.md`、`specs/s3-models-context.md`。
+
+---
+
+<a id="adr-011"></a>
+
+## ADR-011：Endpoint 分级信任、运行时注册与模型热切换
+
+**影响阶段**：S3 Models & Context　**状态**：accepted　**取代**：ADR-010 第 0 条中的 allowlist 硬门禁
+
+### 问题
+
+ADR-010 曾规定「`OPENAI_BASE_URL` 必须与 `config/providers/endpoints.yaml` 中已登记 endpoint 的
+`base_url` 完全一致，否则 fail closed」。这条规则有两个错误：
+
+1. **企业自部署的内部 LLM 不可能预先登记在项目配置里**。vLLM/TGI/Ollama 部署在客户 VPC 内，
+   base_url 由运维在部署时决定，本项目的仓库配置无从枚举。按原规则，最应该被支持的部署形态反而
+   被拒绝。
+2. **它把两个不同的决定绑死了**：「能不能连」是运维决定，「能发什么数据、能声称什么能力」是治理
+   决定。原设计用前者来实现后者，代价是牺牲了可部署性，而治理其实并没有因此变强——一个在
+   allowlist 里的公网第三方 endpoint，未必比一个内网自部署 endpoint 更该收到机密数据。
+
+此外，原设计完全没有回答**模型热切换**：同一 base_url 下换模型，与跨 base_url 换模型，是两件
+需要不同处理的事。
+
+### 竞品调研
+
+| 来源 | 做法 | 可借鉴点 |
+| --- | --- | --- |
+| [LiteLLM](https://www.litellm.ai/ai-gateway) | 自部署 proxy，用**版本化的配置文件注册** 100+ provider，自部署模型与云 API 并存；虚拟 key、预算、fallback 集中管理 | **「配置即注册」而非硬编码白名单**；自部署与云端同等公民 |
+| [企业 AI Gateway 控制面](https://medium.com/@adnanmasood/llm-gateways-for-enterprise-risk-building-an-ai-control-plane-e7bed1fdcd9c) | 所有出站调用先过控制面，PII 检测、注入筛查、策略执行**在信任边界内**完成 | 门禁应设在「数据是否离开信任边界」，而不是「URL 是否在清单里」 |
+| [受监管部署评估](https://predictionguard.com/blog/self-hosted-vs-cloud-llm-deployment-guide) | 受监管工作负载**常常要求**自托管、VPC 隔离或气隙部署，无外部数据出境 | 自部署是一等场景，不是例外 |
+| [模型中途切换的代价](https://www.mindstudio.ai/blog/never-switch-models-mid-conversation-ai-agents) | **prompt cache 是 model+provider 特定的**，切换即丢失全部缓存（TTFT 损失 50–80%）；out-of-distribution context 是训练方式的后果，非某家实现选择 | 切换有实际成本，必须显式呈现而非静默发生 |
+| [llm-switcher](https://github.com/fanqi1909/llm-switcher) | 本地 proxy 提供单一 endpoint，热切换上游而不重启客户端 | 切换应对上游透明，但本项目要求留痕 |
+
+### 决策
+
+#### 1. `endpoints.yaml` 从「允许清单」改为「已审查档案库」
+
+不在库里 **≠ 不能用**，而是 **= 属性未知**。库里记录的是已经过审查的 endpoint 属性：条款 digest、
+计费模式、数据分类上限、网络区域、attestation。
+
+#### 2. 配置优先级（高 → 低）
+
+```text
+1. Run / AgentVersion binding 显式指定的 model ref     ← 产品内正式路径
+2. OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY      ← 部署期 override，高于配置文件
+3. endpoints.yaml 的 default_endpoint_id
+```
+
+环境变量是**部署期 override**，运维配了就生效。系统不拒绝它，但会据此决定信任档。
+
+#### 3. 三级信任档（trust tier）
+
+| tier | 来源 | 能力假设 | 可声称 |
+| --- | --- | --- | --- |
+| `reviewed` | 档案库有记录且条款 digest 未过期 | 档案声明 + 有效 attestation | 按 attestation 分级声称 |
+| `operator_declared` | 运维经 env 或管理台注册并声明了属性，经 Security Admin 确认 | 全部 unknown，需 probe | 需 attestation 后方可声称 |
+| `unverified` | 仅有 base_url，无任何声明 | 全部 unknown | **不可**用于任何对外能力声明 |
+
+**接入不被阻断，被约束的是「能发什么」和「能声称什么」**——后者正是项目既有资格分层
+（`declared → fixture_tested → transport_verified → agent_task_verified`）的自然延伸。未登记
+endpoint 起点是 `declared`，能用，只是不能声称已验证。
+
+#### 4. 真正的数据门禁是 network zone × classification ceiling
+
+替代原来的 URL 白名单：
+
+| `network_zone` | 含义 | 默认 `classification_ceiling` |
+| --- | --- | --- |
+| `internal` | 企业内网 / VPC / 气隙，数据不离开信任边界 | `CONFIDENTIAL`（可由组织策略提升至 `RESTRICTED`） |
+| `external` | 公网第三方服务 | `INTERNAL`（提升需显式风险接受 artifact） |
+| `unknown` | 未声明 | `PUBLIC`（最保守） |
+
+这比「是否在清单里」有意义得多：企业自部署的内网 vLLM 应当**允许**发送 CONFIDENTIAL，而公网第三方
+即便在清单里也未必可以。原设计恰好把这个关系搞反了。
+
+pre-send gate 取 `context 中实际数据分类 ≤ endpoint classification_ceiling` 的交集，不满足即拒绝发送
+——门禁仍然存在，只是设在了正确的位置。
+
+#### 5. 模型热切换分两类
+
+| 类型 | 场景 | 要求 |
+| --- | --- | --- |
+| **同 endpoint 换 model** | 同一 base_url 下切换（如 `qwen-plus → qwen-max`） | 新 ModelProfile + 新 Attempt；egress 策略不变；跨 epoch 时生成 `TransitionManifest` |
+| **跨 endpoint 换 model** | 更换 base_url（如内网 vLLM → 公网 API） | 新 EndpointProfile + Connection；**必须重新执行 egress 检查**——若目标 `classification_ceiling` 低于当前上下文实际分类则**拒绝切换**；重新 attestation；必生成 `TransitionManifest` |
+
+两类都遵守既有的 authoritative-or-refuse：目标 profile 装不下完整 authoritative inventory 时拒绝切换，
+而不是静默截断。
+
+**缓存代价必须显式呈现**（竞品调研的直接产物）：切换会使 prompt cache 完全失效。`TransitionManifest`
+记录 `cache_invalidated: true` 与预估的重建成本，UI 在切换前展示；该成本进入 ADR-002 的
+`weighted_tokens`（`cache_read` 权重 0.1 会如实反映缓存丢失）。不因为切换「技术上可行」就当它免费。
+
+#### 6. 运行时注册必须留痕
+
+经 env 或管理台引入的 endpoint 在首次使用时写 canonical event + audit：base_url、trust tier、
+network zone、classification ceiling、声明人。**不允许静默换 endpoint**——这是与 llm-switcher 那类
+「对上游透明」工具的关键区别。
+
+### 后果
+
+- 企业自部署 LLM 成为一等支持场景：配置 `OPENAI_BASE_URL` 即可接入，无需修改本仓库任何配置。
+- 治理强度不降反升：门禁从「URL 匹配」变为「数据分类 × 网络区域」，后者才是真正要防的东西。
+- 环境基线测试相应调整：不再断言 base_url 已登记（那会阻断合法的自部署场景），改为断言**档案库
+  自身 schema 完整**；「未登记 → unverified 档」的行为断言属于 S3 的 RED。
+- 影响 `config/providers/endpoints.yaml`、`.env.example`、`docs/MODELS.md`、`specs/s3-models-context.md`。
 
 ---
 

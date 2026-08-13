@@ -1,15 +1,35 @@
 schema_version: 1
 
-# 本项目的 Agent 运行时统一使用 OpenAI 兼容风格的 provider，因此默认 endpoint 采用生态标准键名
-# OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL，可直接复用 OpenAI SDK 与既有工具链。
+# 本文件是**已审查 endpoint 的档案库**，不是允许清单。见 docs/DECISIONS.md ADR-011。
 #
-# 键名通用不等于治理放宽——这是本文件存在的理由：
-#   OPENAI_BASE_URL 的值必须与下方某个 endpoint 的 base_url 规范化后完全一致，
-#   OPENAI_MODEL 必须落在该 endpoint 的 allowlist ∩ /models ∩ 有效 attestation 内，
-#   任一不满足即 fail closed。**键名是通用的，值必须是已登记的。**
+# 不在本文件中 ≠ 不能用，而是 = 属性未知。企业自部署的内部 LLM（vLLM/TGI/Ollama 等）由运维在
+# 部署期通过 OPENAI_BASE_URL 直接接入，本仓库无从预先枚举，也不应阻断——「能不能连」是运维决定，
+# 「能发什么数据、能声称什么能力」才是治理决定。
 #
-# 需要同时配置多个 endpoint 时，非默认 endpoint 使用各自的 credential_env。
+# 配置优先级（高 → 低）：
+#   1. Run / AgentVersion binding 显式指定的 model ref
+#   2. OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY   ← 部署期 override，高于本文件
+#   3. 下方 default_endpoint_id
+#
+# 真正的数据门禁是 network_zone × classification_ceiling，不是 URL 匹配：
+# 内网自部署 endpoint 数据不出信任边界，应当允许更高分类；公网第三方即便已登记也未必可以。
 default_endpoint_id: opencode-go
+
+# 本文件中**已登记**条目的共同属性，单条可覆盖。
+registered_defaults:
+  trust_tier: reviewed          # reviewed | operator_declared | unverified
+  network_zone: external        # internal | external | unknown
+  classification_ceiling: INTERNAL   # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
+
+# 运行时经环境变量或管理台引入的未登记 endpoint 的强制起点。
+# 这是下限而非默认值：不可由本文件放宽，只能由 Security Admin 针对具体 endpoint 显式提升，
+# 且提升动作写 canonical event + audit。
+runtime_registration_floor:
+  trust_tier: unverified
+  network_zone: unknown
+  classification_ceiling: PUBLIC
+  capabilities: unknown         # 全部能力需 probe attestation 后才可假定
+  eligible_for_public_claims: false
 
 # allowlist 第二层门禁比对的是"规范化后的 origin + path"。规范化规则必须写死，
 # 否则 `chat/completions` 与 `/chat/completions` 会被判成两个不同的路径。

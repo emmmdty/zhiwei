@@ -30,11 +30,14 @@
 ### 关于 model provider 凭据
 
 Agent 运行时的 provider 统一为 OpenAI 兼容风格，默认 endpoint 使用标准键名
-`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`（见 `.env.example`）。
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`（见 `.env.example`）。这三个变量是**部署期
+override，优先级高于 `config/providers/endpoints.yaml`**——企业自部署的内部 LLM 直接配置即可接入。
 
-**键名是通用的，值必须是已登记的**：`OPENAI_BASE_URL` 必须与 `config/providers/endpoints.yaml`
-中某个 endpoint 的 `base_url` 规范化后完全一致，否则 fail closed。新增 endpoint 必须先写入该配置
-并通过策略复核，不得在代码里硬编码 origin。
+`endpoints.yaml` 是**已审查档案库，不是允许清单**：未登记的 endpoint 不被阻断，而是落入
+`unverified` 信任档（能用，但数据分类上限降至 PUBLIC、能力全部 unknown、不可支撑对外能力声明）。
+真正的数据门禁是 `network_zone × classification_ceiling`，不是 URL 匹配。详见 ADR-011。
+
+不得在代码里硬编码 endpoint origin，也不得放宽 `runtime_registration_floor`。
 
 ## 开发流程：RED → GREEN → REVIEW
 

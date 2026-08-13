@@ -43,6 +43,33 @@ observed_at、expires_at、raw scrubbed artifact；过期或 profile 更新后�
 资格分层：`declared -> fixture_tested -> transport_verified -> agent_task_verified`。handoff 是有向 edge +
 task suite 的资格，不是单模型徽章；某次 EvalRun 完整/无效也不回写全局 profile。
 
+### 3.1 Endpoint 信任档与运行时注册
+
+`config/providers/endpoints.yaml` 是**已审查 endpoint 的档案库，不是允许清单**
+（[ADR-011](DECISIONS.md#adr-011)）。企业自部署的内部 LLM 由运维经 `OPENAI_BASE_URL` 在部署期接入，
+本仓库无从预先枚举，也不应阻断。
+
+| trust tier | 来源 | 能力假设 | 可声称 |
+| --- | --- | --- | --- |
+| `reviewed` | 档案库有记录且条款 digest 未过期 | 档案声明 + 有效 attestation | 按 attestation 分级 |
+| `operator_declared` | 运维声明属性并经 Security Admin 确认 | 全部 unknown，需 probe | 需 attestation |
+| `unverified` | 仅有 base_url | 全部 unknown | **不可**支撑任何对外声明 |
+
+**接入不被阻断，被约束的是「能发什么数据」和「能声称什么能力」。** 真正的数据门禁是
+`network_zone × classification_ceiling`，不是 URL 匹配：
+
+| `network_zone` | 默认 `classification_ceiling` |
+| --- | --- |
+| `internal`（内网/VPC/气隙，数据不出信任边界） | `CONFIDENTIAL`，组织策略可提升至 `RESTRICTED` |
+| `external`（公网第三方） | `INTERNAL`，提升需显式风险接受 artifact |
+| `unknown`（未声明） | `PUBLIC` |
+
+内网自部署 endpoint 应当比公网第三方获得**更高**而非更低的数据许可。pre-send gate 取
+「context 实际数据分类 ≤ endpoint ceiling」的交集，不满足即拒绝发送。
+
+运行时引入的 endpoint 在首次使用时写 canonical event + audit（base_url、trust tier、network zone、
+分类上限、声明人）——**不允许静默换 endpoint**。
+
 ## 4. Context Compiler
 
 输入：canonical projection、AgentVersion/Profile/Policy、当前 Task、authorized Knowledge、scoped Memory、
@@ -91,6 +118,19 @@ pre-send capture **必须发生在 HTTP transport 层**（自定义 httpx transp
 - `authoritative_state_preservation_rate=100%` 是“结构完整或拒绝”的 invariant，不是模型效果。
 - task continuation、answer/evidence quality、constraint/entity retention、cost/latency 在独立 handoff suite 测。
 - 旧每 edge 12 条 chain 只作 pilot；正式样本量由 pilot variance 和最小有意义效应冻结。
+
+### 5.1 两类热切换
+
+| 类型 | 场景 | 要求 |
+| --- | --- | --- |
+| **同 endpoint 换 model** | 同一 base_url 下切换（`qwen-plus → qwen-max`） | 新 ModelProfile + 新 Attempt；egress 策略不变；跨 epoch 时生成 `TransitionManifest` |
+| **跨 endpoint 换 model** | 更换 base_url（内网 vLLM → 公网 API） | 新 EndpointProfile + Connection；**重新执行 egress 检查**——目标 `classification_ceiling` 低于当前上下文实际分类则**拒绝切换**；重新 attestation；必生成 `TransitionManifest` |
+
+两类都遵守 authoritative-or-refuse：目标 profile 装不下完整 authoritative inventory 时拒绝切换。
+
+**缓存代价必须显式呈现**：prompt cache 是 model + provider 特定的，任何切换都会使其完全失效。
+`TransitionManifest` 记录 `cache_invalidated` 与预估重建成本，UI 在切换前展示；该成本经 §7.2 的
+`weighted_tokens`（`cache_read` 权重 0.1）如实进入 ROI 指标。不因为切换技术上可行就当它免费。
 
 ## 6. 路由与 fallback
 
@@ -175,14 +215,13 @@ paired bootstrap、Holm 校正方法可直接复用到「压缩策略 A vs B」�
 差异均为配置声明或待固化 fixture，`src/` 未实现前不得写成已验证兼容。
 
 Agent 运行时的 provider 统一为 OpenAI 兼容风格，因此默认 endpoint 使用生态标准键名
-`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`。**键名通用不放宽治理**：`OPENAI_BASE_URL`
-的值必须与某个已登记 endpoint 的 `base_url` 规范化后完全一致，`OPENAI_MODEL` 必须落在该 endpoint 的
-`allowlist ∩ /models ∩ 有效 attestation` 内，任一不满足即 fail closed。需要同时配置多个 endpoint 时，
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`。这三个变量是**部署期 override，优先级高于本
+文件**——未登记的 endpoint 不被阻断，而是按 §3.1 落入相应信任档。需要同时配置多个 endpoint 时，
 非默认 endpoint 使用各自的 `credential_env`。
 
-live 其余前置条件：精确 endpoint 匹配、禁止跨 origin redirect、供应商侧余额/额外消费关闭、数据分类、
-条款 digest、能力 attestation、price/usage 记录和 operator 显式动作。无 key 时 fixture-only，不 fallback
-到其他付费 provider。
+`opencode-go` 这类**已登记**条目的 live 前置条件：禁止跨 origin redirect、供应商侧额外消费关闭、
+数据分类不超过其 ceiling、条款 digest 未过期、能力 attestation 有效、price/usage 记录和 operator
+显式动作。无 key 时 fixture-only，不 fallback 到其他付费 provider。
 
 历史 prereg 配置预算 `$43.0231552`（FactQA `$28.47744`、Handoff `$9.2700672`、BIRD `$4.096`、
 naked `$1.179648`）属于旧评测方案的配置声明，不是本平台的预算或已消费数字。

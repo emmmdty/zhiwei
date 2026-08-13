@@ -1,7 +1,12 @@
 """开工前的环境基线断言。
 
-这里只断言开发环境本身，不断言任何产品行为——产品行为一律由各阶段 spec 的 RED 测试定义。
-它的存在让 `pytest` 在 S0 第一个 Task 落地前就有确定的绿基线，CI 不会因为「零测试」而返回 exit 5。
+这里只断言开发环境与配置档案库本身，不断言任何产品行为——产品行为一律由各阶段 spec 的 RED
+测试定义。它的存在让 `pytest` 在 S0 第一个 Task 落地前就有确定的绿基线，CI 不会因为「零测试」
+而返回 exit 5。
+
+注意这里**不**断言 `OPENAI_BASE_URL` 必须出现在 endpoints.yaml 中：企业自部署的内部 LLM 由运维在
+部署期接入，本仓库无从预先枚举，硬性要求登记会阻断最该被支持的部署形态。未登记 endpoint 的降级
+处理（unverified 档）是运行时行为，由 S3 的 RED 覆盖。见 docs/DECISIONS.md ADR-011。
 """
 
 import os
@@ -13,28 +18,14 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 ENDPOINTS_CONFIG = REPO_ROOT / "config" / "providers" / "endpoints.yaml"
 
-
-def _normalize_base_url(raw: str) -> str:
-    """按 endpoints.yaml 的 path_normalization 规则做最小规范化。
-
-    完整规则由 S3 的 endpoint allowlist 实现；此处只覆盖比对 base_url 所需的部分，
-    足以让「配错 endpoint」在开发环境就暴露。
-    """
-    value = raw.strip().rstrip("/")
-    scheme, sep, rest = value.partition("://")
-    if not sep:
-        return value.lower()
-    host, slash, path = rest.partition("/")
-    return f"{scheme.lower()}://{host.lower()}{slash}{path}"
+VALID_TRUST_TIERS = {"reviewed", "operator_declared", "unverified"}
+VALID_NETWORK_ZONES = {"internal", "external", "unknown"}
+# 由低到高，索引即严格程度
+CLASSIFICATION_ORDER = ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
 
 
-def _registered_base_urls() -> set[str]:
-    config = yaml.safe_load(ENDPOINTS_CONFIG.read_text(encoding="utf-8"))
-    return {
-        _normalize_base_url(endpoint["base_url"])
-        for endpoint in config["endpoints"]
-        if endpoint.get("base_url")
-    }
+def _load_config() -> dict:
+    return yaml.safe_load(ENDPOINTS_CONFIG.read_text(encoding="utf-8"))
 
 
 def test_python_version_meets_floor() -> None:
@@ -42,28 +33,9 @@ def test_python_version_meets_floor() -> None:
     assert sys.version_info >= (3, 11), f"需要 Python 3.11+，当前 {sys.version_info}"
 
 
-def test_openai_base_url_must_be_a_registered_endpoint() -> None:
-    """键名通用，值必须已登记。
-
-    Agent 运行时统一使用 OpenAI 兼容 provider，因此 `OPENAI_BASE_URL` 是标准键名。但它指向哪里
-    不能自由——必须是 `config/providers/endpoints.yaml` 中已登记的 endpoint，否则 allowlist、
-    数据分类与用量账本都会被绕过。见 docs/DECISIONS.md ADR-010。
-    """
-    configured = os.environ.get("OPENAI_BASE_URL")
-    if not configured:
-        return  # 未配置时不适用；fixture-only 是默认运行方式
-
-    registered = _registered_base_urls()
-    assert _normalize_base_url(configured) in registered, (
-        f"OPENAI_BASE_URL={configured!r} 不在已登记 endpoint 中。\n"
-        f"已登记：{sorted(registered)}\n"
-        f"新增 endpoint 必须先写入 {ENDPOINTS_CONFIG.relative_to(REPO_ROOT)} 并通过策略复核。"
-    )
-
-
 def test_default_endpoint_declares_openai_compatible_keys() -> None:
     """默认 endpoint 必须声明标准键名，否则 .env.example 与实际读取路径会漂移。"""
-    config = yaml.safe_load(ENDPOINTS_CONFIG.read_text(encoding="utf-8"))
+    config = _load_config()
     default_id = config.get("default_endpoint_id")
     assert default_id, "endpoints.yaml 必须声明 default_endpoint_id"
 
@@ -72,6 +44,43 @@ def test_default_endpoint_declares_openai_compatible_keys() -> None:
     assert default.get("credential_env") == "OPENAI_API_KEY"
     assert default.get("base_url_env") == "OPENAI_BASE_URL"
     assert default.get("model_env") == "OPENAI_MODEL"
+
+
+def test_registered_defaults_are_well_formed() -> None:
+    """已登记条目的共同属性必须齐全且取值合法，否则信任判定无从进行。"""
+    defaults = _load_config().get("registered_defaults")
+    assert defaults, "endpoints.yaml 必须声明 registered_defaults"
+
+    assert defaults["trust_tier"] in VALID_TRUST_TIERS
+    assert defaults["network_zone"] in VALID_NETWORK_ZONES
+    assert defaults["classification_ceiling"] in CLASSIFICATION_ORDER
+
+
+def test_runtime_registration_floor_stays_most_conservative() -> None:
+    """未登记 endpoint 的起点是**下限**，不是可调默认值。
+
+    这是本文件里唯一真正的安全不变量：接入不被阻断，但未经审查的 endpoint 必须从最保守的位置
+    起步。任何把这个 floor 放宽的配置改动都应该在这里变红——提升只能由 Security Admin 针对
+    具体 endpoint 显式做出，并写入 canonical event，不能通过改配置文件默认值悄悄完成。
+    """
+    floor = _load_config().get("runtime_registration_floor")
+    assert floor, "endpoints.yaml 必须声明 runtime_registration_floor"
+
+    assert floor["trust_tier"] == "unverified", "未登记 endpoint 不得以更高信任档起步"
+    assert floor["network_zone"] == "unknown", "未声明网络区域不得假定为内网"
+    assert floor["classification_ceiling"] == CLASSIFICATION_ORDER[0], (
+        "未登记 endpoint 的数据分类上限必须是最保守的 PUBLIC"
+    )
+    assert floor["capabilities"] == "unknown", "未登记 endpoint 的能力不得预设，必须 probe"
+    assert floor["eligible_for_public_claims"] is False, "未验证 endpoint 不得支撑对外能力声明"
+
+
+def test_floor_is_not_looser_than_registered_defaults() -> None:
+    """floor 必须严格不宽于已登记条目的默认值，否则「降级」二字失去意义。"""
+    config = _load_config()
+    floor_level = CLASSIFICATION_ORDER.index(config["runtime_registration_floor"]["classification_ceiling"])
+    registered_level = CLASSIFICATION_ORDER.index(config["registered_defaults"]["classification_ceiling"])
+    assert floor_level <= registered_level, "运行时注册下限不得宽于已登记条目的默认分类上限"
 
 
 def test_test_run_is_not_in_live_mode() -> None:
