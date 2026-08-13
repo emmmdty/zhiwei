@@ -52,11 +52,27 @@
 - 回归全绿：110 项 validator、21 个资产 determinism 逐字节一致、Ruff 通过、Pyright 0 error、
   全仓库 Markdown 本地链接与 ADR 锚点无断链。本轮未实现 `src/`、未调用真实 LLM、未修改 evals 资产。
 
+## 2026-08-13：开工准备与多代理协作基线
+
+- 建立初始 Git baseline（107 文件）；`.env` 与凭据文件确认被 `.gitignore` 排除。
+- 补齐四项开工前缺口：`/artifacts/` 忽略规则、`tests/` 骨架与环境基线测试、编码代理纪律文件、
+  `make handoff-check` 交接门禁。门禁经三类故障注入验证（改测试、新增测试文件、改冻结资产均变红）。
+- **凭据键名决定反转**：Agent 运行时统一使用 OpenAI 兼容 provider，因此默认 endpoint 采用生态标准键名
+  `OPENAI_API_KEY/BASE_URL/MODEL`，不再要求 per-provider 专用键名。治理改由「值必须已登记」承担——
+  `OPENAI_BASE_URL` 必须匹配 `config/providers/endpoints.yaml` 中已登记 endpoint 的 `base_url`，
+  由 `tests/unit/test_environment.py` 即刻断言（经未登记 endpoint 失败注入验证）。ADR-010 已补第 0 条。
+- 按官方规范建立双工具指令结构：`AGENTS.md` 为唯一事实源（opencode 优先读取），`CLAUDE.md` 用
+  `@AGENTS.md` 导入并追加 Claude Code 专属条目。依据：Claude Code 官方文档明确其读 `CLAUDE.md`
+  而非 `AGENTS.md`，推荐用导入方式共享；opencode 官方文档的读取优先级为项目 `AGENTS.md` →
+  全局 `AGENTS.md` → `CLAUDE.md` fallback。
+- 产出 `docs/DEV_ALLOCATION.md`：86 个 Task 按 A/B/C 三档逐个分配，含两工具流水并行模型、
+  可并行组、交接单模板与三层验收协议。
+
 ## 待办
 
-- 项目所有者确认初始 Git baseline 后，直接从 S0 开发；不再停留在同层方案扩写。
-- 本地 `.env` 仍持有旧的 `OPENAI_API_KEY/BASE_URL/MODEL`，需迁移为 `OPENCODE_GO_API_KEY` 并删除原键
-  （该文件已被 `.gitignore` 覆盖，不会进入 baseline）。
+- 从 S0 开始开发，逐 checkbox 推进，不跳 Gate，不自动调用 live 模型。
+- 本地 `.env` 沿用 `OPENAI_API_KEY/BASE_URL/MODEL`；`OPENAI_BASE_URL` 需设为已登记 endpoint 的
+  `base_url`（当前为 `https://opencode.ai/zen/go/v1`），否则环境基线测试会红。
 - wire capture 与 token estimator 两个 P0 spike 可在 S0 之前独立执行。
 
 ## 2026-08-12：实现就绪收口

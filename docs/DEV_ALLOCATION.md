@@ -1,7 +1,8 @@
 # 开发工具分工、并行与交接
 
 > 本文规定 86 个 Task 由哪个工具承担、如何并行、如何交接与验收。
-> 纪律见 [CLAUDE.md](../CLAUDE.md)；此处只解决「谁做、何时做、怎么验收」。
+> 纪律见 [AGENTS.md](../AGENTS.md)（对所有编码代理生效的唯一指令源；`CLAUDE.md` 只是导入它并追加
+> Claude Code 专属条目）。此处只解决「谁做、何时做、怎么验收」。
 >
 > **Opus 5 与 deepseek-v4-flash 在本文中一律指开发工具**（Claude Code / opencode 的驱动模型），
 > 与 Agent 系统运行时使用的 model provider 无关——后者由 `docs/MODELS.md` 的 EndpointProfile 管理。

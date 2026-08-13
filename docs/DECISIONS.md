@@ -537,6 +537,15 @@ OpenCode Go 因订阅成本原因被选作开发期的 base URL，但当前文�
 
 **OpenCode Go 是当前唯一已配置的 `EndpointProfile` 实例，不是架构概念。** 具体调整：
 
+0. **凭据键名采用 OpenAI 兼容生态标准**。Agent 运行时的 provider 统一为 OpenAI 兼容风格，默认
+   endpoint 使用 `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`，可直接复用 OpenAI SDK 与既有
+   工具链，也避免每接一个 provider 就发明一个键名。
+   **治理不因键名通用而放宽——这正是 `config/providers/endpoints.yaml` 存在的理由**：
+   `OPENAI_BASE_URL` 的值必须与某个已登记 endpoint 的 `base_url` 规范化后完全一致，`OPENAI_MODEL`
+   必须落在该 endpoint 的 `allowlist ∩ /models ∩ 有效 attestation` 内，任一不满足即 fail closed。
+   一句话：**键名是通用的，值必须是已登记的**。该不变量由 `tests/unit/test_environment.py` 在开发
+   环境即刻断言，S3 的 endpoint allowlist 再做完整规范化比对。
+
 1. `docs/MODELS.md` §1–§6、§9 为 provider-neutral 规范；§7/§8 改写为「附录：当前已配置 endpoint 实例」，
    明确标注可替换、可移除，且移除后规范部分不变。
 2. 配额、条款、模型清单等易变事实保留在 `config/` 与 `findings.md`，文档正文只引用不复述具体数字。

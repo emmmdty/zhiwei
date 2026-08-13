@@ -1,5 +1,16 @@
 schema_version: 1
 
+# 本项目的 Agent 运行时统一使用 OpenAI 兼容风格的 provider，因此默认 endpoint 采用生态标准键名
+# OPENAI_API_KEY / OPENAI_BASE_URL / OPENAI_MODEL，可直接复用 OpenAI SDK 与既有工具链。
+#
+# 键名通用不等于治理放宽——这是本文件存在的理由：
+#   OPENAI_BASE_URL 的值必须与下方某个 endpoint 的 base_url 规范化后完全一致，
+#   OPENAI_MODEL 必须落在该 endpoint 的 allowlist ∩ /models ∩ 有效 attestation 内，
+#   任一不满足即 fail closed。**键名是通用的，值必须是已登记的。**
+#
+# 需要同时配置多个 endpoint 时，非默认 endpoint 使用各自的 credential_env。
+default_endpoint_id: opencode-go
+
 # allowlist 第二层门禁比对的是"规范化后的 origin + path"。规范化规则必须写死，
 # 否则 `chat/completions` 与 `/chat/completions` 会被判成两个不同的路径。
 path_normalization:
@@ -15,7 +26,10 @@ path_normalization:
 endpoints:
   - id: opencode-go
     base_url: https://opencode.ai/zen/go/v1
-    credential_env: OPENCODE_GO_API_KEY
+    # 默认 endpoint：使用 OpenAI 兼容标准键名。base_url_env 若被设置，其值必须等于上面的 base_url。
+    credential_env: OPENAI_API_KEY
+    base_url_env: OPENAI_BASE_URL
+    model_env: OPENAI_MODEL
     credential_mode: bearer
     billing_mode: subscription_allowance
     allowed_paths: [/chat/completions, /responses, /messages, /models]

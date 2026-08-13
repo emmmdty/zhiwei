@@ -174,9 +174,15 @@ paired bootstrap、Holm 校正方法可直接复用到「压缩策略 A vs B」�
 清单变化只创建新 profile/version，不自动放行。模型数量、各模型的 structured output/tool/thinking
 差异均为配置声明或待固化 fixture，`src/` 未实现前不得写成已验证兼容。
 
-live 前置条件：精确 endpoint 匹配、禁止跨 origin redirect、专用 Connection（**禁止通用
-`OPENAI_API_KEY`**，见 `.env.example`）、供应商侧余额关闭、数据分类、条款 digest、能力 attestation、
-price/usage 记录和 operator 显式动作。无 key 时 fixture-only，不 fallback 到其他付费 provider。
+Agent 运行时的 provider 统一为 OpenAI 兼容风格，因此默认 endpoint 使用生态标准键名
+`OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL`。**键名通用不放宽治理**：`OPENAI_BASE_URL`
+的值必须与某个已登记 endpoint 的 `base_url` 规范化后完全一致，`OPENAI_MODEL` 必须落在该 endpoint 的
+`allowlist ∩ /models ∩ 有效 attestation` 内，任一不满足即 fail closed。需要同时配置多个 endpoint 时，
+非默认 endpoint 使用各自的 `credential_env`。
+
+live 其余前置条件：精确 endpoint 匹配、禁止跨 origin redirect、供应商侧余额/额外消费关闭、数据分类、
+条款 digest、能力 attestation、price/usage 记录和 operator 显式动作。无 key 时 fixture-only，不 fallback
+到其他付费 provider。
 
 历史 prereg 配置预算 `$43.0231552`（FactQA `$28.47744`、Handoff `$9.2700672`、BIRD `$4.096`、
 naked `$1.179648`）属于旧评测方案的配置声明，不是本平台的预算或已消费数字。
