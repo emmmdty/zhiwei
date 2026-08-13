@@ -33,10 +33,11 @@ questions:
 risk:
 	$(PY) $(S)/gen_risk_data.py
 
-# LC_ALL=C 固定字节序排序：任何 locale 下 checksum 行序逐字节一致，
-# 否则 zh_CN/C.UTF-8 环境下 sort 的 collation 差异会让同一批资产产生不同的 lock 顺序。
+# LC_ALL=C + -f 固定"折叠大小写的字节序"：任何 locale 下 checksum 行序逐字节一致，
+# 且与冻结基线（zh_CN collation 生成）字节序一致——纯 C 字节序会把 README.md 排到
+# docs/ 之前，造成冻结资产漂移。
 checksums:
-	@find $(ART) -type f -exec sha256sum {} \; | LC_ALL=C sort -k2 > $(SUMS)
+	@find $(ART) -type f -exec sha256sum {} \; | LC_ALL=C sort -f -k2 > $(SUMS)
 	@echo "[checksums] $$(wc -l < $(SUMS)) 个产物 → $(SUMS)"
 
 validate:
