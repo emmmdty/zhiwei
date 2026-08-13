@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import typer
 
-from zhiwei.cli import db, dev
+from zhiwei.cli import assets, db, dev, evals
 
 app = typer.Typer(
     help="知微 ZhiWei — 企业 Agent Core 命令行工具",
@@ -17,6 +17,8 @@ app = typer.Typer(
 )
 app.add_typer(dev.app, name="dev", help="开发诊断与调试命令")
 app.add_typer(db.app, name="db", help="数据库迁移与 schema 检查")
+app.add_typer(assets.app, name="assets", help="冻结基准资产与校验和 lock")
+app.add_typer(evals.app, name="eval", help="评测执行与密封")
 
 
 if __name__ == "__main__":

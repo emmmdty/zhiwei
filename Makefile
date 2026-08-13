@@ -14,6 +14,11 @@ help:
 	@echo "make validate      跑一致性 / 可复算 / 自校验 / 篡改检测（CI 门禁）"
 	@echo "make determinism   连续两次干净重建，断言产物逐字节一致"
 	@echo "make handoff-check 校验交接规则：tests/ 与 evals/ 未被实现方改动"
+	@echo "make assets-lock   校验冻结资产与 $(SUMS) 无漂移（等价 zhiwei assets lock --check）"
+
+# 冻结资产 lock Gate：默认只读校验，漂移即失败；重写需显式 --write
+assets-lock:
+	$(PY) -m zhiwei.cli.main assets lock --check
 
 # 顺序不可颠倒：题集的 ground truth 由已发布语料算出，语料必须先就位
 evals: corpus questions risk checksums validate
