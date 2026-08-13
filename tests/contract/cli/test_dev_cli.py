@@ -1,8 +1,8 @@
 """S0-T1 RED：`zhiwei dev` 命令组的契约。
 
 `dev doctor` 是开发者第一个会跑的命令，也是 S0 Gate 的一步。它必须回答"这套环境到底能不能
-用"，且**在回答过程中不得碰任何网络**——一个会顺手 probe 一下 provider 的 doctor，会让
-"不调用 live 模型"这条纪律在最不起眼的地方破掉。
+用"：配置数据库时允许用短超时查询 schema revision，但绝不 probe 模型 provider，否则
+"不调用 live 模型"这条纪律会在最不起眼的地方破掉。
 
 这里断言的是命令行契约：退出码、输出结构、失败时的表现。不断言实现用了哪个库。
 """
@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
 
 runner = CliRunner()
@@ -118,7 +119,12 @@ def test_doctor_never_probes_the_model_provider(no_network: list[Any]) -> None:
     assert "sk-should-never-be-used" not in json.dumps(payload)
 
 
-def test_doctor_output_never_contains_credentials(no_network: list[Any]) -> None:
+def test_doctor_output_never_contains_credentials() -> None:
+    """S0 Gate 要求 doctor 在配置健康 DB 时真实查询 revision（specs/s0-foundation.md §6），
+    因此允许连接配置的数据库（短超时）；绝不连接模型 provider（由
+    test_doctor_never_probes_the_model_provider 覆盖）。原断言"不得发起任何网络连接"
+    是 T1 时代 migration 未接入时的占位约束，已不再成立。
+    """
     secret = "sk-doctor-leak-check-771a"
     _, payload = _doctor_json(
         ZHIWEI_PROFILE="test",
