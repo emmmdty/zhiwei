@@ -17,6 +17,10 @@ dependencies = [
     "pydantic>=2.7.0",
     "pydantic-settings>=2.0.0",
     "sqlalchemy>=2.0.0",
+    "alembic>=1.14.0,<2.0.0",
+    # PostgreSQL 只用异步驱动：Alembic 的 env.py 走 async engine，避免同一进程内维护两套
+    # 连接语义（同步/异步各一份 DSN、各一套 tenant context 设置路径）。
+    "asyncpg>=0.30.0,<1.0.0",
     "httpx>=0.28.1",
     "openai>=2.0.0,<3.0.0",
     "anthropic>=0.70.0,<1.0.0",
