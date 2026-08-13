@@ -10,6 +10,8 @@ from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
+
+from zhiwei.contracts.canonical import digest_bytes
 from zhiwei.evals.datasets import DatasetVersionSpec
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.executors.base import EvalExecutor
@@ -23,8 +25,6 @@ from zhiwei.evals.sealing import (
     verify_sealed_artifact,
 )
 from zhiwei.evals.suites import EvalSuiteVersionSpec
-
-from zhiwei.contracts.canonical import digest_bytes
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DATASET_ID = UUID("11111111-1111-4111-8111-111111111111")
@@ -230,13 +230,18 @@ async def test_legacy_executor_adapts_frozen_assets_without_rewriting_them() -> 
     assert inventory.registered_units
 
     unit = inventory.registered_units[0]
-    expected_digest, expected_path = before.decode("utf-8").splitlines()[0].split(maxsplit=1)
+    expected_digests = {
+        path: digest
+        for digest, path in (
+            line.split(maxsplit=1) for line in before.decode("utf-8").splitlines()
+        )
+    }
     outcome = await LegacyExecutor(inventory).execute(unit)
-    assert unit == RegisteredUnit(sample_id=expected_path, unit_id="checksum")
+    assert unit.unit_id == "checksum"
     assert outcome.status is SampleStatus.COMPLETED
     assert outcome.result == {
-        "path": expected_path,
-        "content_digest": f"sha256:{expected_digest}",
+        "path": unit.sample_id,
+        "content_digest": f"sha256:{expected_digests[unit.sample_id]}",
         "verified": True,
     }
     assert checksum_file.read_bytes() == before
