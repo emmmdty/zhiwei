@@ -60,7 +60,9 @@ _MUTABLE_COLUMNS = {
         "attempts",
         "available_at",
         "claimed_by",
+        "claim_token",
         "claimed_at",
+        "lease_expires_at",
         "last_error",
         "dead_lettered_at",
     ),
@@ -561,6 +563,14 @@ def upgrade() -> None:
             name="fk_audit_events_workspace",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_audit_events"),
+        sa.UniqueConstraint("event_digest", name="uq_audit_events_event_digest"),
+        sa.UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "previous_event_digest",
+            name="uq_audit_events_scope_previous",
+            postgresql_nulls_not_distinct=True,
+        ),
     )
     _optional_workspace_indexes("audit_events")
 
@@ -580,7 +590,9 @@ def upgrade() -> None:
             "available_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
         sa.Column("claimed_by", sa.String(length=255), nullable=True),
+        sa.Column("claim_token", sa.Uuid(), nullable=True),
         sa.Column("claimed_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("last_error", sa.Text(), nullable=True),
         sa.Column("dead_lettered_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("schema_version", sa.Integer(), nullable=False),
@@ -588,6 +600,24 @@ def upgrade() -> None:
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
         sa.CheckConstraint("attempts >= 0", name=op.f("ck_outbox_attempts")),
+        sa.CheckConstraint(
+            "status IN ('pending', 'processing', 'delivered', 'dead_letter')",
+            name=op.f("ck_outbox_status"),
+        ),
+        sa.CheckConstraint(
+            "(status = 'processing' AND claimed_by IS NOT NULL "
+            "AND claim_token IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'processing' AND claimed_by IS NULL "
+            "AND claim_token IS NULL AND claimed_at IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name=op.f("ck_outbox_claim"),
+        ),
+        sa.CheckConstraint(
+            "(status = 'dead_letter' AND dead_lettered_at IS NOT NULL) OR "
+            "(status <> 'dead_letter' AND dead_lettered_at IS NULL)",
+            name=op.f("ck_outbox_dead_letter"),
+        ),
         sa.CheckConstraint("schema_version > 0", name=op.f("ck_outbox_schema_version")),
         sa.ForeignKeyConstraint(
             ["organization_id"],

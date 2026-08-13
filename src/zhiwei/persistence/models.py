@@ -488,6 +488,14 @@ class AuditEvent(Base):
             ["workspaces.organization_id", "workspaces.id"],
             name="fk_audit_events_workspace",
         ),
+        UniqueConstraint("event_digest", name="uq_audit_events_event_digest"),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "previous_event_digest",
+            name="uq_audit_events_scope_previous",
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
@@ -510,6 +518,24 @@ class OutboxMessage(Base):
     __tablename__ = "outbox"
     __table_args__ = (
         CheckConstraint("attempts >= 0", name="attempts"),
+        CheckConstraint(
+            "status IN ('pending', 'processing', 'delivered', 'dead_letter')",
+            name="status",
+        ),
+        CheckConstraint(
+            "(status = 'processing' AND claimed_by IS NOT NULL "
+            "AND claim_token IS NOT NULL AND claimed_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(status <> 'processing' AND claimed_by IS NULL "
+            "AND claim_token IS NULL AND claimed_at IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="claim",
+        ),
+        CheckConstraint(
+            "(status = 'dead_letter' AND dead_lettered_at IS NOT NULL) OR "
+            "(status <> 'dead_letter' AND dead_lettered_at IS NULL)",
+            name="dead_letter",
+        ),
         CheckConstraint("schema_version > 0", name="schema_version"),
         ForeignKeyConstraint(
             ["organization_id"],
@@ -535,7 +561,9 @@ class OutboxMessage(Base):
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     claimed_by: Mapped[str | None] = mapped_column(String(255))
+    claim_token: Mapped[UUID | None] = mapped_column(Uuid)
     claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_error: Mapped[str | None] = mapped_column(Text)
     dead_lettered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
