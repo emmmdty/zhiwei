@@ -1,12 +1,13 @@
 """`zhiwei dev` 命令组：面向开发者的环境诊断。
 
-`dev doctor` 回答"这套环境到底能不能用"，且**在回答过程中不发起任何网络连接**——DB 检查只做
-"配没配、DSN 能不能解析"（`sqlalchemy.engine.url.make_url` 是纯解析，不出网），模型 provider
-配置了也不 probe。"会顺手连一下 provider 的 doctor"会让"不调用 live 模型"在最小的地方破掉。
+`dev doctor` 回答"这套环境到底能不能用"。DB 检查只连接**配置的数据库**（短超时、失败即
+error），绝不连接模型 provider——provider 配置了也不 probe，否则"不调用 live 模型"会在最
+不起眼的地方破掉。所有失败信息脱敏：不出现 DSN 原文或密码。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Annotated, Any, Literal
 
@@ -14,11 +15,15 @@ import click
 import typer
 from sqlalchemy.engine.url import make_url
 
+from zhiwei.cli.db import _current_revision, _describe_error
 from zhiwei.config.settings import Settings, load_settings
 
 app = typer.Typer(help="开发诊断与调试命令", no_args_is_help=True, pretty_exceptions_enable=False)
 
 OUTPUT_FORMAT = Annotated[Literal["text", "json"], typer.Option("--format", help="输出格式")]
+
+# revision 查询只连配置的数据库；连接超时给短值，避免 doctor 在坏 DSN 上挂起。
+REVISION_TIMEOUT = 3
 
 
 def _load_settings() -> Settings:
@@ -53,11 +58,28 @@ def _object_store_check(settings: Settings) -> dict[str, str]:
 
 
 def _schema_revision_check(settings: Settings) -> dict[str, str]:
-    # 查 revision 需要连库，而 T1 的 doctor 不做任何连接；migration 接入后（S0-T3）才有答案。
-    return {
-        "status": "unknown",
-        "detail": "schema revision 未知：migration 尚未接入（S0-T3）",
-    }
+    """查询数据库当前 migration revision；未配置、连不上、未迁移都显式报错。
+
+    S0 Gate（specs/s0-foundation.md §6）要求配置健康 DB 后 doctor 返回真实 revision
+    并退出 0——占位的 unknown 会让 Gate 永远失败，因此这里做真实查询。模型 provider
+    绝不接触；错误信息经脱敏（不出现 DSN/密码）。
+    """
+    if settings.database_url is None:
+        return {
+            "status": "not_configured",
+            "detail": "ZHIWEI_DATABASE_URL 未配置，无法查询 schema revision",
+        }
+    raw_dsn = settings.database_url.get_secret_value()
+    try:
+        revision = asyncio.run(_current_revision(raw_dsn, REVISION_TIMEOUT))
+    except Exception as exc:
+        return {"status": "error", "detail": f"无法查询 schema revision: {_describe_error(exc, raw_dsn)}"}
+    if revision is None:
+        return {
+            "status": "error",
+            "detail": "schema 未初始化：数据库中不存在 alembic_version 表",
+        }
+    return {"status": "ok", "detail": f"schema revision: {revision}"}
 
 
 def _doctor_payload(settings: Settings) -> dict[str, Any]:
