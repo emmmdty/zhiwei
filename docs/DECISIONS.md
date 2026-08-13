@@ -94,6 +94,100 @@ SDK 派有语义但站错了位置，TEE 派解决的是另一个问题。
 - 该 spike 不依赖任何前置阶段，可在 S0 之前独立执行。
 - 影响 `specs/s3-models-context.md`、`docs/MODELS.md` §4。
 
+#### spike-01 执行结论（2026-08-13）
+
+代码 `spikes/wire_capture/`，证据 `spikes/wire_capture/evidence/spike-01-wire-capture.json`
+（`uv run python spikes/wire_capture/run_spike.py`，退出码 0 = 全部断言通过）。
+环境：`openai==2.54.0`、`httpx==0.28.1`、Python 3.11。全程无真实网络请求——流量只走 loopback
+mock endpoint 或进程内 `httpx.MockTransport`。
+
+证据构造方式：每次发送产生两份独立 digest——客户端在 `handle_async_request` 里算的，和接收端
+按 `Content-Length` 读满后自己算的。断言是这两份相等。只比对 `request.content` 无法排除
+「对象里有、socket 上没有」。
+
+**1. capture 点可行——方案 C 成立，不降级到方案 B。【已验证】**
+
+四种情况的客户端 digest 与服务端 digest 逐一相等：非流式（S1）、流式（S2）、`max_retries=2`
+下的三次重试逐次对应（S3a）、~8 MiB body（S4）。pre-send gate 抛出时服务端接收 0 次（S5），
+「先发了再补记」在结构上不可能。
+
+**2. 流式路径与非流式一致。【已验证】**
+
+`stream=True` 走同一个 `handle_async_request`，body 只多一个 `"stream":true` 字段，未见
+`stream_options` 之类的额外注入。捕获层不缓冲响应，SSE delta 仍分批到达（S2，`timing_dependent`）。
+**流式不需要第二套捕获路径**——本 ADR「问题」小节列的失真路径 #2（流式与非流式序列化路径不同）
+在 `chat.completions` 上不成立。
+
+**3. 无需自建反向代理。** 由第 1、2 条推出。方案 B 保留为降级预案，本 spike 未触发它。
+
+**4. 捕获实现有两条约束，不写就等于没捕。【已验证】**
+
+- **hash 的必须是 `request.stream` 会产出的字节，不能读 `request.content`。** httpx 把
+  `content=request.stream` 交给 httpcore，`_content` 只是缓存，两者可分叉：捕获后改写
+  `_content`，服务端收到的仍是原始 body（S6-T1）。正确顺序是 `aread()` → 用一个自建的
+  `AsyncByteStream` 把 stream 钉死在这份 bytes 上 → 算 digest → 过 gate → 放行。
+  钉定用 httpx 公开 ABC 实现，不依赖 `httpx._content` 私有符号。
+- **capture 必须是最内层 transport。** 在捕获层下方再插一层并做**等长**替换，两份 digest 分叉，
+  且 `Content-Length` 交叉校验拦不住（S6-T2/T3）。钉定挡不住下游替换——那只能靠架构约束。
+  故 `specs/s3-models-context.md` 的「该 transport 是唯一出网路径」需收紧为
+  **「CaptureTransport 之下只能是真实 HTTP transport，且 Core 不得自建 `AsyncClient`」**，
+  并加 architecture test。
+
+**5. `max_retries=0` 从「保守偏好」升级为有源码依据的结构必需。【已验证】**
+
+`openai/_base_client.py` 的重试循环内是 `self._build_request(options, retries_taken=n)`——每次
+重试**重新构造并重新序列化** request，并注入不同的 `x-stainless-retry-count`。实测一次
+`create()` 对应 3 次 wire 发送（S3a），SDK 调用层只看到 1 次。本次三次发送的 body 逐字节相同，
+即失真表现为「3 次发送 1 个 manifest」而非「manifest 绑错 body」；但这依赖 SDK 当前行为，
+`max_retries=0` 才能把「一次发送 = 一个 manifest」变成不依赖 SDK 实现的不变量（S3b 实测恰好 1 次）。
+
+**6. 逻辑请求与 wire body 不可互推。【已验证】** 调用方传入 key 顺序 `model, messages,
+temperature`，wire 上是 `messages, model, temperature`。字段集合相同，字节不同——调用层重新
+序列化算 digest 的所有变体就此出局。
+
+**7. 大 body 不切 chunked，但整份驻留内存。【已验证 + 需新增约束】** httpx 对 `json=` 一律先
+编码成 bytes，~8 MiB 与几十字节同一路径。代价是 body 全量在内存里，S3 需按 profile 设
+`max_wire_body_bytes`，超限走 `context_refusal`，不是发出去再说。
+
+**未验证边界**（不得据此对外声明）：只跑了 `chat.completions`；**Responses 协议与 anthropic SDK
+未跑**；同步 transport 路径未实测（httpx `read()`/`aread()` 源码对称属阅读推断）；multipart/files
+请求未覆盖（`aread()` 会把整份文件读进内存，S4 引入文件型能力时须重评）；loopback 为明文 HTTP，
+digest 绑定的是 **TLS 之前的 plaintext body**——这正是所需语义，但不等于验证了 TLS 之后的字节。
+
+#### 对 S3-T5 的最小实现骨架建议
+
+```text
+src/zhiwei/models/presend.py
+    PinnedBody(httpx.AsyncByteStream, httpx.SyncByteStream)  # 只用公开 ABC
+    WireCapture(frozen)      # body_sha256 / body_len / content_length / redacted headers / url
+    PreSendGate(Protocol)    # (WireCapture, bytes) -> None，抛出即拒发
+    CaptureTransport(httpx.AsyncBaseTransport)
+```
+
+`handle_async_request` 的顺序是硬约束，任一步换位都会让 digest 失去意义：
+
+```text
+1  body = await request.aread()          # materialize，此时序列化已全部完成
+2  request.stream = PinnedBody(body)     # 钉定：唯一可被 inner 读到的就是这份 bytes
+3  capture = WireCapture(...)            # digest + Content-Length 交叉校验 + header 脱敏
+4  gate(capture, body)                   # Context IR / inventory / classification / 目标 profile
+                                         # 任一不匹配或 digest 计算失败 → 抛出，inner 从未被调用
+5  persist manifest (digest 落 PG，脱敏 body 落 ObjectStore，永不落 auth header)
+6  return await self.inner.handle_async_request(request)
+```
+
+配套的三条结构约束：
+
+- provider SDK 一律 `max_retries=0`；重试由 Runtime 上移为显式新 Attempt + 新 ContextManifest。
+- 唯一的 `AsyncClient` 工厂在 `models/` 内，`transport=CaptureTransport(inner=AsyncHTTPTransport())`；
+  architecture test 断言 inner 是真实 HTTP transport 且 Core 无其他 client 构造点。
+- `ModelProfile.max_wire_body_bytes`，超限在 Context Compiler 阶段即 refusal。
+
+测试侧：S3 的 wire tamper corpus 可完全用 `httpx.MockTransport` 离线跑（S7 已验证），**不需要
+socket**；四类篡改各跑流式与非流式两遍。**等长篡改必须进 corpus**——长度对不上的篡改会在客户端
+被 h11 以 `LocalProtocolError: Too little data for declared Content-Length` 挡在发送之前（实测），
+根本走不到 digest 这一层，只测它等于没测。
+
 ---
 
 <a id="adr-002"></a>

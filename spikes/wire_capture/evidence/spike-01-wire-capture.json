@@ -1,0 +1,339 @@
+{
+  "spike": "spike-01 wire capture 保真性",
+  "adr": "ADR-001",
+  "verdict": "FEASIBLE",
+  "environment": {
+    "python": "3.11.15",
+    "httpx": "0.28.1",
+    "openai": "2.54.0",
+    "network": "loopback 127.0.0.1 only + in-process httpx.MockTransport"
+  },
+  "scenarios": [
+    {
+      "name": "S1-non-streaming",
+      "question": "非流式请求：transport 捕到的 body 是否等于服务端收到的 body？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "capture_count",
+          "ok": true,
+          "detail": "transport 捕获 1 次"
+        },
+        {
+          "id": "receipt_count",
+          "ok": true,
+          "detail": "服务端接收 1 次"
+        },
+        {
+          "id": "digest_match",
+          "ok": true,
+          "detail": "capture=sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3 server=sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3"
+        },
+        {
+          "id": "length_match",
+          "ok": true,
+          "detail": "88 vs 88"
+        },
+        {
+          "id": "content_length_consistent",
+          "ok": true,
+          "detail": "Content-Length=88 实际=88"
+        },
+        {
+          "id": "response_parsed",
+          "ok": true,
+          "detail": "SDK 正常解析响应"
+        },
+        {
+          "id": "authorization_redacted",
+          "ok": true,
+          "detail": "凭据头已在 capture 记录中脱敏"
+        }
+      ],
+      "facts": {
+        "caller_top_level_keys": [
+          "messages",
+          "model",
+          "temperature"
+        ],
+        "wire_top_level_keys": [
+          "messages",
+          "model",
+          "temperature"
+        ],
+        "caller_key_order": [
+          "model",
+          "messages",
+          "temperature"
+        ],
+        "wire_key_order": [
+          "messages",
+          "model",
+          "temperature"
+        ],
+        "keys_added_by_sdk": [],
+        "keys_dropped_by_sdk": [],
+        "wire_body_utf8": "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"model\":\"spike-model\",\"temperature\":0.0}",
+        "wire_body_sha256": "sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3",
+        "wire_body_len": 88,
+        "sdk_injected_headers": [
+          "user-agent",
+          "x-stainless-arch",
+          "x-stainless-async",
+          "x-stainless-lang",
+          "x-stainless-os",
+          "x-stainless-package-version",
+          "x-stainless-read-timeout",
+          "x-stainless-retry-count",
+          "x-stainless-runtime",
+          "x-stainless-runtime-version"
+        ]
+      }
+    },
+    {
+      "name": "S2-streaming",
+      "question": "stream=True：捕获点、digest 与增量下发是否与非流式一致？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "capture_count",
+          "ok": true,
+          "detail": "捕获 1 次"
+        },
+        {
+          "id": "digest_match",
+          "ok": true,
+          "detail": "sha256:0f20f836e54c7c5bb208a77a1c5bf76e521d967c8c4a60bf817c8aff4523f9e9 == sha256:0f20f836e54c7c5bb208a77a1c5bf76e521d967c8c4a60bf817c8aff4523f9e9"
+        },
+        {
+          "id": "stream_flag_in_captured_body",
+          "ok": true,
+          "detail": "捕获到的 body 里 \"stream\"=True（从 bytes 反解，非从调用参数取）"
+        },
+        {
+          "id": "server_saw_stream",
+          "ok": true,
+          "detail": "服务端确认按 SSE 分块返回"
+        },
+        {
+          "id": "deltas_received",
+          "ok": true,
+          "detail": "收到 deltas=['d0', 'd1', 'd2', 'd3']"
+        },
+        {
+          "id": "response_not_buffered",
+          "ok": true,
+          "detail": "首末 delta 间隔 0.148s > 0.08s，说明 capture transport 未缓冲响应",
+          "timing_dependent": true
+        },
+        {
+          "id": "same_capture_point_as_non_stream",
+          "ok": true,
+          "detail": "POST http://127.0.0.1:57776/v1/chat/completions"
+        }
+      ],
+      "facts": {
+        "delta_arrival_offsets_s": [
+          0.0067,
+          0.055,
+          0.1047,
+          0.1549
+        ],
+        "wire_body_utf8": "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"model\":\"spike-model\",\"stream\":true,\"temperature\":0.0}",
+        "wire_body_sha256": "sha256:0f20f836e54c7c5bb208a77a1c5bf76e521d967c8c4a60bf817c8aff4523f9e9"
+      }
+    },
+    {
+      "name": "S3a-sdk-retries-enabled",
+      "question": "max_retries=2 且服务端返回 429：一次逻辑调用对应几次实际发送？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "sdk_layer_sees_one_call",
+          "ok": true,
+          "detail": "SDK 调用层只看到 1 次 create()"
+        },
+        {
+          "id": "transport_sees_three",
+          "ok": true,
+          "detail": "transport 捕获 3 次"
+        },
+        {
+          "id": "server_receives_three",
+          "ok": true,
+          "detail": "服务端接收 3 次"
+        },
+        {
+          "id": "per_attempt_digest_match",
+          "ok": true,
+          "detail": "逐次 capture digest 与服务端 digest 一一对应"
+        },
+        {
+          "id": "retry_count_header_increments",
+          "ok": true,
+          "detail": "x-stainless-retry-count=['0', '1', '2']——每次重试是重新构造的 request"
+        },
+        {
+          "id": "succeeded_on_third",
+          "ok": true,
+          "detail": "第三次返回 200"
+        }
+      ],
+      "facts": {
+        "sdk_call_count": 1,
+        "wire_send_count": 3,
+        "bodies_identical_across_attempts": true,
+        "body_digests": [
+          "sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3",
+          "sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3",
+          "sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3"
+        ],
+        "retry_count_headers": [
+          "0",
+          "1",
+          "2"
+        ],
+        "note": "openai/_base_client.py 在重试循环内调用 self._build_request(options, retries_taken=n)，即每次重试重新构造并重新序列化 request；SDK 调用层 hook 只能看到 1 次逻辑调用。"
+      }
+    },
+    {
+      "name": "S3b-max-retries-0",
+      "question": "max_retries=0：是否恰好一次发送、错误是否直接上抛？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "exactly_one_capture",
+          "ok": true,
+          "detail": "捕获 1 次"
+        },
+        {
+          "id": "exactly_one_receipt",
+          "ok": true,
+          "detail": "服务端接收 1 次"
+        },
+        {
+          "id": "error_surfaced",
+          "ok": true,
+          "detail": "上抛 RateLimitError"
+        },
+        {
+          "id": "retry_header_zero",
+          "ok": true,
+          "detail": "x-stainless-retry-count=0"
+        }
+      ],
+      "facts": {
+        "conclusion": "max_retries=0 时「一次逻辑调用 = 一次 wire 发送」成立，可作为结构不变量。"
+      }
+    },
+    {
+      "name": "S4-large-body",
+      "question": "~8MiB body：是否仍能完整捕获？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "digest_match",
+          "ok": true,
+          "detail": "sha256:dbca14aad56bb4528b348c0d101434a7a91703def1051c9476e4a1e47e261011 == sha256:dbca14aad56bb4528b348c0d101434a7a91703def1051c9476e4a1e47e261011"
+        },
+        {
+          "id": "length_match",
+          "ok": true,
+          "detail": "8388691 == 8388691"
+        },
+        {
+          "id": "body_larger_than_payload",
+          "ok": true,
+          "detail": "body=8388691B"
+        },
+        {
+          "id": "content_length_used_not_chunked",
+          "ok": true,
+          "detail": "Content-Length=8388691，Transfer-Encoding=None"
+        }
+      ],
+      "facts": {
+        "body_len": 8388691,
+        "elapsed_s": 0.112,
+        "note": "httpx 对 json= 一律先编码为 bytes 再包 ByteStream，不因体积切换到 chunked，所以大 body 与小 body 走同一条捕获路径。"
+      }
+    },
+    {
+      "name": "S5-fail-closed",
+      "question": "pre-send gate 拒绝时，请求是否真的没出去？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "gate_invoked",
+          "ok": true,
+          "detail": "gate 被调用 1 次"
+        },
+        {
+          "id": "nothing_reached_server",
+          "ok": true,
+          "detail": "服务端接收 0 次"
+        },
+        {
+          "id": "no_success_capture_recorded",
+          "ok": true,
+          "detail": "captures 列表为空——不存在无门禁的发送记录"
+        },
+        {
+          "id": "error_surfaced",
+          "ok": true,
+          "detail": "上抛 APIConnectionError"
+        }
+      ],
+      "facts": {
+        "exception_type_seen_by_caller": "APIConnectionError",
+        "note": "gate 抛出时 inner transport 从未被调用，'先发了再补记' 在结构上不可能。"
+      }
+    },
+    {
+      "name": "S6-capture-point-integrity",
+      "question": "digest 与实际 wire bytes 会在什么条件下分叉？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "T1_content_mutation_never_reaches_wire",
+          "ok": true,
+          "detail": "改写 request._content 后服务端仍收到原始 body（sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3）——.content 不是 wire 真相，request.stream 才是"
+        },
+        {
+          "id": "T2_stream_swap_below_capture_diverges",
+          "ok": true,
+          "detail": "capture=sha256:f938b7c751486f7218d68cbbbb4aaae2766aed8a9a7c1ec04cb71a36c90b48a3 但服务端=sha256:3af4f176942926b39126ec257908049ac9abef7630675fc30988f6ab68eabcb9，长度相同——捕获层下面若还有一层，digest 会指向一份从未发送的 body，且 Content-Length 交叉校验也拦不住"
+        },
+        {
+          "id": "T3_pinning_alone_does_not_defend_lower_layer",
+          "ok": true,
+          "detail": "pin 不能阻止捕获层下方的替换——保证只能来自架构约束：capture 必须是最内层 transport"
+        }
+      ],
+      "facts": {
+        "conclusion": "pin 解决的是 request._content 与 request.stream 分叉、以及不可重放 stream 两个问题；「捕到的就是发出去的」还额外依赖一条架构不变量：CaptureTransport 之下不得再有任何 wrapper。",
+        "required_architecture_test": "断言构造出的 httpx.AsyncClient，其 transport 链最内层是真实 HTTP transport，CaptureTransport 紧邻其上；且 Core 不允许任何模块自建 AsyncClient。"
+      }
+    },
+    {
+      "name": "S7-mock-transport",
+      "question": "同一捕获层能否在无 socket 的 MockTransport 下工作？",
+      "passed": true,
+      "checks": [
+        {
+          "id": "capture_count",
+          "ok": true,
+          "detail": "捕获 1 次"
+        },
+        {
+          "id": "digest_match_inner_view",
+          "ok": true,
+          "detail": "inner transport 读到的 bytes 与 capture digest 一致"
+        }
+      ],
+      "facts": {
+        "note": "S3 的 wire tamper corpus 可以完全离线运行，不需要 socket。"
+      }
+    }
+  ]
+}
