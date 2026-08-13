@@ -50,10 +50,16 @@ REQUIRED_TABLES = {
     "eval_runs",
     "eval_samples",
     "eval_suite_versions",
+    "external_identities",
+    "group_members",
+    "groups",
     "idempotency_records",
+    "memberships",
     "organizations",
     "outbox",
+    "principals",
     "runs",
+    "workspace_memberships",
     "workspaces",
 }
 WORKSPACE_TABLES = {
@@ -67,8 +73,16 @@ WORKSPACE_TABLES = {
     "eval_samples",
     "eval_suite_versions",
     "runs",
+    "workspace_memberships",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
+ORG_SCOPED_TABLES = {"group_members", "groups", "memberships"}
+# Principal / ExternalIdentity 是跨 Organization 的 identity-global 记录（DATA_MODEL §2：
+# 首次 callback 时用户可能尚未创建/加入组织，同一 Principal 也可属于多个组织），
+# 不能挂 organization_id，也不能用 org GUC 做 RLS——它们不是租户表。
+IDENTITY_GLOBAL_TABLES = {"external_identities", "principals"}
+TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
+DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships"}
 MUTABLE_COLUMNS = {
     "agent_definitions": {"lifecycle", "name"},
     "canonical_projections": {
@@ -91,6 +105,7 @@ MUTABLE_COLUMNS = {
         "lease_expires_at",
         "status",
     },
+    "principals": {"status"},
     "runs": {"status", "updated_at"},
     "workspaces": {"budget_policy", "classification_ceiling", "name"},
 }
@@ -211,8 +226,13 @@ async def test_application_role_is_unprivileged_and_owns_no_tenant_tables(
         assert {row["relname"] for row in rows} == REQUIRED_TABLES
         for row in rows:
             assert row["owner"] != "zhiwei_app"
-            assert row["relrowsecurity"] is True
-            assert row["relforcerowsecurity"] is True
+            if row["relname"] in TENANT_RLS_TABLES:
+                assert row["relrowsecurity"] is True
+                assert row["relforcerowsecurity"] is True
+            else:
+                assert row["relname"] in IDENTITY_GLOBAL_TABLES
+                assert row["relrowsecurity"] is False
+                assert row["relforcerowsecurity"] is False
 
         for table in REQUIRED_TABLES:
             assert await connection.fetchval(
@@ -224,9 +244,9 @@ async def test_application_role_is_unprivileged_and_owns_no_tenant_tables(
             assert not await connection.fetchval(
                 "SELECT has_table_privilege('zhiwei_app', $1, 'UPDATE')", table
             )
-            assert not await connection.fetchval(
+            assert await connection.fetchval(
                 "SELECT has_table_privilege('zhiwei_app', $1, 'DELETE')", table
-            )
+            ) is (table in DELETE_GRANTED_TABLES)
             columns = await connection.fetch(
                 """
                 SELECT column_name
@@ -265,10 +285,10 @@ async def test_every_tenant_table_has_expected_default_deny_policy(
             JOIN pg_catalog.pg_namespace AS n ON n.oid = c.relnamespace
             WHERE n.nspname = 'public' AND c.relname = ANY($1::text[])
             """,
-            sorted(REQUIRED_TABLES),
+            sorted(TENANT_RLS_TABLES),
         )
-        assert {row["table_name"] for row in rows} == REQUIRED_TABLES
-        assert len(rows) == len(REQUIRED_TABLES)
+        assert {row["table_name"] for row in rows} == TENANT_RLS_TABLES
+        assert len(rows) == len(TENANT_RLS_TABLES)
         for row in rows:
             table = row["table_name"]
             using_expression = row["using_expression"]
@@ -287,6 +307,8 @@ async def test_every_tenant_table_has_expected_default_deny_policy(
             elif table in OPTIONAL_WORKSPACE_TABLES:
                 assert "zhiwei.workspace_id" in using_expression
                 assert "workspace_id IS NULL" in using_expression
+            elif table in ORG_SCOPED_TABLES:
+                assert "zhiwei.workspace_id" not in using_expression
             else:  # pragma: no cover - sets above must remain exhaustive
                 raise AssertionError(f"unclassified RLS table: {table}")
     finally:
@@ -345,7 +367,7 @@ async def test_missing_database_tenant_context_denies_every_table(
 
     connection = await asyncpg.connect(APP_DSN)
     try:
-        for table in sorted(REQUIRED_TABLES):
+        for table in sorted(TENANT_RLS_TABLES):
             assert await connection.fetchval(f'SELECT count(*) FROM "{table}"') == 0
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await connection.execute(
@@ -702,6 +724,53 @@ async def test_idempotency_scope_includes_workspace_and_handles_concurrency(
         assert sum(isinstance(result, IdempotencyConflict) for result in conflicting) == 1
     finally:
         await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_identity_global_tables_have_no_tenant_scope(
+    migrated_database: set[str],
+) -> None:
+    """Principal / ExternalIdentity 是跨 Organization 的身份记录。
+
+    DATA_MODEL §2：首次 OIDC callback 时用户可能尚未创建/加入组织，同一 Principal 也可属于
+    多个组织——它们不能挂 organization_id，也不能用 org GUC 做 RLS（否则首登即被 FORCE RLS
+    拦死）。租户边界由 Membership 与 repository/API 层负责，不在这里伪造租户列。
+    """
+    assert migrated_database
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        for table in sorted(IDENTITY_GLOBAL_TABLES):
+            assert await connection.fetchval(
+                "SELECT relrowsecurity FROM pg_catalog.pg_class "
+                "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
+                table,
+            ) is False
+            assert await connection.fetchval(
+                "SELECT relforcerowsecurity FROM pg_catalog.pg_class "
+                "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
+                table,
+            ) is False
+            assert await connection.fetchval(
+                "SELECT pg_get_userbyid(relowner) FROM pg_catalog.pg_class "
+                "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
+                table,
+            ) != "zhiwei_app"
+            tenant_columns = {
+                row["column_name"]
+                for row in await connection.fetch(
+                    """
+                    SELECT column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = $1
+                      AND column_name IN ('organization_id', 'workspace_id')
+                    """,
+                    table,
+                )
+            }
+            assert tenant_columns == set(), f"{table} 不得含租户列: {tenant_columns}"
+    finally:
+        await connection.close()
 
 
 def test_test_compose_does_not_expose_or_start_a_model_service() -> None:
