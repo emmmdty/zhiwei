@@ -1,0 +1,35 @@
+schema_version: 1
+endpoint_id: opencode-go
+policy: official_current_list_intersect_live_models
+source:
+  url: https://opencode.ai/docs/go/
+  fetched_at: 2026-08-12
+  sha256: b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+
+models:
+  - {id: grok-4.5, transport: openai_chat, path: /chat/completions}
+  - {id: gpt-5.6-luna, transport: openai_responses, path: /responses}
+  - {id: glm-5.2, transport: openai_chat, path: /chat/completions}
+  - {id: glm-5.1, transport: openai_chat, path: /chat/completions}
+  - {id: kimi-k3, transport: openai_chat, path: /chat/completions}
+  - {id: kimi-k2.7-code, transport: openai_chat, path: /chat/completions}
+  - {id: kimi-k2.6, transport: openai_chat, path: /chat/completions}
+  - {id: mimo-v2.5, transport: openai_chat, path: /chat/completions}
+  - {id: mimo-v2.5-pro, transport: openai_chat, path: /chat/completions}
+  - {id: minimax-m3, transport: anthropic_messages, path: /messages}
+  - {id: minimax-m2.7, transport: anthropic_messages, path: /messages}
+  - {id: qwen3.8-max, transport: anthropic_messages, path: /messages}
+  - {id: qwen3.7-max, transport: anthropic_messages, path: /messages}
+  - {id: qwen3.7-plus, transport: anthropic_messages, path: /messages}
+  - {id: qwen3.6-plus, transport: anthropic_messages, path: /messages}
+  - {id: deepseek-v4-pro, transport: openai_chat, path: /chat/completions}
+  - {id: deepseek-v4-flash, transport: openai_chat, path: /chat/completions}
+  - {id: hy3, transport: openai_chat, path: /chat/completions}
+
+blocked_document_conflicts:
+  - id: minimax-m2.5
+    reason: Listed in the endpoint/price table but absent from the official current-list section.
+
+discovery_policy:
+  discovered_only_default: disabled
+  automatically_expand_allowlist: false

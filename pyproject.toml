@@ -1,0 +1,95 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zhiwei"
+version = "0.1.0"
+description = "知微 ZhiWei - 企业 Agent Core：可验证、可治理的多租户 Agent 应用平台"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+keywords = ["agent-platform", "agent-core", "evidence", "canonical-context", "mcp", "multi-tenant"]
+
+dependencies = [
+    "fastapi>=0.115.0,<1.0.0",
+    "uvicorn[standard]>=0.30.0,<1.0.0",
+    "pydantic>=2.7.0",
+    "pydantic-settings>=2.0.0",
+    "sqlalchemy>=2.0.0",
+    "httpx>=0.28.1",
+    "openai>=2.0.0,<3.0.0",
+    "anthropic>=0.70.0,<1.0.0",
+    "sqlglot>=28.0.0,<29.0.0",
+    "typer>=0.20.0,<1.0.0",
+    "python-dotenv>=1.1.0,<2.0.0",
+    "rfc8785>=0.1.4,<1.0.0",
+    "filelock>=3.20.0,<4.0.0",
+    "numpy>=2.2.0,<3.0.0",
+    "scipy>=1.15.0,<2.0.0",
+    "loguru>=0.7.3",
+    "pyyaml>=6.0.3",
+    "jsonschema>=4.26.0",
+    "openpyxl>=3.1.0",
+    "pandas>=2.2.0",
+    "pdfplumber>=0.11.0",
+]
+
+[project.optional-dependencies]
+# 基准语料构建（evals/scripts/build_corpus.py）：生成 XLSX 与文本型 PDF
+evals = ["openpyxl>=3.1.0", "reportlab>=4.0.0"]
+retrieval = [
+    "rank-bm25>=0.2.2",
+    "sentence-transformers>=5.0.0,<6.0.0",
+]
+dev = [
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.2.0",
+    "pytest-httpx>=0.36.2",
+    "pytest-cov>=7.0.0",
+    "ruff>=0.14.0",
+    "pyright>=1.1.400",
+    "hypothesis>=6.100.0",
+]
+
+[project.scripts]
+zhiwei = "zhiwei.cli.main:app"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["zhiwei*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# 显式声明规则集，不依赖 ruff 的默认值——默认值会随版本变化，
+# 让"昨天还绿的 CI 今天变红"成为常态。
+select = ["E", "F", "I", "B", "UP", "RUF", "ISC", "C4", "SIM"]
+# E402（import 不在文件顶部）保持启用：evals/scripts 需要先改 sys.path 再 import，
+# 那几处用显式 `# noqa: E402` 标注，属于有意为之而非疏漏。
+ignore = [
+    "E501",                        # 行长由 line-length 统一控制
+    # RUF001-003 把中文全角标点（，。：「」）判为"易混淆字符"。
+    # 本项目的文档、注释、题面均为中文，全角标点是正确写法而非笔误——全项目关闭。
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"evals/scripts/data/*.py" = ["E501"]  # 基础数据表为对齐可读性保留长行
+
+[tool.pyright]
+# evals/scripts 是独立可执行的脚本目录（非 src 包），需要显式告知静态检查器搜索路径
+extraPaths = ["evals/scripts", "src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "live: 需要真实 LLM/网络（默认不跑）",
+    "slow: 需要模型下载或长耗时",
+]
+addopts = "-m 'not live and not slow'"

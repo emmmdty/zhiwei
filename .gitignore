@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Env
+.env
+.env.local
+*:Zone.Identifier
+
+# Gate artifacts：阶段 Gate 报告默认是本地产物。
+# release-safe 的 artifact 由发布流程显式加入，不靠这条规则放行。
+/artifacts/
+
+# Runtime data
+# 注意：必须根锚定（前导 /），否则 `data/` 会匹配任意层级的同名目录，
+# 把 evals/scripts/data/（基础数据模块源码）一并排除出仓库。
+/workspace/
+/data/
+*.db
+*.sqlite3
+
+# 基准资产必须入库（评测可复现性的前提）——以上忽略规则的例外
+!evals/**/*.db
+!evals/**/*.sqlite3
+evals/reports/*.tmp/
+/evals/runs/
+/evals/attestations/private/
+/evals/request-artifacts/
+/config/compliance/billing-guard.json
+
+# Only release-checker output under evals/public/ is eligible for publication.
+# Raw runs, requests, and operator billing assertions stay local.
+
+# Node
+node_modules/
+apps/web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp

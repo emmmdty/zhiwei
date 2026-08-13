@@ -1,0 +1,234 @@
+schema_version: 1
+endpoint_id: opencode-go
+profile_digest_policy: sha256_of_resolved_profile_without_profile_digest
+defaults: &defaults
+  display_id: null
+  endpoint_id: opencode-go
+  transport: null
+  request_path: null
+  context_window: null
+  max_input_tokens: null
+  max_output_tokens: null
+  min_output_reserve: 4096
+  modalities: [text]
+  structured_output: null
+  tool_choice: null
+  reasoning_field: null
+  reasoning_roundtrip: in_flight_only
+  stream_usage: null
+  cache_usage: null
+  pricing: null
+  data_retention: null
+  catalog_status: allowlisted
+  verification_level: fixture_tested
+  profile_source:
+    url: https://opencode.ai/docs/go/
+    fetched_at: 2026-08-12
+    sha256: b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+  profile_digest: null
+
+profiles:
+  - <<: *defaults
+    stable_id: grok-4.5
+    display_id: grok-4.5
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: grok-4.5}
+
+  - <<: *defaults
+    stable_id: gpt-5.6-luna
+    display_id: gpt-5.6-luna
+    transport: openai_responses
+    request_path: /responses
+    context_window: 1100000
+    max_output_tokens: 128000
+    modalities: [text, image, pdf]
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: gpt-5.6-luna, basis: first_party_catalog_proxy}
+    profile_source: {url: https://opencode.ai/data/openai/gpt-5.6-luna, fetched_at: 2026-08-12, sha256: 20b00c5071ae340f7d7828cb4160156180b7fb7dd712c33e64047e44d46fc4b1}
+
+  - <<: *defaults
+    stable_id: glm-5.2
+    display_id: glm-5.2
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: glm-5.2}
+
+  - <<: *defaults
+    stable_id: glm-5.1
+    display_id: glm-5.1
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: glm-5.1}
+
+  - <<: *defaults
+    stable_id: kimi-k3
+    display_id: kimi-k3
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: kimi-k3}
+
+  - <<: *defaults
+    stable_id: kimi-k2.7-code
+    display_id: kimi-k2.7-code
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: kimi-k2.7-code}
+
+  - <<: *defaults
+    stable_id: kimi-k2.6
+    display_id: kimi-k2.6
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: kimi-k2.6}
+
+  - <<: *defaults
+    stable_id: mimo-v2.5
+    display_id: mimo-v2.5
+    transport: openai_chat
+    request_path: /chat/completions
+    context_window: 1000000
+    max_output_tokens: 131000
+    modalities: [text, image, audio, video]
+    structured_output: json_schema
+    tool_choice: forced
+    reasoning_field: reasoning
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: mimo-v2.5}
+    verification_level: transport_verified
+    profile_source: {url: https://opencode.ai/data/xiaomi/mimo-v2.5, fetched_at: 2026-08-12, sha256: c88730222cd1d46ab72cd3fdee5ad3909e8b7e6d46c8b32542df4602f67d99a3}
+
+  - <<: *defaults
+    stable_id: mimo-v2.5-pro
+    display_id: mimo-v2.5-pro
+    transport: openai_chat
+    request_path: /chat/completions
+    context_window: 1000000
+    max_output_tokens: 131000
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: mimo-v2.5-pro}
+    profile_source: {url: https://opencode.ai/data/xiaomi/mimo-v2-5-pro, fetched_at: 2026-08-12, sha256: d88462fff8e39ad67a583ccbbc5b50177ee980952f28d2a8984ce69939ba842d}
+
+  - <<: *defaults
+    stable_id: minimax-m3
+    display_id: minimax-m3
+    transport: anthropic_messages
+    request_path: /messages
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: minimax-m3}
+
+  - <<: *defaults
+    stable_id: minimax-m2.7
+    display_id: minimax-m2.7
+    transport: anthropic_messages
+    request_path: /messages
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: minimax-m2.7}
+
+  - <<: *defaults
+    stable_id: qwen3.8-max
+    display_id: qwen3.8-max
+    transport: anthropic_messages
+    request_path: /messages
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: qwen3.8-max}
+
+  - <<: *defaults
+    stable_id: qwen3.7-max
+    display_id: qwen3.7-max
+    transport: anthropic_messages
+    request_path: /messages
+    context_window: 1000000
+    max_output_tokens: 66000
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: qwen3.7-max}
+    profile_source: {url: https://opencode.ai/data/alibaba/qwen3.7-max, fetched_at: 2026-08-12, sha256: 0ae870ae977dfa7bc136360fe61cdfdde6eef4cec7261830627e649600b75c15}
+
+  - <<: *defaults
+    stable_id: qwen3.7-plus
+    display_id: qwen3.7-plus
+    transport: anthropic_messages
+    request_path: /messages
+    context_window: 1000000
+    max_output_tokens: 64000
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: qwen3.7-plus}
+    profile_source: {url: https://opencode.ai/data/qwen/qwen3-7-plus, fetched_at: 2026-08-12, sha256: 94a6f8ebc7ad3df5884280a5ad53ab0cb77ff7c31f04cf2929399f7537306607}
+
+  - <<: *defaults
+    stable_id: qwen3.6-plus
+    display_id: qwen3.6-plus
+    transport: anthropic_messages
+    request_path: /messages
+    context_window: 1000000
+    max_output_tokens: 66000
+    modalities: [text, image, video]
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: qwen3.6-plus}
+    profile_source: {url: https://opencode.ai/data/qwen/qwen3-6-plus, fetched_at: 2026-08-12, sha256: 1ce77e65955391c676078c3f42f30608e3e597464e314dd06b6d44cd10a8bf11}
+
+  - <<: *defaults
+    stable_id: deepseek-v4-pro
+    display_id: deepseek-v4-pro
+    transport: openai_chat
+    request_path: /chat/completions
+    context_window: 1000000
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: deepseek-v4-pro}
+
+  - <<: *defaults
+    stable_id: deepseek-v4-flash
+    display_id: deepseek-v4-flash
+    transport: openai_chat
+    request_path: /chat/completions
+    context_window: 1000000
+    max_input_tokens: 606784
+    max_output_tokens: 393216
+    structured_output: json_object
+    tool_choice: auto
+    reasoning_field: reasoning_content
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: deepseek-v4-flash}
+    verification_level: transport_verified
+
+  - <<: *defaults
+    stable_id: hy3
+    display_id: hy3
+    transport: openai_chat
+    request_path: /chat/completions
+    pricing: {artifact: config/pricing/opencode-go-2026-08-12.yaml, key: hy3}
+
+# 能力解析顺序（消除 probe 回写与 profile_digest 的循环依赖）：
+#
+#   effective_capability = static_profile 字段 ∪ 该 model 最新有效 attestation 的 probed 字段
+#
+# 本文件是**静态且不可变**的来源快照，probe 结果一律只落进 capability attestation，
+# 绝不回写这里。否则每次 probe 都会改变 profile_digest，而 attestation 又绑定
+# profile_digest，刚生成的 attestation 会立刻自我失效。
+capability_resolution:
+  order: [static_profile, latest_valid_attestation]
+  attestation_wins_for_probed_fields: true
+  probe_writes_back_into_this_file: false
+  profile_digest_covers: static_profile_only
+  gate_rule: >-
+    Gate 对所需能力先查 effective_capability；仍为 null 时失败关闭。静态 profile
+    为 null 但有 7 日内 attestation 覆盖该字段时，视为已解析。
+
+formal_qualification:
+  required_models: [deepseek-v4-flash, qwen3.6-plus, qwen3.7-plus, qwen3.7-max, gpt-5.6-luna]
+  # 这里必须列全"正式 live 前仍未解析、且被 FactQA/Handoff 实际需要"的字段。
+  # v1 只列了 max_input_tokens，漏掉了 structured_output / tool_choice——
+  # 而 B0 与 A6 三档全是 Qwen，planner 必须读 structured_output，
+  # 结果是 14 配置 live campaign 会在毫无预警的情况下整体失败关闭。
+  unresolved_before_s1_live:
+    - gpt-5.6-luna.max_input_tokens
+    - gpt-5.6-luna.structured_output
+    - gpt-5.6-luna.tool_choice
+    - gpt-5.6-luna.reasoning_field
+    - qwen3.6-plus.max_input_tokens
+    - qwen3.6-plus.structured_output
+    - qwen3.6-plus.tool_choice
+    - qwen3.6-plus.reasoning_field
+    - qwen3.7-plus.max_input_tokens
+    - qwen3.7-plus.structured_output
+    - qwen3.7-plus.tool_choice
+    - qwen3.7-plus.reasoning_field
+    - qwen3.7-max.max_input_tokens
+    - qwen3.7-max.structured_output
+    - qwen3.7-max.tool_choice
+    - qwen3.7-max.reasoning_field
+  required_capabilities_by_suite:
+    factqa: [structured_output, max_input_tokens, max_output_tokens]
+    handoff: [structured_output, max_input_tokens, max_output_tokens, reasoning_field]
+  policy: >-
+    Probe these fields into a capability attestation before formal live use; never infer
+    them from context minus output, and never write probe results back into this file.

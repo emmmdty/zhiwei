@@ -1,0 +1,50 @@
+schema_version: 1
+endpoint_id: opencode-go
+currency: USD
+source:
+  url: https://opencode.ai/docs/go/
+  reviewed_at: 2026-08-12
+  review_due_at: 2026-09-12
+  sha256: b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+
+published_plan_limits:
+  rolling_5_hour: 12.0
+  rolling_week: 30.0
+  rolling_month: 60.0
+  note: Shared with the owner's other OpenCode Go usage and subject to provider changes.
+
+server_side_guard:
+  use_balance_must_be_off: true
+  observable_via_api: false
+  operator_assertion_ttl_hours: 24
+
+local_policy:
+  maximum_single_run_quota_value: 10.0
+  stop_scheduling_fraction: 0.8
+  default_concurrency: 1
+  count_all_attempts_and_retries: true
+  unknown_price_action: deny_formal_run
+  missing_usage_action: deny_formal_run
+  exhausted_allowance_action: partial_then_resume
+  paid_fallback_action: deny
+  refresh_preflight_on: [probe, new_run, resume]
+
+# 单 run 上限只挡住"一次跑太多"，挡不住"连着跑好几个"。S4 注册总额 $43.02、
+# 15 个 FactQA child + 3 个 handoff child + BIRD + naked baseline，若不看窗口，
+# 三个 $4.38 的 child 排进同一个 5 小时窗口就是 $13.13 > $12，服务端会在中途断流，
+# 把本可一次跑完的 child 打成 partial。
+rolling_window_ledger:
+  enabled: true
+  windows:
+    rolling_5_hour: 12.0
+    rolling_week: 30.0
+    rolling_month: 60.0
+  headroom_fraction: 0.8
+  # 启动前用 worst-case 预估：若 (本地窗口已用 + 本 child 最坏值) > 窗口额度 x 0.8，
+  # 则拒绝启动并给出下一个可用窗口时间，而不是启动后中途撞墙。
+  precheck_action: defer_child_to_next_window
+  ledger_path: evals/runs/.usage-ledger.jsonl
+  scope_note: >-
+    本台账只记录本项目自己发出的请求。它无法观察用户在其他 OpenCode 会话中的
+    共享消耗，因此是保守下界而非 provider 真值；最终保护仍是控制台 Use balance=off。
+  on_ledger_missing_or_corrupt: deny_formal_run

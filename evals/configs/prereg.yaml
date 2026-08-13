@@ -1,0 +1,211 @@
+schema_version: 2
+registered_at: 2026-08-12
+revised_at: 2026-08-12
+revision_note: >-
+  v2 修正三处会直接改变主结论的注册错误：(1) 执行单位与分析单位混写，导致
+  campaign cell 数 1680 与 partition key independence_unit_id 不自洽；(2)
+  confirmatory 分区名 "perturbed" 与题行同名布尔字段冲突，机读会把分母缩成 24；
+  (3) 裸模型污染诊断既无预算也无 suite，却被写成确认性总体的准入条件。
+
+# ---------------------------------------------------------------- 数据集口径
+dataset:
+  # 发布语料 = base snapshot 经声明式 transform 后的 perturbed snapshot。
+  # 仓库里不存在第二份 original snapshot 产物，因此不存在"选 perturbed 分区"这件事。
+  shipped_snapshot_is_perturbed: true
+  original_snapshot_materialized: false
+  registered_sample_rows: 120          # 执行单位：一行题 = 一次 solver 调用
+  registered_independence_units: 112   # 分析单位：108 单轮 + 4 条 F5 chain
+  unit_id_field: independence_unit_id
+  unit_kind_field: unit_kind
+  template_id_field: template_id
+  # 题行上的 targets_perturbed_field 是"这道题问的字段是否被扰动过"的题目属性，
+  # 只在 F4（24 题）为真。它**不是**数据集分区，禁止用它筛确认性样本。
+  row_attribute_not_a_partition: targets_perturbed_field
+
+factqa:
+  confirmatory_population: all_registered_independence_units
+  confirmatory_unit_count: 112
+  primary_outcome: independence_unit_all_correct
+  f5_chain_aggregation: all_scored_turns_correct
+  # 明确禁止按模型表现事后剔题：那是 post-hoc selection，会让总体依赖被比较的系统。
+  post_hoc_unit_exclusion: forbidden
+  paired_bootstrap:
+    resamples: 10000
+    seed: 20260812
+    confidence_level: 0.95
+  test: mcnemar_exact_two_sided
+  multiplicity:
+    method: holm
+    alpha: 0.05
+    comparisons: [A1-0:B0, A2-0:B0, A3-1:B0, A4-0:B0, A5-0:B0, A6-0:B0]
+  contamination_diagnostic:
+    source_run: naked_baseline          # 见下方 naked_baseline 段
+    reporting: disclosure_only          # 披露污染风险，不改变确认性分母
+    cluster_key: template_id
+    registered_template_count: 57
+    interval: cluster_bootstrap
+    optional_test: cluster_sign_flip
+    forbid_mcnemar: true
+  live_budget_per_config:
+    registered_sample_count: 120
+    max_model_attempts_per_sample: 3
+    max_input_tokens_per_attempt: 8192
+    max_output_tokens_per_attempt: 512
+    cache_assumption: no_cache_credit
+    retry_attempts_included_in_attempt_ceiling: true
+    worst_case_quota_value_usd_by_tier:
+      small: 2.02752
+      medium: 1.47456
+      large: 8.7552
+  campaign_sharding:
+    manifest_required: true
+    # 分片按**执行单位**（题行）做，因为一行题就是一次调用；配对统计再按
+    # independence_unit_id 聚合。两个数不同是正常的，混用才是错误。
+    partition_key: [config_id, sample_id]
+    registered_execution_cell_count: 1680     # 14 configs x 120 rows
+    analysis_cell_count: 1568                 # 14 configs x 112 units
+    child_runs:
+      one_full_120_row_child_for: [B0, A1-0, A1-1, A1-3, A2-0, A2-2, A3-1, A4-0, A4-1, A5-0, A5-2, A5-3, A6-0]
+      split_config: A6-2
+      split_rule: sample_id_lexicographic_halves
+      split_sizes: [60, 60]
+      # A6-2 拆分必须整条 chain 落在同一个 child，否则 chain 的确认性结果跨 run 拼接。
+      keep_chain_rows_in_same_child: true
+    expected_child_run_count: 15
+    maximum_child_worst_case_quota_value_usd: 4.3776
+    maximum_child_scheduling_threshold_usd: 8.0
+    child_quota_cap_usd: 10.0
+    require_exactly_once_execution_cells: true
+    require_all_children_sealed_before_analysis: true
+    child_failure_action: resume_same_child
+
+# ---------------------------------------------------------------- 污染诊断
+naked_baseline:
+  purpose: >-
+    测量"不给数据、只给题面"时模型能凭世界知识答对多少，用于披露语料污染风险。
+    它是随报告发布的 diagnostic，不是确认性总体的过滤器。
+  solver: naked
+  model: qwen3.7-plus
+  registered_sample_rows: 120
+  replicates: 3
+  cluster_key: template_id
+  interval: cluster_bootstrap
+  optional_test: cluster_sign_flip
+  reported_buckets: [world_knowledge_stable, data_dependent, mixed]
+  bucket_storage: sealed_run_artifact_joined_by_question_id
+  # 关键：分桶结果留在 sealed run 里，按 question_id join，绝不回写进已锁定的题集资产。
+  forbid_write_back_into_locked_assets: true
+  live_budget:
+    max_model_attempts_per_sample: 2
+    max_input_tokens_per_attempt: 2048
+    max_output_tokens_per_attempt: 512
+    cache_assumption: no_cache_credit
+    retry_attempts_included_in_attempt_ceiling: true
+    worst_case_quota_value_usd: 1.179648
+
+# ---------------------------------------------------------------- Handoff
+handoff:
+  edges:
+    - deepseek-v4-flash:gpt-5.6-luna
+    - deepseek-v4-flash:qwen3.7-plus
+    - qwen3.7-plus:gpt-5.6-luna
+  chains_per_edge: 12
+  frozen_prefix_per_chain: true
+  switch_turn: dataset_defined
+  primary_outcome: final_turn_handoff_answer_accuracy
+  switch_family:
+    treatment: canonical_a_to_b
+    control: canonical_a_to_a
+    method: mcnemar_exact_two_sided_then_holm
+    alpha: 0.05
+  method_family:
+    treatment: canonical_a_to_b
+    control: transcript_only_a_to_b
+    method: mcnemar_exact_two_sided_then_holm
+    alpha: 0.05
+  secondary_interval: chain_cluster_bootstrap
+  # n=12 chain/边。这是设计上的检验力上限，必须随报告声明，不得用"未达显著"
+  # 反过来宣称两种交接方式等价。
+  power_disclosure_required: true
+  live_budget:
+    accounting: per_edge          # v1 只算了一条边的量，三边会超 $10 上限
+    chains_per_edge: 12
+    prefix_attempts_per_chain: 4  # A-prefix 本身是 live 调用，v1 漏计
+    treatments_per_chain: 3
+    max_model_attempts_per_treatment: 6
+    max_input_tokens_per_attempt: 16384
+    max_output_tokens_per_attempt: 1024
+    cache_assumption: no_cache_credit
+    retry_attempts_included_in_attempt_ceiling: true
+    worst_case_quota_value_usd_by_edge:
+      deepseek-v4-flash:gpt-5.6-luna: 3.5536896
+      deepseek-v4-flash:qwen3.7-plus: 1.4893056
+      qwen3.7-plus:gpt-5.6-luna: 4.2270720
+    maximum_edge_worst_case_quota_value_usd: 4.227072
+    total_worst_case_quota_value_usd: 9.2700672
+  sharding:
+    one_child_run_per_edge: true
+    expected_child_run_count: 3
+    child_quota_cap_usd: 10.0
+    require_all_edges_sealed_before_analysis: true
+
+handoff_smoke:
+  # S3 的协议冒烟边，不进入 S4 的 confirmatory family。
+  edge: deepseek-v4-flash:mimo-v2.5
+  chains: 12
+  live_budget:
+    prefix_attempts_per_chain: 4
+    treatments_per_chain: 3
+    max_model_attempts_per_treatment: 6
+    max_input_tokens_per_attempt: 16384
+    max_output_tokens_per_attempt: 1024
+    cache_assumption: no_cache_credit
+    worst_case_quota_value_usd: 0.68124672
+    gate_quota_cap_usd: 0.70
+
+# ---------------------------------------------------------------- 外部基准
+bird_mini_dev:
+  dataset_size: 500
+  dataset_source: official_release_pinned_at_execution
+  model: qwen3.7-plus
+  solver_config: B0_without_local_retrieval
+  primary_outcome: official_execution_accuracy
+  official_scorer_required: true
+  adapter_calibration_sample_size: 20
+  separate_from_self_benchmark: true
+  live_budget:
+    registered_sample_count: 500
+    max_model_attempts_per_sample: 2
+    max_input_tokens_per_attempt: 8192
+    max_output_tokens_per_attempt: 512
+    cache_assumption: no_cache_credit
+    retry_attempts_included_in_attempt_ceiling: true
+    worst_case_quota_value_usd: 4.096
+
+# ---------------------------------------------------------------- 运行政策
+live_run:
+  temperature: 0
+  replicates: 1
+  concurrency: 1
+  quota_cap_usd: 10.0
+  require_resume: true
+  require_all_registered_units_terminal: true
+  require_seal: true
+  pricing_artifact: config/pricing/opencode-go-2026-08-12.yaml
+  pricing_artifact_sha256: d138fc3fc9f3e4401d82961668c7b34416fe43569c64b7d6f3bde7d144edebd9
+  require_luna_catalog_proxy_acknowledgement: true
+  # Luna 的 Go 价格未公布，只能用第一方目录价代理。它同时是两个 Holm family 的
+  # primary 路径，因此 handoff 成本按区间报告，不给点估计。
+  quota_accounting_confidence:
+    gpt-5.6-luna: low_first_party_catalog_proxy
+    default: frozen_go_price_table
+  registered_s4_campaign_worst_case_quota_value_usd: 43.0231552
+  worst_case_breakdown_usd:
+    factqa: 28.47744
+    handoff: 9.2700672
+    bird_mini_dev: 4.096
+    naked_baseline: 1.179648
+  requires_multiple_allowance_windows: true
+  # $43.02 > $30/week，因此至少跨两个自然周；调度器按 config/budgets/opencode-go.yaml
+  # 的 rolling_window_ledger 决定何时启动下一个 child。
+  minimum_allowance_weeks: 2

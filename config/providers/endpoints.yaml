@@ -1,0 +1,174 @@
+schema_version: 1
+
+# allowlist 第二层门禁比对的是"规范化后的 origin + path"。规范化规则必须写死，
+# 否则 `chat/completions` 与 `/chat/completions` 会被判成两个不同的路径。
+path_normalization:
+  scheme: lowercase
+  host: lowercase_no_trailing_dot
+  leading_slash: required
+  trailing_slash: stripped
+  collapse_duplicate_slashes: true
+  percent_encoding: preserve_as_sent
+  query_and_fragment: must_be_empty_for_allowlist_match
+  comparison: exact_string_after_normalization
+
+endpoints:
+  - id: opencode-go
+    base_url: https://opencode.ai/zen/go/v1
+    credential_env: OPENCODE_GO_API_KEY
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /responses, /messages, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: true
+    project_live_policy: allow_user_accepted_local_portfolio
+    docs_url: https://opencode.ai/docs/go/
+    docs_digest: sha256:b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+    terms_url: https://opencode.ai/legal/terms-of-service
+    terms_digest: sha256:e0da927d713f5ccc49511c8d1665053c94f033ddf8887eb936cf633cc82031e1
+    terms_reviewed_at: 2026-08-12
+    terms_review_due_at: 2026-09-12
+    privacy_url: https://opencode.ai/legal/privacy-policy
+    privacy_digest: sha256:fae5079c62898a22df303ad7b49f44489ff66ddbcba917d9a9d01afd4f7d1a3a
+    risk_acceptance_artifact: config/compliance/opencode-go-risk-acceptance.yaml
+
+  - id: minimax-standard
+    base_url: https://api.minimaxi.com/v1
+    credential_env: MINIMAX_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: kimi-standard
+    base_url: https://api.moonshot.cn/v1
+    credential_env: KIMI_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: glm-standard
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    credential_env: GLM_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: deepseek-standard
+    base_url: https://api.deepseek.com
+    credential_env: DEEPSEEK_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: qwen-standard-cn
+    base_url: https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    credential_env: DASHSCOPE_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: alibaba-token-plan
+    base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    credential_env: ALIBABA_TOKEN_PLAN_API_KEY
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: false
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: volcano-coding-plan
+    base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+    credential_env: VOLCANO_CODING_PLAN_API_KEY
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: false
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null

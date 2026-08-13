@@ -1,0 +1,506 @@
+{
+  "seed": 20260811,
+  "company": "云梯科技（虚构）",
+  "period": {
+    "start": "2023-01",
+    "end": "2025-12",
+    "months": 36
+  },
+  "noise_std": {
+    "gross_margin_rate": 0.012,
+    "revenue": 0.06,
+    "dso_days": 3.2,
+    "revenue_share": 0.02,
+    "on_time_rate": 0.015,
+    "cash_to_revenue": 0.05
+  },
+  "planted": [
+    {
+      "id": "P1-001",
+      "kind": "trend",
+      "entity": {
+        "dim": "product_line",
+        "value": "云梯-企业版"
+      },
+      "metric": "gross_margin_rate",
+      "window": {
+        "start": "2024-06",
+        "end": "2025-03"
+      },
+      "magnitude": {
+        "delta": -0.09
+      },
+      "difficulty": "easy",
+      "snr": 7.5,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "gross_margin_rate",
+          "product_line"
+        ]
+      }
+    },
+    {
+      "id": "P1-002",
+      "kind": "trend",
+      "entity": {
+        "dim": "product_line",
+        "value": "云梯-服务"
+      },
+      "metric": "gross_margin_rate",
+      "window": {
+        "start": "2024-11",
+        "end": "2025-08"
+      },
+      "magnitude": {
+        "delta": -0.03
+      },
+      "difficulty": "medium",
+      "snr": 2.5,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "gross_margin_rate",
+          "product_line"
+        ]
+      }
+    },
+    {
+      "id": "P1-003",
+      "kind": "trend",
+      "entity": {
+        "dim": "region",
+        "value": "西部"
+      },
+      "metric": "gross_margin_rate",
+      "window": {
+        "start": "2025-01",
+        "end": "2025-10"
+      },
+      "magnitude": {
+        "delta": -0.015
+      },
+      "difficulty": "hard",
+      "snr": 1.25,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "gross_margin_rate",
+          "region"
+        ]
+      }
+    },
+    {
+      "id": "P2-001",
+      "kind": "concentration",
+      "entity": {
+        "dim": "customer_top5",
+        "value": "全公司"
+      },
+      "metric": "revenue_share",
+      "window": {
+        "start": "2024-01",
+        "end": "2025-06"
+      },
+      "magnitude": {
+        "delta": 0.24
+      },
+      "difficulty": "easy",
+      "snr": 12.0,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "revenue_share",
+          "customer_top5"
+        ]
+      }
+    },
+    {
+      "id": "P2-002",
+      "kind": "concentration",
+      "entity": {
+        "dim": "supplier_top3",
+        "value": "全公司"
+      },
+      "metric": "purchase_share",
+      "window": {
+        "start": "2024-08",
+        "end": "2025-09"
+      },
+      "magnitude": {
+        "delta": 0.05
+      },
+      "difficulty": "medium",
+      "snr": 2.5,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "purchase_share",
+          "supplier_top3"
+        ]
+      }
+    },
+    {
+      "id": "P3-001",
+      "kind": "seasonal",
+      "entity": {
+        "dim": "region",
+        "value": "华北"
+      },
+      "metric": "revenue",
+      "window": {
+        "start": "2025-03",
+        "end": "2025-08"
+      },
+      "magnitude": {
+        "delta": -0.15
+      },
+      "difficulty": "medium",
+      "snr": 2.5,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "revenue",
+          "region"
+        ]
+      }
+    },
+    {
+      "id": "P3-002",
+      "kind": "seasonal",
+      "entity": {
+        "dim": "product_line",
+        "value": "云梯-硬件"
+      },
+      "metric": "revenue",
+      "window": {
+        "start": "2025-06",
+        "end": "2025-11"
+      },
+      "magnitude": {
+        "delta": -0.07
+      },
+      "difficulty": "hard",
+      "snr": 1.17,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "revenue",
+          "product_line"
+        ]
+      }
+    },
+    {
+      "id": "P4-001",
+      "kind": "baseline_deviation",
+      "entity": {
+        "dim": "customer",
+        "value": "C03"
+      },
+      "metric": "dso_days",
+      "window": {
+        "start": "2025-02",
+        "end": "2025-12"
+      },
+      "magnitude": {
+        "delta": 2.4
+      },
+      "difficulty": "easy",
+      "snr": 20.6,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "dso_days",
+          "customer"
+        ]
+      }
+    },
+    {
+      "id": "P4-002",
+      "kind": "baseline_deviation",
+      "entity": {
+        "dim": "customer",
+        "value": "C11"
+      },
+      "metric": "dso_days",
+      "window": {
+        "start": "2024-09",
+        "end": "2025-12"
+      },
+      "magnitude": {
+        "delta": 1.18
+      },
+      "difficulty": "medium",
+      "snr": 2.64,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "dso_days",
+          "customer"
+        ]
+      }
+    },
+    {
+      "id": "P4-003",
+      "kind": "baseline_deviation",
+      "entity": {
+        "dim": "customer",
+        "value": "C17"
+      },
+      "metric": "dso_days",
+      "window": {
+        "start": "2025-05",
+        "end": "2025-12"
+      },
+      "magnitude": {
+        "delta": 1.09
+      },
+      "difficulty": "hard",
+      "snr": 1.32,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "dso_days",
+          "customer"
+        ]
+      }
+    },
+    {
+      "id": "P5-001",
+      "kind": "ratio",
+      "entity": {
+        "dim": "company",
+        "value": "全公司"
+      },
+      "metric": "cash_to_revenue",
+      "window": {
+        "start": "2024-07",
+        "end": "2025-07"
+      },
+      "magnitude": {
+        "delta": 0.12
+      },
+      "difficulty": "medium",
+      "snr": 2.4,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "cash_to_revenue",
+          "company"
+        ]
+      }
+    },
+    {
+      "id": "P5-002",
+      "kind": "ratio",
+      "entity": {
+        "dim": "product_line",
+        "value": "云梯-标准版"
+      },
+      "metric": "cash_to_revenue",
+      "window": {
+        "start": "2025-01",
+        "end": "2025-11"
+      },
+      "magnitude": {
+        "delta": 0.07
+      },
+      "difficulty": "hard",
+      "snr": 1.4,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "cash_to_revenue",
+          "product_line"
+        ]
+      }
+    },
+    {
+      "id": "P6-001",
+      "kind": "concentration_signal",
+      "entity": {
+        "dim": "supplier",
+        "value": "S02"
+      },
+      "metric": "purchase_share+on_time_rate",
+      "window": {
+        "start": "2024-10",
+        "end": "2025-09"
+      },
+      "magnitude": {
+        "delta": 0.22
+      },
+      "difficulty": "easy",
+      "snr": 11.0,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "purchase_share+on_time_rate",
+          "supplier"
+        ]
+      }
+    },
+    {
+      "id": "P6-002",
+      "kind": "concentration_signal",
+      "entity": {
+        "dim": "supplier",
+        "value": "S07"
+      },
+      "metric": "purchase_share+on_time_rate",
+      "window": {
+        "start": "2025-02",
+        "end": "2025-12"
+      },
+      "magnitude": {
+        "delta": 0.05
+      },
+      "difficulty": "medium",
+      "snr": 2.5,
+      "expected_evidence": {
+        "min_rows": 6,
+        "must_reference": [
+          "purchase_share+on_time_rate",
+          "supplier"
+        ]
+      }
+    }
+  ],
+  "distractors": [
+    {
+      "id": "D-001",
+      "kind": "trend",
+      "entity": {
+        "dim": "product_line",
+        "value": "云梯-硬件"
+      },
+      "window": {
+        "start": "2024-03",
+        "end": "2024-09"
+      },
+      "magnitude": {
+        "delta": -0.008
+      },
+      "snr": 0.67,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-002",
+      "kind": "trend",
+      "entity": {
+        "dim": "region",
+        "value": "华东"
+      },
+      "window": {
+        "start": "2025-04",
+        "end": "2025-10"
+      },
+      "magnitude": {
+        "delta": -0.007
+      },
+      "snr": 0.58,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-003",
+      "kind": "baseline_deviation",
+      "entity": {
+        "dim": "customer",
+        "value": "C08"
+      },
+      "window": {
+        "start": "2025-06",
+        "end": "2025-12"
+      },
+      "magnitude": {
+        "delta": 1.04
+      },
+      "snr": 0.59,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-004",
+      "kind": "baseline_deviation",
+      "entity": {
+        "dim": "customer",
+        "value": "C14"
+      },
+      "window": {
+        "start": "2024-04",
+        "end": "2024-11"
+      },
+      "magnitude": {
+        "delta": 1.035
+      },
+      "snr": 0.51,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-005",
+      "kind": "concentration",
+      "entity": {
+        "dim": "supplier_top3",
+        "value": "全公司"
+      },
+      "window": {
+        "start": "2024-05",
+        "end": "2025-02"
+      },
+      "magnitude": {
+        "delta": 0.012
+      },
+      "snr": 0.6,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-006",
+      "kind": "seasonal",
+      "entity": {
+        "dim": "region",
+        "value": "华南"
+      },
+      "window": {
+        "start": "2025-07",
+        "end": "2025-11"
+      },
+      "magnitude": {
+        "delta": -0.04
+      },
+      "snr": 0.67,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    },
+    {
+      "id": "D-007",
+      "kind": "concentration_signal",
+      "entity": {
+        "dim": "supplier",
+        "value": "S05"
+      },
+      "window": {
+        "start": "2025-03",
+        "end": "2025-10"
+      },
+      "magnitude": {
+        "delta": 0.012
+      },
+      "snr": 0.6,
+      "expected_behavior": "信噪比低于 hard 档下沿，正确行为是不报；报出即计入 distractor_fp_rate"
+    }
+  ],
+  "scoring": {
+    "match_rule": "kind 一致 且 entity 一致 且 window IoU >= 0.5",
+    "metrics": [
+      "pattern_recall(分难度档)",
+      "pattern_precision",
+      "distractor_fp_rate",
+      "evidence_validity",
+      "confidence_calibration(ECE)"
+    ]
+  },
+  "limitations": [
+    "生成过程与检测规则共享同一套模式定义，存在结构性优势——真实数据上表现会显著更差",
+    "只评测模式识别与证据有效性，不评测预测正确性",
+    "单一虚构公司、单一行业形态，外部效度有限",
+    "36 个月窗口不足以评测长周期风险与监控/复盘闭环"
+  ]
+}

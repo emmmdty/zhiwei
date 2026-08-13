@@ -1,0 +1,37 @@
+schema_version: 1
+decision_date: 2026-08-12
+accepted_by: project_owner
+scope: local_noncommercial_portfolio
+endpoint_profile: opencode-go
+
+reviewed_sources:
+  documentation:
+    url: https://opencode.ai/docs/go/
+    sha256: b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+  terms:
+    url: https://opencode.ai/legal/terms-of-service
+    sha256: e0da927d713f5ccc49511c8d1665053c94f033ddf8887eb936cf633cc82031e1
+  privacy:
+    url: https://opencode.ai/legal/privacy-policy
+    sha256: fae5079c62898a22df303ad7b49f44489ff66ddbcba917d9a9d01afd4f7d1a3a
+
+acknowledgement: >-
+  The project owner instructed ZhiWei to use OpenCode Go for a local, small-scale,
+  noncommercial portfolio project after being informed that the general terms contain
+  language restricting automated or programmatic extraction of data or Output. This
+  artifact records the owner's risk decision; it is not provider permission or legal advice.
+
+hard_constraints:
+  public_or_synthetic_data_only: true
+  general_purpose_scraping: false
+  output_resale: false
+  competitor_model_training: false
+  quota_bypass: false
+  use_balance_must_be_off: true
+  extra_spend_allowed: false
+  allowed_live_endpoint_ids: [opencode-go]
+  allowed_live_purpose: [interactive_demo, bounded_evaluation]
+
+renewal:
+  review_due_at: 2026-09-12
+  require_reacceptance_on_source_digest_change: true

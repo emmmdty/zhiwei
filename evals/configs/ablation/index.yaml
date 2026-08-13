@@ -1,0 +1,40 @@
+schema_version: 1
+suite: factqa
+baseline:
+  id: B0
+  factors:
+    schema: table+column+comments
+    few_shot: fixed_3
+    result_binding: "on"
+    rewrite_max: 2
+    retrieval: dense
+    model_tier: medium
+
+variants:
+  - {id: A1-0, factor: schema, value: none, confirmatory: true}
+  - {id: A1-1, factor: schema, value: table+column, confirmatory: false}
+  - {id: A1-3, factor: schema, value: table+column+comments+3_samples+range, confirmatory: false}
+  - {id: A2-0, factor: few_shot, value: zero, confirmatory: true}
+  - {id: A2-2, factor: few_shot, value: retrieved_3, confirmatory: false}
+  - {id: A3-1, factor: result_binding, value: "off", confirmatory: true}
+  - {id: A4-0, factor: rewrite_max, value: 0, confirmatory: true}
+  - {id: A4-1, factor: rewrite_max, value: 1, confirmatory: false}
+  - {id: A5-0, factor: retrieval, value: bm25, confirmatory: true}
+  - {id: A5-2, factor: retrieval, value: hybrid_rrf, confirmatory: false}
+  - {id: A5-3, factor: retrieval, value: hybrid_rrf+rerank, confirmatory: false}
+  - {id: A6-0, factor: model_tier, value: small, confirmatory: true}
+  - {id: A6-2, factor: model_tier, value: large, confirmatory: false}
+
+fixed_resources:
+  dense_model: BAAI/bge-small-zh-v1.5@7999e1d3359715c523056ef9478215996d62a620
+  reranker_model: BAAI/bge-reranker-base@2cfc18c9415c912f9d8155881c133215df768a70
+  model_tiers:
+    small: qwen3.6-plus
+    medium: qwen3.7-plus
+    large: qwen3.7-max
+  execution_device: cpu
+
+invariants:
+  expected_unique_config_count: 14
+  exactly_one_factor_diff_from_baseline: true
+  forbid_unwired_factors: true

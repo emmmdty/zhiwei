@@ -1,0 +1,80 @@
+schema_version: 1
+endpoint_id: opencode-go
+currency: USD
+unit: per_million_tokens
+frozen_at: 2026-08-12
+primary_source:
+  url: https://opencode.ai/docs/go/
+  sha256: b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+luna_catalog_source:
+  url: https://opencode.ai/data/openai/gpt-5.6-luna
+  sha256: 20b00c5071ae340f7d7828cb4160156180b7fb7dd712c33e64047e44d46fc4b1
+  caveat: First-party model catalog price; Luna is absent from the Go pricing table snapshot.
+
+models:
+  grok-4.5:
+    tiers: [{max_input_tokens: null, input: 2.0, output: 6.0, cached_read: 0.3, cached_write: null}]
+    source: primary_source
+  gpt-5.6-luna:
+    tiers: [{max_input_tokens: null, input: 1.0, output: 6.0, cached_read: 0.1, cached_write: null}]
+    source: luna_catalog_source
+    quota_accounting_basis: first_party_catalog_proxy
+  glm-5.2:
+    tiers: [{max_input_tokens: null, input: 1.4, output: 4.4, cached_read: 0.26, cached_write: null}]
+    source: primary_source
+  glm-5.1:
+    tiers: [{max_input_tokens: null, input: 1.4, output: 4.4, cached_read: 0.26, cached_write: null}]
+    source: primary_source
+  kimi-k3:
+    tiers: [{max_input_tokens: null, input: 3.0, output: 15.0, cached_read: 0.3, cached_write: null}]
+    source: primary_source
+  kimi-k2.7-code:
+    tiers: [{max_input_tokens: null, input: 0.95, output: 4.0, cached_read: 0.19, cached_write: null}]
+    source: primary_source
+  kimi-k2.6:
+    tiers: [{max_input_tokens: null, input: 0.95, output: 4.0, cached_read: 0.16, cached_write: null}]
+    source: primary_source
+  mimo-v2.5:
+    tiers: [{max_input_tokens: null, input: 0.14, output: 0.28, cached_read: 0.0028, cached_write: null}]
+    source: primary_source
+  mimo-v2.5-pro:
+    tiers: [{max_input_tokens: null, input: 0.435, output: 0.87, cached_read: 0.003625, cached_write: null}]
+    source: primary_source
+  minimax-m3:
+    tiers: [{max_input_tokens: null, input: 0.3, output: 1.2, cached_read: 0.06, cached_write: null}]
+    source: primary_source
+  minimax-m2.7:
+    tiers: [{max_input_tokens: null, input: 0.3, output: 1.2, cached_read: 0.06, cached_write: 0.375}]
+    source: primary_source
+  qwen3.8-max:
+    tiers: [{max_input_tokens: null, input: null, output: null, cached_read: null, cached_write: null}]
+    source: null
+    formal_live_eligible: false
+  qwen3.7-max:
+    tiers: [{max_input_tokens: null, input: 2.5, output: 7.5, cached_read: 0.5, cached_write: 3.125}]
+    source: primary_source
+  qwen3.7-plus:
+    tiers:
+      - {max_input_tokens: 256000, input: 0.4, output: 1.6, cached_read: 0.04, cached_write: 0.5}
+      - {max_input_tokens: null, input: 1.2, output: 4.8, cached_read: 0.12, cached_write: 1.5}
+    source: primary_source
+  qwen3.6-plus:
+    tiers:
+      - {max_input_tokens: 256000, input: 0.5, output: 3.0, cached_read: 0.05, cached_write: 0.625}
+      - {max_input_tokens: null, input: 2.0, output: 6.0, cached_read: 0.2, cached_write: 2.5}
+    source: primary_source
+  deepseek-v4-pro:
+    tiers: [{max_input_tokens: null, input: 0.435, output: 0.87, cached_read: 0.003625, cached_write: null}]
+    source: primary_source
+  deepseek-v4-flash:
+    tiers: [{max_input_tokens: null, input: 0.14, output: 0.28, cached_read: 0.0028, cached_write: null}]
+    source: primary_source
+  hy3:
+    tiers: [{max_input_tokens: null, input: 0.14, output: 0.58, cached_read: 0.035, cached_write: null}]
+    source: primary_source
+
+formal_policy:
+  unknown_price: deny
+  tier_selection: fail_if_input_ceiling_crosses_tier_without_upper_tier
+  cache_assumption_default: no_cache_credit
+  luna_proxy_requires_operator_acknowledgement: true
