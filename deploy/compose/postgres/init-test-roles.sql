@@ -1,0 +1,12 @@
+\set ON_ERROR_STOP on
+
+CREATE ROLE zhiwei_app
+    LOGIN
+    NOSUPERUSER
+    NOCREATEDB
+    NOCREATEROLE
+    NOINHERIT
+    NOBYPASSRLS;
+
+GRANT CONNECT ON DATABASE zhiwei_test TO zhiwei_app;
+GRANT USAGE ON SCHEMA public TO zhiwei_app;

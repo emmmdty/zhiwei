@@ -1,0 +1,22 @@
+name: zhiwei-s0
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: zhiwei_test
+      POSTGRES_USER: zhiwei_migrator
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "127.0.0.1:55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zhiwei_migrator -d zhiwei_test"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - ./postgres/init-test-roles.sql:/docker-entrypoint-initdb.d/00-zhiwei-roles.sql:ro
+      - zhiwei_s0_postgres:/var/lib/postgresql/data
+
+volumes:
+  zhiwei_s0_postgres:
