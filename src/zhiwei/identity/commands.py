@@ -230,30 +230,6 @@ async def _require_active(
     return principal
 
 
-async def _replay_or_none(
-    repository: IdentityRepositoryProtocol,
-    *,
-    scope: str,
-    idempotency: IdempotencyRequest | None,
-    response: dict[str, Any],
-) -> CommandOutcome | None:
-    """幂等声明（资源 insert 之后调用，bootstrap 的 claim 依赖 org 行已存在）。
-
-    重放时返回既有结果；无幂等键或首次声明返回 None 表示继续返回 created 结果。
-    """
-    if idempotency is None:
-        return None
-    result = await repository.claim_idempotency(
-        scope=scope,
-        key=idempotency.key,
-        request_digest=idempotency.request_digest,
-        response=response,
-    )
-    if result.created:
-        return None
-    return CommandOutcome(created=False, response=result.response)
-
-
 def _organization_scope(owner_principal_id: UUID) -> str:
     """bootstrap 幂等域绑定 owner：精确重放必须由创建者本人发起。
 
@@ -392,6 +368,21 @@ async def add_org_membership(
     role_bindings: frozenset[str] = frozenset(),
     idempotency: IdempotencyRequest | None = None,
 ) -> CommandOutcome:
+    """添加 Organization membership；旧请求重放绝不再写 membership（ABA 防护）。
+
+    mutation 前先做只读幂等判断：同 digest 返回原结果、异 digest 抛冲突，两者都不触发
+    INSERT/DELETE；无记录才继续 mutation，成功后 claim。
+    """
+    if idempotency is not None:
+        lookup = await repository.lookup_idempotency(
+            scope=IDEMPOTENCY_SCOPE_MEMBER_ADD, key=idempotency.key
+        )
+        if lookup is not None:
+            if lookup.request_digest != idempotency.request_digest:
+                raise IdempotencyConflict(
+                    "idempotency key was already used for another request"
+                )
+            return CommandOutcome(created=False, response=lookup.response)
     await _require_active(repository, principal_id)
     response = {
         "principal_id": str(principal_id),
@@ -429,20 +420,35 @@ async def remove_org_membership(
     organization_id: UUID,
     idempotency: IdempotencyRequest | None = None,
 ) -> CommandOutcome:
-    """移除 Organization membership；disabled principal 仍可被移除（清理语义）。"""
+    """移除 Organization membership；disabled principal 仍可被移除（清理语义）。
+
+    旧 DELETE 重放绝不再删 membership（ABA 防护）：请求完成后重新添加的 membership
+    必须保留，重放只返回原结果。
+    """
+    if idempotency is not None:
+        lookup = await repository.lookup_idempotency(
+            scope=IDEMPOTENCY_SCOPE_MEMBER_REMOVE, key=idempotency.key
+        )
+        if lookup is not None:
+            if lookup.request_digest != idempotency.request_digest:
+                raise IdempotencyConflict(
+                    "idempotency key was already used for another request"
+                )
+            return CommandOutcome(created=False, response=lookup.response)
     response = {
         "principal_id": str(principal_id),
         "organization_id": str(organization_id),
     }
     await repository.remove_membership(principal_id=principal_id, organization_id=organization_id)
-    replayed = await _replay_or_none(
-        repository,
-        scope=IDEMPOTENCY_SCOPE_MEMBER_REMOVE,
-        idempotency=idempotency,
-        response=response,
-    )
-    if replayed is not None:
-        return replayed
+    if idempotency is not None:
+        result = await repository.claim_idempotency(
+            scope=IDEMPOTENCY_SCOPE_MEMBER_REMOVE,
+            key=idempotency.key,
+            request_digest=idempotency.request_digest,
+            response=response,
+        )
+        if not result.created:
+            return CommandOutcome(created=False, response=result.response)
     return CommandOutcome(created=True, response=response)
 
 
