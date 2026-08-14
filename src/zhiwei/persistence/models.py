@@ -111,13 +111,18 @@ class AuthSession(Base):
     __table_args__ = (
         CheckConstraint("version > 0", name="version"),
         CheckConstraint(
-            "refresh_state IN ('idle', 'refreshing')", name="refresh_state"
+            "refresh_state IN ('idle', 'leased', 'calling')", name="refresh_state"
         ),
         CheckConstraint("expires_at >= idle_expires_at", name="expiry_ordering"),
         CheckConstraint(
             "NOT (revoked_at IS NOT NULL AND "
-            "(refresh_state <> 'idle' OR refresh_lease_expires_at IS NOT NULL))",
+            "(refresh_state <> 'idle' OR refresh_lease_expires_at IS NOT NULL "
+            "OR refresh_owner_token_hash IS NOT NULL))",
             name="revoked_no_lease",
+        ),
+        CheckConstraint(
+            "(refresh_state = 'idle') = (refresh_owner_token_hash IS NULL)",
+            name="owner_token_consistency",
         ),
         CheckConstraint("schema_version > 0", name="schema_version"),
         ForeignKeyConstraint(
@@ -150,6 +155,7 @@ class AuthSession(Base):
         String(16), nullable=False, server_default="idle"
     )
     refresh_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refresh_owner_token_hash: Mapped[str | None] = mapped_column(CHAR(64))
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 

@@ -48,6 +48,7 @@ def _valid_session(**overrides: Any) -> AuthSession:
         "version": 1,
         "refresh_state": "idle",
         "refresh_lease_expires_at": None,
+        "refresh_owner_token_hash": None,
         "created_at": datetime.now(UTC),
         "updated_at": datetime.now(UTC),
         "schema_version": 1,
@@ -93,16 +94,37 @@ def test_auth_session_version_must_be_positive() -> None:
 
 
 def test_auth_session_refresh_state_is_enum_limited() -> None:
-    for invalid in ("refreshing-now", "done", ""):
+    for invalid in ("refreshing", "refreshing-now", "done", ""):
         with pytest.raises(ValidationError):
             _valid_session(refresh_state=invalid)
+    _valid_session(refresh_state="idle")
+    owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    for state in ("leased", "calling"):
+        _valid_session(refresh_state=state, refresh_owner_token_hash=owner_hash)
 
 
-def test_auth_session_revoked_clears_refresh_lease() -> None:
-    """revoke 后不得保留 refresh lease：revoked + refreshing 状态组合是非法状态。"""
+def test_auth_session_owner_token_required_when_leased_or_calling() -> None:
+    """fencing 前提：leased/calling 必须有 opaque owner token；idle 必须没有。"""
+    owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    for state in ("leased", "calling"):
+        with pytest.raises(ValidationError):
+            _valid_session(refresh_state=state)
+        session = _valid_session(
+            refresh_state=state, refresh_owner_token_hash=owner_hash
+        )
+        assert session.refresh_owner_token_hash == owner_hash
+    with pytest.raises(ValidationError):
+        _valid_session(refresh_state="idle", refresh_owner_token_hash=owner_hash)
+
+
+def test_auth_session_revoked_clears_refresh_lease_and_owner_token() -> None:
+    """revoke 后不得保留 lease：revoked + calling 状态组合是非法状态。"""
+    owner_hash = hashlib.sha256(b"owner-token").hexdigest()
     with pytest.raises(ValidationError):
         _valid_session(
-            revoked_at=datetime.now(UTC), refresh_state="refreshing"
+            revoked_at=datetime.now(UTC),
+            refresh_state="calling",
+            refresh_owner_token_hash=owner_hash,
         )
     with pytest.raises(ValidationError):
         _valid_session(

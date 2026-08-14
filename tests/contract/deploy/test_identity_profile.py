@@ -1,12 +1,17 @@
 """S1-T2 部署契约：identity profile 必须可实际启动（Keycloak）。
 
-设计/验收方冻结（A 档，验收阻断 3）：
+设计/验收方冻结（A 档，验收阻断 3/4）：
 - compose.test.yaml identity profile 的 keycloak 镜像必须 tag + digest 双重 pin
   （禁 :latest），且 digest 必须通过 registry manifest 校验（可拉取）；
 - entrypoint.sh 必须在写 realm 前创建 /opt/keycloak/data/import（镜像内该目录
   不存在），且不得依赖镜像内没有的 envsubst（exit 127 的反例已由验收复核确认）；
-- compose 必须提供计划要求的 Docker-secret master-key 挂载
-  （ZHIWEI_IDENTITY_MASTER_KEY_FILE 对应 /run/secrets/...）；
+- Docker-secret master key：顶层声明保留（S11 应用容器挂载计划实现），但当前
+  compose 没有任何 ZhiWei 服务可挂载它——尤其 Keycloak 绝不挂载 master key，
+  也不得为挂载制造 dummy service（修订：原「任意服务挂载即可」断言已删除）；
+- realm 注入的字符契约：`/` 与 `&` 等 sed 危险字符必须正确转义处理；`"`、反斜杠、
+  控制字符、空值必须在写文件前 fail closed（容器退出，日志不泄露 secret）；
+- 固定镜像内的对抗测试：危险字符 secret → 容器在写文件前退出且日志不泄露；
+  合法含 `/`/`&` 的 secret → realm.json 可解析、Keycloak 启动并通过 healthcheck；
 - `docker compose ... config --quiet` 只证明 YAML 可解析，不是启动 Gate；
   启动 Gate 必须真正拉起 profile 并通过 healthcheck（slow，需 docker + 镜像拉取，
   环境守卫：无 docker 时跳过并给出明确理由，不视为断言放宽）。
@@ -14,8 +19,13 @@
 
 from __future__ import annotations
 
+import json
+import os
+import re
 import shutil
 import subprocess
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -24,6 +34,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[3]
 COMPOSE_FILE = REPO_ROOT / "deploy" / "compose" / "compose.test.yaml"
 ENTRYPOINT = REPO_ROOT / "deploy" / "compose" / "keycloak" / "entrypoint.sh"
+REALM_TEMPLATE = REPO_ROOT / "deploy" / "compose" / "keycloak" / "realm-template.json"
 MASTER_KEY_SECRET = "zhiwei_identity_master_key"
 
 
@@ -42,21 +53,34 @@ def test_identity_profile_keycloak_image_pinned_with_tag_and_digest() -> None:
     assert len(digest) == 64, "digest 必须是 64 位十六进制"
 
 
-def test_identity_profile_declares_master_key_secret_and_mount() -> None:
-    """冻结（验收阻断 3）：Docker-secret master-key 必须声明并挂载到服务。"""
+def test_identity_profile_declares_master_key_secret_without_service_mount() -> None:
+    """修订（验收阻断 4）：Docker-secret master-key 顶层声明保留，但当前 compose 没有
+    ZhiWei 应用服务——任何服务（尤其 Keycloak）都不得挂载 master key。
+
+    原「任意服务挂载即可」断言已删除：为挂载制造 dummy service 会扩大攻击面，
+    实际应用容器挂载标记为 S11 计划实现。
+    """
     compose = _compose()
     secrets = compose.get("secrets") or {}
-    assert MASTER_KEY_SECRET in secrets, "缺少 Docker-secret master-key 声明"
+    assert MASTER_KEY_SECRET in secrets, "缺少顶层 Docker-secret master-key 声明"
     mounts = [
-        mount
-        for service in compose["services"].values()
+        (service_name, mount)
+        for service_name, service in compose["services"].items()
         for mount in (service.get("secrets") or [])
     ]
-    assert any(
-        m.get("source") == MASTER_KEY_SECRET
-        and m.get("target") == f"/run/secrets/{MASTER_KEY_SECRET}"
-        for m in mounts
-    ), "master-key secret 必须挂载到服务（target=/run/secrets/zhiwei_identity_master_key）"
+    assert not mounts, (
+        f"当前 compose 没有任何服务应挂载 master key（S11 才挂载应用容器）: {mounts}"
+    )
+
+
+def test_identity_profile_keycloak_never_mounts_master_key() -> None:
+    """master key 绝不能挂载给 Keycloak（Keycloak 不需要任何 docker secret）。"""
+    compose = _compose()
+    keycloak = compose["services"]["keycloak"]
+    service_secrets = keycloak.get("secrets") or []
+    sources = [mount.get("source") for mount in service_secrets]
+    assert MASTER_KEY_SECRET not in sources, "master key 绝不能挂载给 Keycloak"
+    assert service_secrets == [], "keycloak 服务不应声明任何 docker secret"
 
 
 def test_identity_profile_keycloak_has_healthcheck() -> None:
@@ -82,6 +106,175 @@ def test_entrypoint_does_not_depend_on_envsubst() -> None:
     assert "envsubst" not in script, (
         "entrypoint 依赖 envsubst 会在固定镜像内 exit 127（验收复核已确认）"
     )
+
+
+def test_entrypoint_render_contract_fail_closed_on_dangerous_values() -> None:
+    """对抗（宿主层，验收阻断 4）：realm 注入的明确字符契约。
+
+    - 危险字符（双引号 / 反斜杠 / 控制字符 / 空值）必须在写文件前 fail closed：
+      非零退出、stderr 出现字符契约消息、不写 realm.json、stderr 不泄露注入值；
+    - 合法值（含 `/`、`&` 等 sed 危险字符）必须渲染出可解析 JSON 且值正确注入。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "import"
+        out_dir.mkdir()
+        env = {
+            **os.environ,
+            "ZHIWEI_KC_IMPORT_DIR": str(out_dir),
+            "ZHIWEI_KC_REALM_TEMPLATE": str(REALM_TEMPLATE),
+            "ZHIWEI_KC_REALM_OUTPUT": str(out_dir / "realm.json"),
+            "ZHIWEI_KC_RENDER_ONLY": "1",
+        }
+
+        # 1) 危险字符 fail closed（双引号破坏 JSON 结构）
+        dangerous = 'dev"quote"secret'
+        result = subprocess.run(
+            ["sh", str(ENTRYPOINT)],
+            capture_output=True,
+            text=True,
+            env={
+                **env,
+                "KEYCLOAK_TEST_CLIENT_SECRET": dangerous,
+                "KEYCLOAK_TEST_USER_PASSWORD": "s1-dev-user-password-only",
+            },
+        )
+        assert result.returncode != 0, "危险字符必须在写文件前 fail closed"
+        assert not (out_dir / "realm.json").exists(), "fail closed 不得写出 realm 文件"
+        assert dangerous not in result.stderr, "fail closed 消息不得泄露注入值"
+        assert "allowed" in result.stderr or "fail closed" in result.stderr, (
+            f"stderr 必须出现明确字符契约消息:\n{result.stderr}"
+        )
+
+        # 2) 合法但 sed 危险的值（/ 与 &）必须正确渲染
+        safe_secret = "dev/s1&prod+secret@x"
+        result = subprocess.run(
+            ["sh", str(ENTRYPOINT)],
+            capture_output=True,
+            text=True,
+            env={
+                **env,
+                "KEYCLOAK_TEST_CLIENT_SECRET": safe_secret,
+                "KEYCLOAK_TEST_USER_PASSWORD": "s1-dev-user-password-only",
+            },
+        )
+        assert result.returncode == 0, f"合法值应渲染成功:\n{result.stderr}"
+        rendered = json.loads((out_dir / "realm.json").read_text(encoding="utf-8"))
+        assert rendered["clients"][0]["secret"] == safe_secret
+        assert rendered["users"][0]["credentials"][0]["value"] == "s1-dev-user-password-only"
+
+
+@pytest.mark.slow
+def test_keycloak_realm_injection_adversarial_in_fixed_image() -> None:
+    """对抗（固定镜像，验收阻断 4）：realm 注入对 JSON/sed 危险字符 fail closed。
+
+    - 双引号 secret：容器在写 realm 文件前退出（字符契约），docker logs 不泄露 secret；
+    - 含 `/` 与 `&` 的合法 secret：realm.json 可解析、Keycloak 启动且 healthcheck
+      通过、docker logs 不泄露 secret。
+    """
+    if shutil.which("docker") is None:
+        pytest.skip("环境守卫：无 docker 无法执行固定镜像对抗测试（slow 显式运行）")
+    compose_cmd = ["docker", "compose", "-f", str(COMPOSE_FILE), "--profile", "identity"]
+    try:
+        subprocess.run(
+            [*compose_cmd, "rm", "-sf", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        # ---- fail closed：双引号 secret ----
+        up = subprocess.run(
+            [*compose_cmd, "up", "-d", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env={**os.environ, "KEYCLOAK_TEST_CLIENT_SECRET": 'dev"quote"secret'},
+        )
+        assert up.returncode == 0, up.stderr
+        deadline = time.monotonic() + 60
+        exited = False
+        while time.monotonic() < deadline:
+            cid = subprocess.run(
+                [*compose_cmd, "ps", "-q", "keycloak"],
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if cid:
+                state = subprocess.run(
+                    ["docker", "inspect", "--format", "{{.State.Status}}", cid],
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                if state == "exited":
+                    exited = True
+                    break
+            time.sleep(1)
+        logs = subprocess.run(
+            [*compose_cmd, "logs", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+        assert exited, f"危险 secret 必须导致容器退出而非带病启动:\n{logs}"
+        assert 'dev"quote"secret' not in logs and 'quote"secret' not in logs, (
+            f"fail closed 不得在日志泄露 secret:\n{logs}"
+        )
+        assert "allowed" in logs or "fail closed" in logs, (
+            f"缺少字符契约消息:\n{logs}"
+        )
+        subprocess.run(
+            [*compose_cmd, "rm", "-sf", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        # ---- 合法但 sed 危险字符（/ 与 &）：必须正确渲染并启动 ----
+        volumes = subprocess.run(
+            ["docker", "volume", "ls", "-q", "--filter", "name=zhiwei_s0_keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout.splitlines()
+        for volume in volumes:
+            subprocess.run(
+                ["docker", "volume", "rm", volume],
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+        safe_secret = "dev/s1&prod+secret@x"
+        up = subprocess.run(
+            [*compose_cmd, "up", "-d", "--wait", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env={**os.environ, "KEYCLOAK_TEST_CLIENT_SECRET": safe_secret},
+        )
+        assert up.returncode == 0, f"含 / 与 & 的 secret 必须能启动:\n{up.stdout}\n{up.stderr}"
+        cat = subprocess.run(
+            [*compose_cmd, "exec", "-T", "keycloak", "cat", "/opt/keycloak/data/import/realm.json"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert cat.returncode == 0, f"无法读取容器内 realm.json:\n{cat.stderr}"
+        realm = json.loads(cat.stdout)
+        assert realm["clients"][0]["secret"] == safe_secret, "secret 必须被正确注入"
+        logs = subprocess.run(
+            [*compose_cmd, "logs", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        ).stdout
+        assert safe_secret not in logs, f"日志不得泄露 client secret:\n{logs}"
+    finally:
+        subprocess.run(
+            [*compose_cmd, "rm", "-sf", "keycloak"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
 
 
 @pytest.mark.slow

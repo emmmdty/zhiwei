@@ -26,7 +26,7 @@ import hmac
 import json
 import secrets
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from sqlalchemy import select, text
@@ -296,6 +296,65 @@ class AuthSessionStore:
                 {"session_id": session_id, "expected": expected_version},
             )
             return result.scalar_one_or_none() is not None
+
+    async def enter_calling_phase(
+        self, session_id: UUID, expected_version: int, owner_token: str
+    ) -> bool:
+        """RED 骨架：durable calling barrier（owner token CAS leased→calling）。
+
+        验收阻断 4 冻结的契约：调用 IdP 前必须进入 calling；旧 owner 的陈旧 token
+        不得通过。GREEN 以 owner token 的 SHA-256 比较实现。
+        """
+        raise NotImplementedError("owner-token fencing 契约待 GREEN 实现")
+
+
+class SessionRefreshCommit(Protocol):
+    """refresh 提交的原子边界：envelope 改写 + session 完成 + DB 时钟同事务。
+
+    SessionService 业务层只依赖本协议与 SecretBackend port；不出现 SQLAlchemy
+    session / external_session 参数（S4 Vault/KMS adapter 可实现同协议）。
+    """
+
+    async def commit(
+        self,
+        *,
+        session_id: UUID,
+        issuer: str,
+        subject: str,
+        expected_version: int,
+        owner_token: str,
+        payload: TokenEnvelopePayload,
+        expires_at: datetime,
+    ) -> datetime:
+        """同一数据库事务内改写 envelope 并 CAS 完成 session；失败=整体回滚并抛错。"""
+        raise NotImplementedError
+
+
+class LocalSessionRefreshUnitOfWork:
+    """RED 骨架：本地 PG 的 SessionRefreshCommit（GREEN 组合 put_in_session +
+    complete CAS + 同连接 DB 时钟）。"""
+
+    def __init__(
+        self,
+        *,
+        session_factory: Any,
+        secret_backend: Any,
+    ) -> None:
+        self._session_factory = session_factory
+        self._secret_backend = secret_backend
+
+    async def commit(
+        self,
+        *,
+        session_id: UUID,
+        issuer: str,
+        subject: str,
+        expected_version: int,
+        owner_token: str,
+        payload: TokenEnvelopePayload,
+        expires_at: datetime,
+    ) -> datetime:
+        raise NotImplementedError("LocalSessionRefreshUnitOfWork 待 GREEN 实现")
 
 
 class SessionService:

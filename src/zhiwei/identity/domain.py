@@ -205,7 +205,9 @@ class AuthSession(_FrozenModel):
 
     - cookie 只保存 SHA-256 hash，不保存可直接重放的 cookie 值；
     - 所有 session 更新使用 expected_version CAS（version 单调递增）；
-    - refresh 竞争 ownership 用有界 lease；revoke 后不得保留 lease。
+    - refresh 竞争 ownership 用有界 lease + 每次 ownership 唯一的 opaque owner token
+      （DB 只存 SHA-256 hash）；refresh_state 三态：idle / leased / calling。
+      leased→calling 与 calling→idle 的全部转换都以 owner token CAS 门禁（fencing）。
     """
 
     id: UUID
@@ -221,14 +223,15 @@ class AuthSession(_FrozenModel):
     version: int
     refresh_state: str = "idle"
     refresh_lease_expires_at: datetime | None = None
+    refresh_owner_token_hash: str | None = Field(default=None, min_length=64, max_length=64)
     created_at: datetime
     updated_at: datetime
     schema_version: int = 1
 
-    @field_validator("cookie_token_hash", "csrf_hash")
+    @field_validator("cookie_token_hash", "csrf_hash", "refresh_owner_token_hash")
     @classmethod
-    def _hash_is_sha256_hex(cls, value: str) -> str:
-        if not _SHA256_HEX_RE.fullmatch(value):
+    def _hash_is_sha256_hex(cls, value: str | None) -> str | None:
+        if value is not None and not _SHA256_HEX_RE.fullmatch(value):
             raise ValueError("must be a lowercase sha256 hex digest")
         return value
 
@@ -242,17 +245,28 @@ class AuthSession(_FrozenModel):
     @field_validator("refresh_state")
     @classmethod
     def _refresh_state_limited(cls, value: str) -> str:
-        if value not in {"idle", "refreshing"}:
-            raise ValueError("refresh_state must be idle or refreshing")
+        if value not in {"idle", "leased", "calling"}:
+            raise ValueError("refresh_state must be idle, leased or calling")
         return value
 
     @model_validator(mode="after")
     def _revoke_clears_lease(self) -> AuthSession:
         if (
             self.revoked_at is not None
-            and (self.refresh_state != "idle" or self.refresh_lease_expires_at is not None)
+            and (
+                self.refresh_state != "idle"
+                or self.refresh_lease_expires_at is not None
+                or self.refresh_owner_token_hash is not None
+            )
         ):
-            raise ValueError("revoked sessions must not hold a refresh lease")
+            raise ValueError("revoked sessions must not hold a refresh lease or owner token")
+        return self
+
+    @model_validator(mode="after")
+    def _owner_token_consistent_with_state(self) -> AuthSession:
+        """leased/calling 必须有 owner token；idle 必须没有（fencing 的前提）。"""
+        if (self.refresh_state == "idle") != (self.refresh_owner_token_hash is None):
+            raise ValueError("refresh owner token must be present iff refresh_state != idle")
         return self
 
     @model_validator(mode="after")
