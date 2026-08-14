@@ -808,12 +808,13 @@ async def test_group_operations_require_matching_workspace_context(
     )
     async with tenant_session(sessions, workspace_context) as session:
         repository = IdentityRepository(session, workspace_context)
-        group = await repository.create_group(
+        created, group = await repository.create_group(
             group_id,
             organization_id=organization_id,
             workspace_id=workspace_id,
             name="Finance",
         )
+        assert created is True
         assert group.workspace_id == workspace_id
         assert (
             await repository.get_group(
@@ -1365,3 +1366,335 @@ async def test_api_members_endpoints_enforce_scope(
         assert response.status_code == 403
         response = await client.get(f"/api/v1/organizations/{organization_id}/members")
         assert response.status_code == 404
+
+
+# --------------------------------------------------------------------------- P0 修复契约（bootstrap 接管 / 资源碰撞 / fail-closed 解析）
+
+
+@pytest.mark.asyncio
+async def test_api_bootstrap_takeover_rejected(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """attacker（无组织 context）猜测已存在 victim org UUID：403，零写入。"""
+    victim_org = uuid4()
+    await _seed_organization_and_workspace(
+        sessions, victim_org, uuid4(), workspace_name="Victim"
+    )
+    attacker_id = uuid4()
+    await _seed_principal(sessions, attacker_id)
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _no_org_actor(attacker_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/organizations",
+            json={"organization_id": str(victim_org)},
+            headers={"Idempotency-Key": "takeover"},
+        )
+        assert response.status_code == 403
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM memberships WHERE organization_id = $1", victim_org
+        ) == 0
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", victim_org
+        ) == 0
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_bootstrap_replay_confirms_owner(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """创建者重放 200 且响应一致；另一 principal 相同 key/body 必须 403 且零写入。"""
+    creator_id, foreign_id = uuid4(), uuid4()
+    await _seed_principal(sessions, creator_id)
+    await _seed_principal(sessions, foreign_id)
+    organization_id = uuid4()
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions
+        )
+    )
+    transport = ASGITransport(app=app)
+    body = {"organization_id": str(organization_id)}
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        first = await client.post(
+            "/api/v1/organizations", json=body, headers={"Idempotency-Key": "bootstrap-key"}
+        )
+        assert first.status_code == 201
+        replayed = await client.post(
+            "/api/v1/organizations", json=body, headers={"Idempotency-Key": "bootstrap-key"}
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == first.json()
+
+    foreign_app = FastAPI()
+    foreign_app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _no_org_actor(foreign_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=foreign_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/organizations", json=body, headers={"Idempotency-Key": "bootstrap-key"}
+        )
+        assert response.status_code == 403
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM memberships WHERE organization_id = $1", organization_id
+        ) == 1
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_bootstrap_concurrent_same_request(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """并发相同 actor/key/body：一个 201、一个 200；最终仅一个 Organization、Owner、幂等记录。"""
+    creator_id = uuid4()
+    await _seed_principal(sessions, creator_id)
+    organization_id = uuid4()
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = {"organization_id": str(organization_id)}
+        headers = {"Idempotency-Key": "concurrent-bootstrap"}
+        results = await asyncio.gather(
+            client.post("/api/v1/organizations", json=body, headers=headers),
+            client.post("/api/v1/organizations", json=body, headers=headers),
+        )
+    statuses = sorted(result.status_code for result in results)
+    assert statuses == [200, 201]
+    assert results[0].json() == results[1].json()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM organizations WHERE id = $1", organization_id
+        ) == 1
+        assert await connection.fetchval(
+            "SELECT count(*) FROM memberships WHERE organization_id = $1", organization_id
+        ) == 1
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records WHERE organization_id = $1",
+            organization_id,
+        ) == 1
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_existing_workspace_collision_rejected(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """已存在 workspace_id + 新幂等键：无论 payload 相同/不同均 409，原资源不变，零新记录。"""
+    organization_id = uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, uuid4(), workspace_name="Sales"
+    )
+    app = FastAPI()
+    app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created_id = uuid4()
+        body = {"workspace_id": str(created_id), "name": "Sales-2"}
+        first = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json=body,
+            headers={"Idempotency-Key": "ws-create-key"},
+        )
+        assert first.status_code == 201
+        replayed = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json=body,
+            headers={"Idempotency-Key": "ws-create-key"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == first.json()
+
+        # 已存在 id + 新 key：payload 相同 / 不同均 409
+        for payload in (body, {"workspace_id": str(created_id), "name": "Renamed"}):
+            response = await client.post(
+                f"/api/v1/organizations/{organization_id}/workspaces",
+                json=payload,
+                headers={"Idempotency-Key": "new-key"},
+            )
+            assert response.status_code == 409
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT name FROM workspaces WHERE id = $1", created_id
+        ) == "Sales-2"
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records "
+            "WHERE organization_id = $1 AND scope = 'organization.workspace.create' "
+            "AND idempotency_key = 'new-key'",
+            organization_id,
+        ) == 0
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_existing_group_collision_rejected(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    organization_id, workspace_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, workspace_id, workspace_name="Sales"
+    )
+    app = FastAPI()
+    app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: _org_actor(
+                organization_id, workspace_id=workspace_id
+            ),
+            sessions=sessions,
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        group_id = uuid4()
+        body = {"group_id": str(group_id), "name": "Finance"}
+        first = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/groups",
+            json=body,
+            headers={"Idempotency-Key": "group-create-key"},
+        )
+        assert first.status_code == 201
+        replayed = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/groups",
+            json=body,
+            headers={"Idempotency-Key": "group-create-key"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == first.json()
+
+        for payload in (body, {"group_id": str(group_id), "name": "Ops"}):
+            response = await client.post(
+                f"/api/v1/workspaces/{workspace_id}/groups",
+                json=payload,
+                headers={"Idempotency-Key": "new-key"},
+            )
+            assert response.status_code == 409
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT name FROM groups WHERE id = $1", group_id
+        ) == "Finance"
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_request_models_reject_unknown_fields(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """请求模型 fail closed：未知字段一律 422。"""
+    organization_id, workspace_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, workspace_id, workspace_name="Sales"
+    )
+    principal_id = uuid4()
+    await _seed_principal(sessions, principal_id)
+    org_app = FastAPI()
+    org_app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        )
+    )
+    workspaces_app = FastAPI()
+    workspaces_app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: _org_actor(
+                organization_id, workspace_id=workspace_id
+            ),
+            sessions=sessions,
+        )
+    )
+    members_app = FastAPI()
+    members_app.include_router(
+        create_memberships_router(
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        )
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=org_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/v1/organizations",
+            json={"organization_id": str(uuid4()), "name": "extra"},
+            headers={"Idempotency-Key": "k"},
+        )
+        assert response.status_code == 422
+
+    async with AsyncClient(
+        transport=ASGITransport(app=workspaces_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json={"workspace_id": str(uuid4()), "name": "X", "owner": "extra"},
+            headers={"Idempotency-Key": "k"},
+        )
+        assert response.status_code == 422
+        response = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/groups",
+            json={"group_id": str(uuid4()), "name": "G", "extra": 1},
+            headers={"Idempotency-Key": "k"},
+        )
+        assert response.status_code == 422
+
+    async with AsyncClient(
+        transport=ASGITransport(app=members_app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/organizations/{organization_id}/members",
+            json={"principal_id": str(principal_id), "role_bindings": ["member"], "note": "x"},
+            headers={"Idempotency-Key": "k"},
+        )
+        assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_api_idempotency_key_rejects_missing_empty_whitespace(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """缺失、空字符串、纯空白 Idempotency-Key 一律 422。"""
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions)
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        for headers in (
+            None,
+            {"Idempotency-Key": ""},
+            {"Idempotency-Key": "   "},
+        ):
+            response = await client.post(
+                "/api/v1/organizations",
+                json={"organization_id": str(uuid4())},
+                headers=headers,
+            )
+            assert response.status_code == 422
