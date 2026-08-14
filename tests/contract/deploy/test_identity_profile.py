@@ -158,9 +158,12 @@ def test_entrypoint_render_fails_closed_on_control_characters(dangerous: str) ->
             },
         )
         assert result.returncode != 0, "危险值必须在写文件前 fail closed"
-        if dangerous:
-            assert dangerous not in result.stderr, "fail closed 消息不得回显注入值"
-        else:
+        # 控制字符无法用子串断言（消息本身以换行结尾），断言注入值的可打印部分
+        # 不得被回显；空值必须被拒绝并说明原因
+        printable = "".join(ch for ch in dangerous if ch.isprintable())
+        if printable:
+            assert printable not in result.stderr, "fail closed 消息不得回显注入值"
+        if not dangerous:
             assert "empty" in result.stderr, "空值必须被拒绝并说明原因"
         assert "allowed" in result.stderr or "fail closed" in result.stderr, (
             f"stderr 必须出现明确字符契约消息:\n{result.stderr}"

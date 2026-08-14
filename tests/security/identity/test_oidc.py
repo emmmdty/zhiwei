@@ -571,7 +571,7 @@ async def _seed_legacy_refreshing_rows(seeded: list[Any]) -> None:
 
 
 async def _verify_0004_normalized_rows(seeded: list[Any]) -> None:
-    """升级后断言：refreshing → fail-closed revoke；idle/revoked 行保持合法。"""
+    """升级后断言：refreshing → fail-closed revoke（idle+revoked+version+1）；idle 行不变。"""
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
         rows = await connection.fetch(
@@ -583,23 +583,23 @@ async def _verify_0004_normalized_rows(seeded: list[Any]) -> None:
     finally:
         await connection.close()
     assert len(rows) == len(seeded)
-    by_state: dict[str, list[dict[str, Any]]] = {}
+    by_id = {r["id"]: dict(r) for r in rows}
     for r in rows:
-        by_state.setdefault(r["refresh_state"], []).append(dict(r))
-    refreshing_rows = by_state.pop("refreshing", [])
-    idle_rows = by_state.pop("idle", [])
-    assert by_state == {}, f"升级后出现意外 refresh_state: {by_state}"
-    assert len(refreshing_rows) == 2, "refreshing 行必须被归一化"
-    for r in refreshing_rows:
-        assert r["revoked_at"] is not None, "legacy refreshing 必须 fail-closed revoke"
-        assert r["refresh_lease_expires_at"] is None
-        assert r["refresh_owner_token_hash"] is None
-        assert r["version"] == 2, "fail-closed revoke 必须单调递增版本（1 → 2）"
-    for r in idle_rows:
-        assert r["revoked_at"] is None
-        assert r["refresh_lease_expires_at"] is None
-        assert r["refresh_owner_token_hash"] is None
-        assert r["version"] == 1
+        assert r["refresh_state"] == "idle", (
+            f"升级后不允许残留 refreshing/leased/calling: {r['refresh_state']}"
+        )
+    # seeded 顺序: [refreshing, refreshing, idle, revoked-idle]
+    for session_id in seeded[:2]:
+        row = by_id[session_id]
+        assert row["revoked_at"] is not None, "legacy refreshing 必须 fail-closed revoke"
+        assert row["refresh_lease_expires_at"] is None
+        assert row["refresh_owner_token_hash"] is None
+        assert row["version"] == 2, "fail-closed revoke 必须单调递增版本（1 → 2）"
+    for session_id in seeded[2:]:
+        row = by_id[session_id]
+        assert row["refresh_lease_expires_at"] is None
+        assert row["refresh_owner_token_hash"] is None
+        assert row["version"] == 1, "idle/revoked 行必须保持不变"
 
 
 async def _delete_seeded_sessions(seeded: list[Any]) -> None:
@@ -2195,19 +2195,19 @@ async def test_expired_calling_revoke_race_reclassified_when_other_path_revoked(
     ("refresh_state", "owner_hash", "lease_sql", "revoked_sql", "label"),
     [
         ("idle", _owner_hash(), "NULL", "NULL", "idle + owner hash"),
-        ("idle", "NULL", "now() + interval '30 seconds'", "NULL", "idle + lease"),
-        ("leased", "NULL", "now() + interval '30 seconds'", "NULL", "leased + null owner"),
-        ("calling", "NULL", "now() + interval '30 seconds'", "NULL", "calling + null owner"),
+        ("idle", None, "now() + interval '30 seconds'", "NULL", "idle + lease"),
+        ("leased", None, "now() + interval '30 seconds'", "NULL", "leased + null owner"),
+        ("calling", None, "now() + interval '30 seconds'", "NULL", "calling + null owner"),
         ("leased", _owner_hash(), "NULL", "NULL", "leased + null lease"),
         ("calling", _owner_hash(), "NULL", "NULL", "calling + null lease"),
         ("idle", _owner_hash(), "NULL", "now()", "revoked + owner"),
-        ("idle", "NULL", "now() + interval '30 seconds'", "now()", "revoked + lease"),
+        ("idle", None, "now() + interval '30 seconds'", "now()", "revoked + lease"),
     ],
 )
 async def test_db_rejects_violating_refresh_state_invariants(
     migrated_database: None,
     refresh_state: str,
-    owner_hash: str,
+    owner_hash: str | None,
     lease_sql: str,
     revoked_sql: str,
     label: str,
@@ -2230,7 +2230,7 @@ async def test_db_rejects_violating_refresh_state_invariants(
                 "refresh_lease_expires_at, refresh_owner_token_hash, schema_version) "
                 f"VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '8 hours', "
                 f"now() + interval '30 minutes', now(), now(), {revoked_sql}, 1, $8, "
-                f"{lease_sql}, {owner_hash}, 1)",
+                f"{lease_sql}, $9, 1)",
                 session_id,
                 hashlib.sha256(os.urandom(16)).hexdigest(),
                 principal,
@@ -2239,6 +2239,7 @@ async def test_db_rejects_violating_refresh_state_invariants(
                 str(uuid4()),
                 hashlib.sha256(os.urandom(16)).hexdigest(),
                 refresh_state,
+                owner_hash,
             )
         except asyncpg.CheckViolationError:
             return
