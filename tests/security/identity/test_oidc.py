@@ -11,7 +11,12 @@
   一律 403 且零 mutation；revoked / idle / absolute expired / disabled → 401 并清 cookie；
 - /me 与 GET /api/v1/organizations 的组织数据必须来自已验证 membership；
 - 多 replica refresh：数据库 CAS + 有界 lease 竞争，恰好一次 IdP refresh 调用，输家读取
-  winner 的新版本；invalid_grant → 本地 revoke；旧 logout/refresh 不得覆盖后来版本；
+  winner 的新版本；invalid_grant → 本地 revoke；winner 判定只用数据库时钟（应用/DB 时钟
+  偏差不得把并发 winner 误判为 stale）；输家等待上界 = lease 剩余（不是固定 2 秒）；废弃
+  lease（过期仍停在 refreshing）由下一位调用方接管完成或本地 revoke，不得永久卡死；
+  envelope 改写与 session 完成处于同一原子边界（中途失败不得留下 AAD/session version 不一致）；
+- logout 单调安全：同一 session 的 refresh 不得使撤销失效；API 只在服务端撤销确认后返回
+  204，本地撤销失败 fail closed，不得假装成功；
 - 全程 MockTransport + 本地签名 key，不访问真实 IdP；IdP token 不出现在任何 API 响应。
 """
 
@@ -25,6 +30,7 @@ import json
 import os
 import time
 from collections.abc import AsyncIterator, Iterator
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -43,6 +49,7 @@ from sqlalchemy.engine import make_url
 
 from zhiwei.app import create_app
 from zhiwei.config.settings import load_settings
+from zhiwei.identity import sessions as sessions_module
 from zhiwei.identity.sessions import SessionConflictError, SessionRevokedError
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -490,6 +497,23 @@ def _assert_no_sentinels(*texts: str) -> None:
     for text in texts:
         for sentinel in SENTINELS:
             assert sentinel not in text, f"sentinel {sentinel!r} 出现在响应/输出中"
+
+
+async def _wait_for_refresh_state(session_id: UUID, expected: str, timeout: float = 5.0) -> None:
+    """轮询 auth_sessions.refresh_state 直到到达预期状态（并发测试的同步点）。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            state = await connection.fetchval(
+                "SELECT refresh_state FROM auth_sessions WHERE id = $1", session_id
+            )
+        finally:
+            await connection.close()
+        if state == expected:
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"auth_sessions.refresh_state 未在 {timeout}s 内变为 {expected!r}")
 
 
 # --------------------------------------------------------------------------- C. OIDC login / callback
@@ -1117,9 +1141,16 @@ async def test_revoke_during_refresh_race_fails_closed(
 
 
 @pytest.mark.asyncio
-async def test_stale_logout_replay_does_not_overwrite_refreshed_session(
+async def test_stale_logout_replay_still_revokes_refreshed_session(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
+    """修订（验收确认）：logout 是单调安全操作，旧版本 logout 重放不得被刷新击败。
+
+    原契约冻结了「旧 logout 不撤销刷新后 session」的语义（CAS revoke 失败即放弃），
+    但 session id 是永不重用的 uuid，撤销按 id 生效与版本无关：同一 session 的刷新
+    不应使撤销失效。logout 必须单调：无论 expected_version 是否过期，只要 session
+    仍存活，撤销必须生效并清空 lease（版本仍递增，打断在途 refresh CAS）。
+    """
     app, client, idp = app_and_client
     await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
@@ -1127,15 +1158,91 @@ async def test_stale_logout_replay_does_not_overwrite_refreshed_session(
     assert row is not None
 
     await app.state.session_service.refresh_session(row["id"], expected_version=1)
-    # 旧版本 logout 重放（模拟旧请求迟到）：不得覆盖已刷新版本
-    assert (
-        await app.state.session_service.revoke_session(row["id"], expected_version=1) is False
-    )
+    # 旧版本 logout 重放（模拟旧请求迟到）：必须仍撤销服务端 session
+    assert await app.state.session_service.revoke_session(
+        row["id"], expected_version=1
+    ) is True
     final = await _session_row(cookie)
     assert final is not None
-    assert final["version"] == 2
-    assert final["revoked_at"] is None
-    assert (await client.get("/api/v1/me")).status_code == 200
+    assert final["version"] == 3
+    assert final["revoked_at"] is not None
+    assert final["refresh_lease_expires_at"] is None
+    assert (await client.get("/api/v1/me")).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_logout_race_with_refresh_still_revokes_server_session(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
+) -> None:
+    """冻结（验收阻断 1）：logout 与 refresh 竞态时，服务端 session 必须被撤销。
+
+    竞态排列：actor 解析读到 v1 后、revoke CAS 执行前，refresh 抢先提交 v2。
+    若 revoke 按 expected_version CAS 会失败；logout 是单调安全操作，必须仍撤销
+    服务端 session——handler 不得返回 204 而服务端 session 存活。
+    """
+    app, client, idp = app_and_client
+    await _seed_alice_flow()
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+
+    me = await client.get("/api/v1/me")
+    csrf_token = me.json()["csrf_token"]
+    headers = {"X-CSRF-Token": csrf_token, "Origin": "https://test"}
+
+    store = app.state.session_service._session_store
+    orig_revoke = store.revoke_session
+
+    async def racy_revoke(session_id: UUID, expected_version: int) -> bool:
+        # 模拟竞态：revoke CAS 执行前，refresh 抢先提交 v2
+        await app.state.session_service.refresh_session(session_id, expected_version=1)
+        return await orig_revoke(session_id, expected_version)
+
+    store.revoke_session = racy_revoke
+    try:
+        response = await client.post("/auth/logout", headers=headers)
+        assert response.status_code == 204
+        final = await _session_row(cookie)
+        assert final is not None
+        assert final["revoked_at"] is not None
+        assert (await client.get("/api/v1/me")).status_code == 401
+    finally:
+        store.revoke_session = orig_revoke
+
+
+@pytest.mark.asyncio
+async def test_logout_fails_closed_when_local_revoke_unavailable(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
+) -> None:
+    """冻结（验收阻断 1）：本地 revoke 未确认时，logout 不得返回 204 假装成功。
+
+    revoke 返回 False（撤销未生效）而服务端 session 仍存活时，handler 必须
+    fail closed（非 204），并保留 cookie 供客户端重试。
+    """
+    app, client, idp = app_and_client
+    await _seed_alice_flow()
+    cookie = await _perform_login(client, idp)
+
+    me = await client.get("/api/v1/me")
+    csrf_token = me.json()["csrf_token"]
+    headers = {"X-CSRF-Token": csrf_token, "Origin": "https://test"}
+
+    store = app.state.session_service._session_store
+    orig_revoke = store.revoke_session
+
+    async def failing_revoke(session_id: UUID, expected_version: int) -> bool:
+        return False
+
+    store.revoke_session = failing_revoke
+    try:
+        response = await client.post("/auth/logout", headers=headers)
+        assert response.status_code != 204
+        final = await _session_row(cookie)
+        assert final is not None
+        assert final["revoked_at"] is None
+        assert (await client.get("/api/v1/me")).status_code == 200
+    finally:
+        store.revoke_session = orig_revoke
 
 
 @pytest.mark.asyncio
@@ -1168,3 +1275,226 @@ async def test_session_and_envelope_survive_restart(
         assert idp.refresh_calls == 1
     finally:
         await restarted.state.dispose_engines()
+
+
+# --------------------------------------------------------------------------- F. 验收阻断冻结：并发 refresh 契约
+
+
+@pytest.mark.asyncio
+async def test_refresh_loser_accepts_concurrent_winner_under_app_db_clock_skew(
+    migrated_database: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    keyring_path: Path,
+    idp: FakeIdP,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """冻结（验收阻断 2）：winner 判定不得比较应用时钟与 DB updated_at。
+
+    独立反例：应用时钟比 DB 快 5s 时，并发 winner 的 updated_at（DB）落在 loser 的
+    attempted_at（应用时钟）之前，被判为 stale。attempt 时间必须与 updated_at 同源
+    （数据库时钟域），时钟偏差不得改变并发 winner 判定。
+    """
+    await _seed_alice_flow()
+    _, client, _ = app_and_client
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+
+    # 模拟应用时钟领先 DB 时钟 5s
+    real = datetime.now(UTC)
+    monkeypatch.setattr(
+        sessions_module, "utc_now", lambda: real + timedelta(seconds=5)
+    )
+
+    second = _new_app(keyring_path, idp)
+    try:
+        s2 = second.state.session_service
+        # 先让 loser 处于 lease 竞争失败路径：row 停在 refreshing（winner 在途）
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            await connection.execute(
+                "UPDATE auth_sessions SET refresh_state = 'refreshing', "
+                "refresh_lease_expires_at = now() + interval '30 seconds' "
+                "WHERE id = $1",
+                row["id"],
+            )
+        finally:
+            await connection.close()
+
+        # loser 的 _wait_for_winner 首次重读：模拟 winner 恰在其 I/O 期间完成
+        orig_get = s2._session_store.get_session
+        calls = {"n": 0}
+
+        async def completing_get(session_id: UUID):
+            calls["n"] += 1
+            if calls["n"] == 2:  # _wait_for_winner 的首次重读
+                await asyncio.sleep(0.2)
+                connection = await asyncpg.connect(ADMIN_DSN)
+                try:
+                    await connection.execute(
+                        "UPDATE auth_sessions SET version = 2, updated_at = now(), "
+                        "refresh_state = 'idle', refresh_lease_expires_at = NULL "
+                        "WHERE id = $1",
+                        session_id,
+                    )
+                finally:
+                    await connection.close()
+            return await orig_get(session_id)
+
+        s2._session_store.get_session = completing_get
+        try:
+            result = await s2.refresh_session(row["id"], expected_version=1)
+        finally:
+            s2._session_store.get_session = orig_get
+    finally:
+        await second.state.dispose_engines()
+
+    # 冻结：并发 winner 结果必须被接受，不得因时钟偏差抛 SessionConflictError
+    assert result.version == 2
+    assert (await client.get("/api/v1/me")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_refresh_loser_waits_for_slow_winner_within_lease(
+    migrated_database: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    keyring_path: Path,
+    idp: FakeIdP,
+) -> None:
+    """冻结（验收阻断 2）：输家等待上界是 lease 剩余，不是固定 2 秒。
+
+    winner 的 IdP 刷新耗时 3s（> 当前 40×0.05=2s 轮询预算，< 30s lease）；
+    loser 必须等到 winner 完成并返回其新版本，不得提前抛 SessionConflictError。
+    """
+    await _seed_alice_flow()
+    app, client, _ = app_and_client
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+
+    second = _new_app(keyring_path, idp)
+    try:
+        s1 = app.state.session_service
+        s2 = second.state.session_service
+        orig_refresh = s1._oidc_service.refresh_tokens
+
+        async def slow_refresh(*args: Any, **kwargs: Any) -> Any:
+            await asyncio.sleep(3.0)
+            return await orig_refresh(*args, **kwargs)
+
+        s1._oidc_service.refresh_tokens = slow_refresh
+
+        winner = asyncio.create_task(
+            s1.refresh_session(row["id"], expected_version=1)
+        )
+        await _wait_for_refresh_state(row["id"], "refreshing")
+        loser = asyncio.create_task(
+            s2.refresh_session(row["id"], expected_version=1)
+        )
+        results = await asyncio.gather(winner, loser)
+        assert {r.version for r in results} == {2}
+        assert idp.refresh_calls == 1
+        final = await _session_row(cookie)
+        assert final is not None
+        assert final["version"] == 2
+        assert final["revoked_at"] is None
+        assert (await client.get("/api/v1/me")).status_code == 200
+    finally:
+        await second.state.dispose_engines()
+
+
+@pytest.mark.asyncio
+async def test_refresh_takes_over_expired_abandoned_lease(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
+) -> None:
+    """冻结（验收阻断 2）：lease 过期且行停在 refreshing（winner 崩溃遗留）时，
+    下一位调用方必须接管 ownership 完成刷新（数据库侧 attempt/lease ownership），
+    不得永久卡死或只抛 SessionConflictError。
+    """
+    app, client, idp = app_and_client
+    await _seed_alice_flow()
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "UPDATE auth_sessions SET refresh_state = 'refreshing', "
+            "refresh_lease_expires_at = now() - interval '1 second' "
+            "WHERE id = $1",
+            row["id"],
+        )
+    finally:
+        await connection.close()
+
+    result = await app.state.session_service.refresh_session(
+        row["id"], expected_version=1
+    )
+    assert result.version == 2
+    final = await _session_row(cookie)
+    assert final is not None
+    assert final["refresh_state"] == "idle"
+    assert final["refresh_lease_expires_at"] is None
+    assert final["revoked_at"] is None
+    assert idp.refresh_calls == 1
+    assert (await client.get("/api/v1/me")).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_refresh_envelope_and_session_complete_atomically(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
+) -> None:
+    """冻结（验收阻断 2）：envelope 改写与 session 完成处于同一原子边界。
+
+    envelope put 与 complete_refresh CAS 分属两个事务时，进程在两者之间失败会留下
+    AAD/session version 不一致：旧 envelope 必须仍可用当前 session version 的 AAD
+    解密，重试刷新必须成功；失败不得破坏既有 session 的可解性。
+    """
+    app, client, idp = app_and_client
+    await _seed_alice_flow()
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+
+    store = app.state.session_service._session_store
+    orig_complete = store.complete_refresh
+    crashed = {"done": False}
+
+    async def crash_after_envelope(*args: Any, **kwargs: Any) -> Any:
+        if not crashed["done"]:
+            crashed["done"] = True
+            raise SessionConflictError(
+                "simulated process death between envelope put and session CAS"
+            )
+        return await orig_complete(*args, **kwargs)
+
+    store.complete_refresh = crash_after_envelope
+    try:
+        with pytest.raises(SessionConflictError):
+            await app.state.session_service.refresh_session(
+                row["id"], expected_version=1
+            )
+    finally:
+        store.complete_refresh = orig_complete
+
+    # 失败后 session 仍 v1 且未 revoke；旧 envelope 必须仍可用 v1 AAD 解密
+    after = await _session_row(cookie)
+    assert after is not None
+    assert after["version"] == 1
+    assert after["revoked_at"] is None
+    session = await app.state.session_service.authenticate_cookie(cookie)
+    assert session is not None
+    payload = await app.state.session_service.decrypt_tokens(session)
+    assert payload.refresh_token == f"{REFRESH_SENTINEL}.1"
+
+    # 重试刷新必须成功 → v2，envelope 与 v2 AAD 一致
+    refreshed = await app.state.session_service.refresh_session(
+        row["id"], expected_version=1
+    )
+    assert refreshed.version == 2
+    final = await _session_row(cookie)
+    assert final is not None
+    assert final["version"] == 2
+    assert final["refresh_state"] == "idle"
+    assert (await client.get("/api/v1/me")).status_code == 200
