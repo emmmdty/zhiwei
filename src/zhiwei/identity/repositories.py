@@ -14,6 +14,7 @@ from uuid import UUID
 
 from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zhiwei.identity.commands import IdempotencyResult
@@ -57,7 +58,7 @@ from zhiwei.persistence.models import (
 from zhiwei.persistence.models import (
     WorkspaceMembership as WorkspaceMembershipRow,
 )
-from zhiwei.persistence.repositories import TenantRepository
+from zhiwei.persistence.repositories import IdempotencyLookup, TenantRepository
 from zhiwei.persistence.tenant import (
     TenantContext,
     TenantContextRequired,
@@ -129,25 +130,30 @@ class IdentityRepository:
 
     # ------------------------------------------------------------------ organization / workspace
 
-    async def create_organization(self, organization_id: UUID, *, status: str) -> Organization:
+    async def create_organization(
+        self, organization_id: UUID, *, status: str
+    ) -> tuple[bool, Organization]:
+        """INSERT ... RETURNING 原子区分「本次创建」与「组织已存在」，无先查后插 TOCTOU。"""
         context = self._require_context()
         self._require_organization(organization_id, context)
         self._require_org_level(context)
-        await self._session.execute(
-            insert(OrganizationRow)
-            .values(
-                id=organization_id,
-                status=status,
-                retention_policy={},
-                schema_version=1,
+        inserted = (
+            await self._session.execute(
+                insert(OrganizationRow)
+                .values(
+                    id=organization_id,
+                    status=status,
+                    retention_policy={},
+                    schema_version=1,
+                )
+                .on_conflict_do_nothing(constraint="pk_organizations")
+                .returning(OrganizationRow.id)
             )
-            .on_conflict_do_nothing()
-        )
+        ).scalar_one_or_none()
         row = await self._session.get(OrganizationRow, organization_id)
         if row is None:
-            # fail closed：ON CONFLICT DO NOTHING 后组织仍不可见，视为未创建
             raise RuntimeError("organization is not visible in tenant context after create")
-        return self._to_organization(row)
+        return inserted is not None, self._to_organization(row)
 
     async def get_organization(self, organization_id: UUID) -> Organization | None:
         context = self._require_context()
@@ -158,31 +164,40 @@ class IdentityRepository:
 
     async def create_workspace(
         self, workspace_id: UUID, *, organization_id: UUID, name: str
-    ) -> Workspace:
+    ) -> tuple[bool, Workspace]:
+        """INSERT ... RETURNING 原子区分创建/id 冲突；名称冲突由唯一约束报错转换。"""
         context = self._require_context()
         self._require_organization(organization_id, context)
         self._require_org_level(context)
-        await self._session.execute(
-            insert(WorkspaceRow)
-            .values(
-                id=workspace_id,
-                organization_id=organization_id,
-                name=name,
-                classification_ceiling="PUBLIC",
-                budget_policy={},
-                schema_version=1,
-            )
-            .on_conflict_do_nothing()
-        )
+        try:
+            inserted = (
+                await self._session.execute(
+                    insert(WorkspaceRow)
+                    .values(
+                        id=workspace_id,
+                        organization_id=organization_id,
+                        name=name,
+                        classification_ceiling="PUBLIC",
+                        budget_policy={},
+                        schema_version=1,
+                    )
+                    .on_conflict_do_nothing(constraint="pk_workspaces")
+                    .returning(WorkspaceRow.id)
+                )
+            ).scalar_one_or_none()
+        except IntegrityError as error:
+            # 名称唯一约束（uq_workspaces_org_name）命中：同一组织内重名
+            raise NameConflictError(
+                "workspace name is already taken in this organization"
+            ) from error
         row = (
             await self._session.execute(
                 select(WorkspaceRow).where(WorkspaceRow.id == workspace_id)
             )
         ).scalar_one_or_none()
         if row is None:
-            # insert 被 (organization_id, name) 唯一约束拦截：名称已占用
             raise NameConflictError("workspace name is already taken in this organization")
-        return self._to_workspace(row)
+        return inserted is not None, self._to_workspace(row)
 
     async def list_workspaces(self, *, organization_id: UUID) -> list[Workspace]:
         context = self._require_context()
@@ -212,6 +227,12 @@ class IdentityRepository:
         )
         return IdempotencyResult(created=result.created, response=result.response)
 
+    async def lookup_idempotency(
+        self, *, scope: str, key: str
+    ) -> IdempotencyLookup | None:
+        """只读幂等查询：委托 S0 基础，不写入任何记录（既有资源路径专用）。"""
+        return await self._tenant.lookup_idempotency(scope=scope, key=key)
+
     # ------------------------------------------------------------------ memberships
 
     async def add_membership(
@@ -220,20 +241,24 @@ class IdentityRepository:
         principal_id: UUID,
         organization_id: UUID,
         role_bindings: frozenset[str],
-    ) -> Membership:
+    ) -> tuple[bool, Membership]:
+        """INSERT ... RETURNING 原子区分新 membership 与已存在 membership。"""
         context = self._require_context()
         self._require_organization(organization_id, context)
         self._require_org_level(context)
         await self._require_active(principal_id)
-        await self._session.execute(
-            insert(MembershipRow)
-            .values(
-                principal_id=principal_id,
-                organization_id=organization_id,
-                role_bindings=sorted(role_bindings),
+        inserted = (
+            await self._session.execute(
+                insert(MembershipRow)
+                .values(
+                    principal_id=principal_id,
+                    organization_id=organization_id,
+                    role_bindings=sorted(role_bindings),
+                )
+                .on_conflict_do_nothing(constraint="pk_memberships")
+                .returning(MembershipRow.principal_id)
             )
-            .on_conflict_do_nothing()
-        )
+        ).scalar_one_or_none()
         row = (
             await self._session.execute(
                 select(MembershipRow).where(
@@ -242,7 +267,7 @@ class IdentityRepository:
                 )
             )
         ).scalar_one()
-        return self._to_membership(row)
+        return inserted is not None, self._to_membership(row)
 
     async def get_membership(
         self, *, principal_id: UUID, organization_id: UUID
@@ -344,21 +369,29 @@ class IdentityRepository:
 
     async def create_group(
         self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID, name: str
-    ) -> Group:
+    ) -> tuple[bool, Group]:
+        """INSERT ... RETURNING 原子区分创建/id 冲突；名称冲突由唯一约束报错转换。"""
         context = self._require_context()
         self._require_organization(organization_id, context)
         self._require_workspace(workspace_id, context)
-        await self._session.execute(
-            insert(GroupRow)
-            .values(
-                id=group_id,
-                organization_id=organization_id,
-                workspace_id=workspace_id,
-                name=name,
-                schema_version=1,
-            )
-            .on_conflict_do_nothing()
-        )
+        try:
+            inserted = (
+                await self._session.execute(
+                    insert(GroupRow)
+                    .values(
+                        id=group_id,
+                        organization_id=organization_id,
+                        workspace_id=workspace_id,
+                        name=name,
+                        schema_version=1,
+                    )
+                    .on_conflict_do_nothing(constraint="pk_groups")
+                    .returning(GroupRow.id)
+                )
+            ).scalar_one_or_none()
+        except IntegrityError as error:
+            # 名称唯一约束（uq_groups_scope_name）命中：同一 workspace 内重名
+            raise NameConflictError("group name is already taken in this workspace") from error
         row = (
             await self._session.execute(
                 select(GroupRow).where(
@@ -369,9 +402,8 @@ class IdentityRepository:
             )
         ).scalar_one_or_none()
         if row is None:
-            # insert 被 (organization_id, workspace_id, name) 唯一约束拦截：名称已占用
             raise NameConflictError("group name is already taken in this workspace")
-        return self._to_group(row)
+        return inserted is not None, self._to_group(row)
 
     async def get_group(
         self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID

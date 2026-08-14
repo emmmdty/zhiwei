@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.identity.commands import (
     IdempotencyRequest,
+    OrganizationExistsError,
     PrincipalDisabledError,
     PrincipalNotFoundError,
     canonical_request_digest,
@@ -36,6 +37,7 @@ from zhiwei.persistence.tenant import (
 _REQUEST_ERRORS = (
     TenantContextRequired,
     TenantScopeError,
+    OrganizationExistsError,
     PrincipalDisabledError,
     PrincipalNotFoundError,
     IdempotencyConflict,
@@ -43,7 +45,7 @@ _REQUEST_ERRORS = (
 
 
 class CreateOrganizationRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     organization_id: UUID
 
@@ -53,6 +55,10 @@ def _reject_write(error: Exception) -> NoReturn:
     if isinstance(error, (TenantContextRequired, TenantScopeError)):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="outside tenant scope"
+        ) from error
+    if isinstance(error, OrganizationExistsError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="organization already exists"
         ) from error
     if isinstance(error, PrincipalDisabledError):
         raise HTTPException(
@@ -108,7 +114,9 @@ def create_organizations_router(
     async def bootstrap_organization(
         request: CreateOrganizationRequest,
         request_scope: Request,
-        idempotency_key: Annotated[str, Header(min_length=1, alias="Idempotency-Key")],
+        idempotency_key: Annotated[
+        str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+    ],
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> JSONResponse:
         # 首登 principal 可以没有 active Organization：bootstrap 以新 org 为事务上下文

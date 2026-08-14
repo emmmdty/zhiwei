@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from zhiwei.identity.commands import (
     IdempotencyRequest,
     NameConflictError,
+    ResourceConflictError,
     canonical_request_digest,
     create_group,
     create_workspace,
@@ -36,19 +37,20 @@ _REQUEST_ERRORS = (
     TenantContextRequired,
     TenantScopeError,
     NameConflictError,
+    ResourceConflictError,
     IdempotencyConflict,
 )
 
 
 class CreateWorkspaceRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     workspace_id: UUID
     name: str
 
 
 class CreateGroupRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     group_id: UUID
     name: str
@@ -74,6 +76,10 @@ def _reject_write(error: Exception) -> NoReturn:
     if isinstance(error, NameConflictError):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="resource name is already taken"
+        ) from error
+    if isinstance(error, ResourceConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="resource already exists"
         ) from error
     if isinstance(error, IdempotencyConflict):
         raise HTTPException(
@@ -137,7 +143,9 @@ def create_workspaces_router(
         organization_id: UUID,
         request: CreateWorkspaceRequest,
         request_scope: Request,
-        idempotency_key: Annotated[str, Header(min_length=1, alias="Idempotency-Key")],
+        idempotency_key: Annotated[
+        str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+    ],
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> JSONResponse:
         if actor.organization_id is None:
@@ -189,7 +197,9 @@ def create_workspaces_router(
         workspace_id: UUID,
         request: CreateGroupRequest,
         request_scope: Request,
-        idempotency_key: Annotated[str, Header(min_length=1, alias="Idempotency-Key")],
+        idempotency_key: Annotated[
+        str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+    ],
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> JSONResponse:
         if actor.organization_id is None:

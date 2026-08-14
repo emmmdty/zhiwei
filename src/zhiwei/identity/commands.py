@@ -8,13 +8,12 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from zhiwei.contracts.canonical import digest as canonical_digest
 from zhiwei.identity.domain import (
     ExternalIdentity,
     ExternalIdentityConflictError,
@@ -24,14 +23,17 @@ from zhiwei.identity.domain import (
     Membership,
     NameConflictError,
     Organization,
+    OrganizationExistsError,
     Principal,
     PrincipalDisabledError,
     PrincipalKind,
     PrincipalNotFoundError,
     PrincipalStatus,
+    ResourceConflictError,
     Workspace,
     WorkspaceMembership,
 )
+from zhiwei.persistence.repositories import IdempotencyConflict, IdempotencyLookup
 
 IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE = "organization.create"
 IDEMPOTENCY_SCOPE_WORKSPACE_CREATE = "organization.workspace.create"
@@ -46,8 +48,10 @@ __all__ = [
     "IdempotencyResult",
     "IdentityCommandError",
     "NameConflictError",
+    "OrganizationExistsError",
     "PrincipalDisabledError",
     "PrincipalNotFoundError",
+    "ResourceConflictError",
     "add_group_member",
     "add_org_membership",
     "add_workspace_membership",
@@ -89,14 +93,12 @@ class CommandOutcome(BaseModel):
 
 
 def canonical_request_digest(method: str, path: str, body: dict[str, Any]) -> str:
-    """规范化请求 digest：method + path + body，重复 key 的不同请求必然产生不同 digest。"""
-    canonical = json.dumps(
-        {"method": method.upper(), "path": path, "body": body},
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """规范化请求 digest：method + path + body，复用项目 RFC 8785/JCS + NFC canonical 实现。
+
+    键序无关（JCS 排序）且 NFC/NFD 等价文本 digest 相同；method/path/body 真正不同时
+    digest 必然不同。
+    """
+    return canonical_digest({"method": method.upper(), "path": path, "body": body})
 
 
 class IdentityRepositoryProtocol(Protocol):
@@ -133,15 +135,19 @@ class IdentityRepositoryProtocol(Protocol):
 
     async def create_organization(
         self, organization_id: UUID, *, status: str
-    ) -> Organization: ...
+    ) -> tuple[bool, Organization]: ...
 
     async def get_organization(self, organization_id: UUID) -> Organization | None: ...
 
     async def create_workspace(
         self, workspace_id: UUID, *, organization_id: UUID, name: str
-    ) -> Workspace: ...
+    ) -> tuple[bool, Workspace]: ...
 
     async def list_workspaces(self, *, organization_id: UUID) -> list[Workspace]: ...
+
+    async def lookup_idempotency(
+        self, *, scope: str, key: str
+    ) -> IdempotencyLookup | None: ...
 
     async def add_membership(
         self,
@@ -149,7 +155,7 @@ class IdentityRepositoryProtocol(Protocol):
         principal_id: UUID,
         organization_id: UUID,
         role_bindings: frozenset[str],
-    ) -> Membership: ...
+    ) -> tuple[bool, Membership]: ...
 
     async def remove_membership(
         self, *, principal_id: UUID, organization_id: UUID
@@ -171,7 +177,7 @@ class IdentityRepositoryProtocol(Protocol):
         organization_id: UUID,
         workspace_id: UUID,
         name: str,
-    ) -> Group: ...
+    ) -> tuple[bool, Group]: ...
 
     async def add_group_member(
         self,
@@ -248,6 +254,40 @@ async def _replay_or_none(
     return CommandOutcome(created=False, response=result.response)
 
 
+def _organization_scope(owner_principal_id: UUID) -> str:
+    """bootstrap 幂等域绑定 owner：精确重放必须由创建者本人发起。
+
+    S0 idempotency 键空间为 (org, workspace, scope, key)；把 owner 编入 scope 后，
+    他人重放创建者请求会命中不同的幂等域 → 只读查询无记录 → 拒绝（租户接管防护）。
+    """
+    return f"{IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE}:{owner_principal_id}"
+
+
+async def _existing_organization_outcome(
+    repository: IdentityRepositoryProtocol,
+    *,
+    organization_id: UUID,
+    owner_principal_id: UUID,
+    idempotency: IdempotencyRequest | None,
+    response: dict[str, Any],
+) -> CommandOutcome:
+    """既有组织的 bootstrap 路径：只读幂等查询 + owner 匹配，绝不写 membership/claim。
+
+    无幂等键、无匹配记录（猜测 victim UUID 的接管尝试）、或请求不是创建者本人的
+    精确重放——一律 OrganizationExistsError（API 映射 403）。
+    """
+    if idempotency is None:
+        raise OrganizationExistsError("organization already exists")
+    lookup = await repository.lookup_idempotency(
+        scope=_organization_scope(owner_principal_id), key=idempotency.key
+    )
+    if lookup is None:
+        raise OrganizationExistsError("organization already exists")
+    if lookup.request_digest != idempotency.request_digest:
+        raise IdempotencyConflict("idempotency key was already used for another request")
+    return CommandOutcome(created=False, response=lookup.response)
+
+
 async def create_organization(
     repository: IdentityRepositoryProtocol,
     *,
@@ -255,23 +295,58 @@ async def create_organization(
     owner_principal_id: UUID,
     idempotency: IdempotencyRequest | None = None,
 ) -> CommandOutcome:
-    """Organization bootstrap：原子创建 Organization 与创建者的 Owner Membership。"""
+    """Organization bootstrap：原子创建 Organization 与创建者的 Owner Membership。
+
+    INSERT ... RETURNING 原子区分「本次创建」与「组织已存在」：组织已存在时绝不先写
+    Owner membership（租户接管防护），只走只读幂等重放路径。
+    """
     response = {"id": str(organization_id), "status": "active"}
-    await repository.create_organization(organization_id, status="active")
+    created, _ = await repository.create_organization(organization_id, status="active")
+    if not created:
+        return await _existing_organization_outcome(
+            repository,
+            organization_id=organization_id,
+            owner_principal_id=owner_principal_id,
+            idempotency=idempotency,
+            response=response,
+        )
     await repository.add_membership(
         principal_id=owner_principal_id,
         organization_id=organization_id,
         role_bindings=frozenset({"owner"}),
     )
-    replayed = await _replay_or_none(
-        repository,
-        scope=IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE,
-        idempotency=idempotency,
-        response=response,
-    )
-    if replayed is not None:
-        return replayed
+    if idempotency is not None:
+        result = await repository.claim_idempotency(
+            scope=_organization_scope(owner_principal_id),
+            key=idempotency.key,
+            request_digest=idempotency.request_digest,
+            response=response,
+        )
+        if not result.created:
+            return CommandOutcome(created=False, response=result.response)
     return CommandOutcome(created=True, response=response)
+
+
+async def _existing_resource_outcome(
+    repository: IdentityRepositoryProtocol,
+    *,
+    scope: str,
+    idempotency: IdempotencyRequest | None,
+    response: dict[str, Any],
+) -> CommandOutcome:
+    """既有资源（id 已存在）路径：只读幂等查询，绝不写新幂等记录。
+
+    新幂等键 → ResourceConflictError（409）；记录存在但 digest 不同 → IdempotencyConflict
+    （409）；记录存在且 digest 一致 → 原始重放（200，返回首次响应）。
+    """
+    if idempotency is None:
+        raise ResourceConflictError("resource already exists")
+    lookup = await repository.lookup_idempotency(scope=scope, key=idempotency.key)
+    if lookup is None:
+        raise ResourceConflictError("resource already exists")
+    if lookup.request_digest != idempotency.request_digest:
+        raise IdempotencyConflict("idempotency key was already used for another request")
+    return CommandOutcome(created=False, response=lookup.response)
 
 
 async def create_workspace(
@@ -287,15 +362,25 @@ async def create_workspace(
         "organization_id": str(organization_id),
         "name": name,
     }
-    await repository.create_workspace(workspace_id, organization_id=organization_id, name=name)
-    replayed = await _replay_or_none(
-        repository,
-        scope=IDEMPOTENCY_SCOPE_WORKSPACE_CREATE,
-        idempotency=idempotency,
-        response=response,
+    created, _ = await repository.create_workspace(
+        workspace_id, organization_id=organization_id, name=name
     )
-    if replayed is not None:
-        return replayed
+    if not created:
+        return await _existing_resource_outcome(
+            repository,
+            scope=IDEMPOTENCY_SCOPE_WORKSPACE_CREATE,
+            idempotency=idempotency,
+            response=response,
+        )
+    if idempotency is not None:
+        result = await repository.claim_idempotency(
+            scope=IDEMPOTENCY_SCOPE_WORKSPACE_CREATE,
+            key=idempotency.key,
+            request_digest=idempotency.request_digest,
+            response=response,
+        )
+        if not result.created:
+            return CommandOutcome(created=False, response=result.response)
     return CommandOutcome(created=True, response=response)
 
 
@@ -313,19 +398,27 @@ async def add_org_membership(
         "organization_id": str(organization_id),
         "role_bindings": sorted(role_bindings),
     }
-    await repository.add_membership(
+    created, _ = await repository.add_membership(
         principal_id=principal_id,
         organization_id=organization_id,
         role_bindings=role_bindings,
     )
-    replayed = await _replay_or_none(
-        repository,
-        scope=IDEMPOTENCY_SCOPE_MEMBER_ADD,
-        idempotency=idempotency,
-        response=response,
-    )
-    if replayed is not None:
-        return replayed
+    if not created:
+        return await _existing_resource_outcome(
+            repository,
+            scope=IDEMPOTENCY_SCOPE_MEMBER_ADD,
+            idempotency=idempotency,
+            response=response,
+        )
+    if idempotency is not None:
+        result = await repository.claim_idempotency(
+            scope=IDEMPOTENCY_SCOPE_MEMBER_ADD,
+            key=idempotency.key,
+            request_digest=idempotency.request_digest,
+            response=response,
+        )
+        if not result.created:
+            return CommandOutcome(created=False, response=result.response)
     return CommandOutcome(created=True, response=response)
 
 
@@ -386,17 +479,25 @@ async def create_group(
         "workspace_id": str(workspace_id),
         "name": name,
     }
-    await repository.create_group(
+    created, _ = await repository.create_group(
         group_id, organization_id=organization_id, workspace_id=workspace_id, name=name
     )
-    replayed = await _replay_or_none(
-        repository,
-        scope=IDEMPOTENCY_SCOPE_GROUP_CREATE,
-        idempotency=idempotency,
-        response=response,
-    )
-    if replayed is not None:
-        return replayed
+    if not created:
+        return await _existing_resource_outcome(
+            repository,
+            scope=IDEMPOTENCY_SCOPE_GROUP_CREATE,
+            idempotency=idempotency,
+            response=response,
+        )
+    if idempotency is not None:
+        result = await repository.claim_idempotency(
+            scope=IDEMPOTENCY_SCOPE_GROUP_CREATE,
+            key=idempotency.key,
+            request_digest=idempotency.request_digest,
+            response=response,
+        )
+        if not result.created:
+            return CommandOutcome(created=False, response=result.response)
     return CommandOutcome(created=True, response=response)
 
 

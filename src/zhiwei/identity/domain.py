@@ -36,6 +36,14 @@ class NameConflictError(IdentityCommandError):
     """Workspace/Organization 范围内资源名称已被占用。"""
 
 
+class OrganizationExistsError(IdentityCommandError):
+    """bootstrap 目标组织已存在且请求不是创建者的精确重放（租户接管拒绝）。"""
+
+
+class ResourceConflictError(IdentityCommandError):
+    """目标资源 id 已存在且请求不是原始幂等重放。"""
+
+
 class PrincipalKind(StrEnum):
     USER = "user"
     SERVICE_ACCOUNT = "service_account"

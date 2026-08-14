@@ -19,6 +19,7 @@ from zhiwei.identity.commands import (
     IdempotencyRequest,
     PrincipalDisabledError,
     PrincipalNotFoundError,
+    ResourceConflictError,
     add_org_membership,
     canonical_request_digest,
     remove_org_membership,
@@ -38,12 +39,13 @@ _REQUEST_ERRORS = (
     TenantScopeError,
     PrincipalDisabledError,
     PrincipalNotFoundError,
+    ResourceConflictError,
     IdempotencyConflict,
 )
 
 
 class AddMemberRequest(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     principal_id: UUID
     role_bindings: list[str] = []
@@ -62,6 +64,10 @@ def _reject_write(error: Exception) -> NoReturn:
     if isinstance(error, PrincipalNotFoundError):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="principal not found"
+        ) from error
+    if isinstance(error, ResourceConflictError):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="resource already exists"
         ) from error
     if isinstance(error, IdempotencyConflict):
         raise HTTPException(
@@ -111,7 +117,9 @@ def create_memberships_router(
         organization_id: UUID,
         request: AddMemberRequest,
         request_scope: Request,
-        idempotency_key: Annotated[str, Header(min_length=1, alias="Idempotency-Key")],
+        idempotency_key: Annotated[
+        str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+    ],
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> JSONResponse:
         if actor.organization_id is None:
@@ -149,7 +157,9 @@ def create_memberships_router(
         organization_id: UUID,
         principal_id: UUID,
         request_scope: Request,
-        idempotency_key: Annotated[str, Header(min_length=1, alias="Idempotency-Key")],
+        idempotency_key: Annotated[
+        str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+    ],
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> Response:
         if actor.organization_id is None:

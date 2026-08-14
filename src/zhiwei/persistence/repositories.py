@@ -44,6 +44,15 @@ class IdempotencyResult(BaseModel):
     response: dict[str, Any]
 
 
+class IdempotencyLookup(BaseModel):
+    """只读幂等查询结果（既有资源路径专用，不写入任何记录）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    request_digest: str
+    response: dict[str, Any]
+
+
 class TenantRepository:
     """Repository that checks explicit scope before relying on RLS defense-in-depth."""
 
@@ -128,6 +137,25 @@ class TenantRepository:
         if existing.request_digest != request_digest:
             raise IdempotencyConflict("idempotency key was already used for another request")
         return IdempotencyResult(created=False, response=existing.response)
+
+    async def lookup_idempotency(self, *, scope: str, key: str) -> IdempotencyLookup | None:
+        """只读幂等查询：不写入任何记录（既有资源路径专用）。"""
+        context = self._require_context()
+        existing = (
+            await self._session.execute(
+                select(IdempotencyRecord).where(
+                    IdempotencyRecord.organization_id == context.organization_id,
+                    IdempotencyRecord.workspace_id == context.workspace_id,
+                    IdempotencyRecord.scope == scope,
+                    IdempotencyRecord.idempotency_key == key,
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is None:
+            return None
+        return IdempotencyLookup(
+            request_digest=existing.request_digest, response=existing.response
+        )
 
     def _require_context(self) -> TenantContext:
         if self._context is None:
