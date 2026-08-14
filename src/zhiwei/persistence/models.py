@@ -120,8 +120,14 @@ class AuthSession(Base):
             "OR refresh_owner_token_hash IS NOT NULL))",
             name="revoked_no_lease",
         ),
+        # 统一不变量（与 0004 迁移一致）：idle ⟺ owner/lease 皆 NULL；
+        # leased/calling ⟹ owner/lease 皆非 NULL
         CheckConstraint(
-            "NOT (refresh_state <> 'idle' AND refresh_owner_token_hash IS NULL)",
+            "(refresh_state = 'idle' AND refresh_owner_token_hash IS NULL "
+            "AND refresh_lease_expires_at IS NULL) OR "
+            "(refresh_state IN ('leased', 'calling') "
+            "AND refresh_owner_token_hash IS NOT NULL "
+            "AND refresh_lease_expires_at IS NOT NULL)",
             name="owner_token_consistency",
         ),
         CheckConstraint("schema_version > 0", name="schema_version"),

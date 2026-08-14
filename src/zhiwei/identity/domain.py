@@ -263,10 +263,22 @@ class AuthSession(_FrozenModel):
         return self
 
     @model_validator(mode="after")
-    def _owner_token_consistent_with_state(self) -> AuthSession:
-        """leased/calling 必须有 owner token；idle 必须没有（fencing 的前提）。"""
-        if (self.refresh_state == "idle") != (self.refresh_owner_token_hash is None):
-            raise ValueError("refresh owner token must be present iff refresh_state != idle")
+    def _owner_token_and_lease_consistent_with_state(self) -> AuthSession:
+        """统一不变量（验收修订 5）：idle ⟺ owner/lease 皆 NULL；leased/calling ⟹ 皆非 NULL。
+
+        fencing 前提：leased/calling 必须同时持有 owner token 与有界 lease；
+        idle 残留 owner/lease 是非法持久化状态，不得投影成看似合法的 domain 对象。
+        """
+        if self.refresh_state == "idle":
+            if (
+                self.refresh_owner_token_hash is not None
+                or self.refresh_lease_expires_at is not None
+            ):
+                raise ValueError("idle sessions must not hold a refresh owner token or lease")
+        elif self.refresh_owner_token_hash is None or self.refresh_lease_expires_at is None:
+            raise ValueError(
+                "leased/calling sessions must hold a refresh owner token and lease"
+            )
         return self
 
     @model_validator(mode="after")

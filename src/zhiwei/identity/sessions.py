@@ -334,6 +334,41 @@ class AuthSessionStore:
             )
             return result.scalar_one_or_none() is not None
 
+    async def revoke_expired_calling(
+        self,
+        session_id: UUID,
+        expected_version: int,
+        observed_owner_token_hash: str | None,
+    ) -> bool:
+        """refresh 专用条件撤销（验收修订 5）：expired calling 的 fail-closed revoke。
+
+        同时 CAS session_id + expected_version + refresh_state='calling' + 观察到的
+        owner token hash + lease 已过期；任何一项不匹配（winner 已提交 / 已被其他
+        路径撤销 / 状态迁移）→ False，调用方必须重读分类。
+
+        与 logout 的 revoke_session 语义不同：后者按 session id 单调生效（旧版本
+        logout 重放仍撤销）；本方法绝不撤销 winner 在观察与撤销之间提交的新版本。
+        """
+        async with self._session_factory() as session, session.begin():
+            result = await session.execute(
+                text(
+                    "UPDATE auth_sessions SET revoked_at = now(), "
+                    "refresh_state = 'idle', refresh_lease_expires_at = NULL, "
+                    "refresh_owner_token_hash = NULL, "
+                    "version = version + 1, updated_at = now() "
+                    "WHERE id = :session_id AND version = :expected "
+                    "AND revoked_at IS NULL AND refresh_state = 'calling' "
+                    "AND refresh_owner_token_hash = :owner_hash "
+                    "AND refresh_lease_expires_at <= now() RETURNING id"
+                ),
+                {
+                    "session_id": session_id,
+                    "expected": expected_version,
+                    "owner_hash": observed_owner_token_hash,
+                },
+            )
+            return result.scalar_one_or_none() is not None
+
 
 class SessionRefreshCommit(Protocol):
     """refresh 提交的原子边界：envelope 改写 + session 完成 + DB 时钟同事务。
@@ -718,12 +753,31 @@ class SessionService:
             if current.version > expected_version:
                 return current
         # lease 已过期（owner 崩溃遗留）：
-        # - calling：刷新是否已发生不可知 → fail closed 本地 revoke，不二次调用
-        # - leased：未进入 calling，下一位调用方通过 acquire 接管，本轮不撤销
+        # - calling：刷新是否已发生不可知 → refresh 专用**条件撤销**（CAS calling +
+        #   observed owner hash + lease 过期），绝不调用 logout 的按 session id 单调
+        #   revoke——winner 在观察与撤销之间提交 v2 时，单调 revoke 会撤销 v2（验收
+        #   修订 5 竞态）；条件撤销失败后必须重读分类：
+        #   * winner 已提交 expected+1 → 返回 winner 的新版本；
+        #   * 已被其他路径撤销 → SessionRevokedError；
+        #   * 其他状态 → SessionConflictError；
+        # - leased：未进入 calling，下一位调用方通过 acquire 接管，本轮不撤销。
         if current.refresh_state == "calling":
-            await self._session_store.revoke_session(session_id, expected_version)
-            raise SessionRevokedError(
-                "refresh owner stalled in calling phase; session revoked"
+            revoked = await self._session_store.revoke_expired_calling(
+                session_id,
+                expected_version,
+                current.refresh_owner_token_hash,
+            )
+            if revoked:
+                raise SessionRevokedError(
+                    "refresh owner stalled in calling phase; session revoked"
+                )
+            winner = await self._session_store.get_session(session_id)
+            if winner is None or winner.revoked_at is not None:
+                raise SessionRevokedError("session revoked by another replica")
+            if winner.version == expected_version + 1:
+                return winner
+            raise SessionConflictError(
+                "refresh ownership changed without a winner result"
             )
         raise SessionConflictError("refresh lease contention without a winner result")
 
@@ -845,31 +899,35 @@ async def _complete_refresh_in(
 
 
 def _to_auth_session(row: AuthSessionRow) -> AuthSession:
-    # 持久化适配层投影：DB 的 owner-token 约束是一向的（leased/calling 必须有 hash，
-    # 见 0004），idle 行可能残留惰性 hash（并发完成模拟/中断遗留）；域契约要求
-    # idle 无 owner token——已完成（idle）行语义上忽略该 hash，投影为域形态。
-    owner_token_hash = (
-        row.refresh_owner_token_hash if row.refresh_state != "idle" else None
-    )
-    return AuthSession(
-        id=row.id,
-        cookie_token_hash=row.cookie_token_hash,
-        principal_id=row.principal_id,
-        issuer=row.issuer,
-        subject=row.subject,
-        encrypted_token_ref=row.encrypted_token_ref,
-        csrf_hash=row.csrf_hash,
-        expires_at=row.expires_at,
-        idle_expires_at=row.idle_expires_at,
-        revoked_at=row.revoked_at,
-        version=row.version,
-        refresh_state=row.refresh_state,
-        refresh_lease_expires_at=row.refresh_lease_expires_at,
-        refresh_owner_token_hash=owner_token_hash,
-        created_at=row.created_at,
-        updated_at=row.updated_at,
-        schema_version=row.schema_version,
-    )
+    """持久化适配层投影；非法持久化状态 fail closed（验收修订 5）。
+
+    旧实现把 idle 行残留的 owner hash 静默忽略、投影成看似合法的 domain 对象；
+    DB CHECK 是最后防线，投影层也必须拒绝——任何违反统一不变量（idle ⟺
+    owner/lease 皆 NULL、leased/calling ⟹ 皆非 NULL、revoked 全空）的行一律抛
+    SessionRevokedError，不得掩盖。
+    """
+    try:
+        return AuthSession(
+            id=row.id,
+            cookie_token_hash=row.cookie_token_hash,
+            principal_id=row.principal_id,
+            issuer=row.issuer,
+            subject=row.subject,
+            encrypted_token_ref=row.encrypted_token_ref,
+            csrf_hash=row.csrf_hash,
+            expires_at=row.expires_at,
+            idle_expires_at=row.idle_expires_at,
+            revoked_at=row.revoked_at,
+            version=row.version,
+            refresh_state=row.refresh_state,
+            refresh_lease_expires_at=row.refresh_lease_expires_at,
+            refresh_owner_token_hash=row.refresh_owner_token_hash,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
+            schema_version=row.schema_version,
+        )
+    except ValueError as exc:
+        raise SessionRevokedError("illegal persisted session state") from exc
 
 
 def _token_expiry(tokens: dict[str, Any], fallback: datetime) -> datetime:
