@@ -1,12 +1,19 @@
-"""Identity commands：principal / membership / group 变更，fail-closed 前置检查。
+"""Identity application commands。
 
-命令只依赖 IdentityRepositoryProtocol，不绑定数据库实现。
+- 所有 mutation 接入 S0 idempotency 基础（claim_idempotency），不另造第二套机制；
+- 重复 Idempotency-Key + 相同 request digest 返回原结果；不同 digest 抛 IdempotencyConflict；
+- 命令只依赖 IdentityRepositoryProtocol，不绑定数据库实现；
+- Organization bootstrap 原子创建 Organization + 创建者 Owner Membership。
 """
 
 from __future__ import annotations
 
-from typing import Protocol
+import hashlib
+import json
+from typing import Any, Protocol
 from uuid import UUID, uuid4
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from zhiwei.identity.domain import (
     ExternalIdentity,
@@ -15,27 +22,81 @@ from zhiwei.identity.domain import (
     GroupMember,
     IdentityCommandError,
     Membership,
+    NameConflictError,
+    Organization,
     Principal,
     PrincipalDisabledError,
     PrincipalKind,
     PrincipalNotFoundError,
     PrincipalStatus,
+    Workspace,
     WorkspaceMembership,
 )
 
+IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE = "organization.create"
+IDEMPOTENCY_SCOPE_WORKSPACE_CREATE = "organization.workspace.create"
+IDEMPOTENCY_SCOPE_MEMBER_ADD = "organization.member.add"
+IDEMPOTENCY_SCOPE_MEMBER_REMOVE = "organization.member.remove"
+IDEMPOTENCY_SCOPE_GROUP_CREATE = "workspace.group.create"
+
 __all__ = [
+    "CommandOutcome",
     "ExternalIdentityConflictError",
+    "IdempotencyRequest",
+    "IdempotencyResult",
     "IdentityCommandError",
+    "NameConflictError",
     "PrincipalDisabledError",
     "PrincipalNotFoundError",
     "add_group_member",
     "add_org_membership",
     "add_workspace_membership",
+    "canonical_request_digest",
     "create_group",
+    "create_organization",
     "create_user",
+    "create_workspace",
     "disable_principal",
     "remove_org_membership",
 ]
+
+
+class IdempotencyRequest(BaseModel):
+    """API 层的幂等键与规范化请求 digest。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: str = Field(min_length=1)
+    request_digest: str
+
+
+class IdempotencyResult(BaseModel):
+    """claim_idempotency 结果；created=False 表示命中既有记录（重放）。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    created: bool
+    response: dict[str, Any]
+
+
+class CommandOutcome(BaseModel):
+    """mutation 命令结果：created=True 为首次执行，False 为幂等重放；response 两路径一致。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    created: bool
+    response: dict[str, Any]
+
+
+def canonical_request_digest(method: str, path: str, body: dict[str, Any]) -> str:
+    """规范化请求 digest：method + path + body，重复 key 的不同请求必然产生不同 digest。"""
+    canonical = json.dumps(
+        {"method": method.upper(), "path": path, "body": body},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class IdentityRepositoryProtocol(Protocol):
@@ -61,6 +122,27 @@ class IdentityRepositoryProtocol(Protocol):
         self, *, issuer: str, subject: str, principal_id: UUID
     ) -> ExternalIdentity: ...
 
+    async def claim_idempotency(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_digest: str,
+        response: dict[str, Any],
+    ) -> IdempotencyResult: ...
+
+    async def create_organization(
+        self, organization_id: UUID, *, status: str
+    ) -> Organization: ...
+
+    async def get_organization(self, organization_id: UUID) -> Organization | None: ...
+
+    async def create_workspace(
+        self, workspace_id: UUID, *, organization_id: UUID, name: str
+    ) -> Workspace: ...
+
+    async def list_workspaces(self, *, organization_id: UUID) -> list[Workspace]: ...
+
     async def add_membership(
         self,
         *,
@@ -83,11 +165,21 @@ class IdentityRepositoryProtocol(Protocol):
     ) -> WorkspaceMembership: ...
 
     async def create_group(
-        self, group_id: UUID, *, organization_id: UUID, name: str
+        self,
+        group_id: UUID,
+        *,
+        organization_id: UUID,
+        workspace_id: UUID,
+        name: str,
     ) -> Group: ...
 
     async def add_group_member(
-        self, *, group_id: UUID, organization_id: UUID, principal_id: UUID
+        self,
+        *,
+        group_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        principal_id: UUID,
     ) -> GroupMember: ...
 
 
@@ -132,28 +224,133 @@ async def _require_active(
     return principal
 
 
+async def _replay_or_none(
+    repository: IdentityRepositoryProtocol,
+    *,
+    scope: str,
+    idempotency: IdempotencyRequest | None,
+    response: dict[str, Any],
+) -> CommandOutcome | None:
+    """幂等声明（资源 insert 之后调用，bootstrap 的 claim 依赖 org 行已存在）。
+
+    重放时返回既有结果；无幂等键或首次声明返回 None 表示继续返回 created 结果。
+    """
+    if idempotency is None:
+        return None
+    result = await repository.claim_idempotency(
+        scope=scope,
+        key=idempotency.key,
+        request_digest=idempotency.request_digest,
+        response=response,
+    )
+    if result.created:
+        return None
+    return CommandOutcome(created=False, response=result.response)
+
+
+async def create_organization(
+    repository: IdentityRepositoryProtocol,
+    *,
+    organization_id: UUID,
+    owner_principal_id: UUID,
+    idempotency: IdempotencyRequest | None = None,
+) -> CommandOutcome:
+    """Organization bootstrap：原子创建 Organization 与创建者的 Owner Membership。"""
+    response = {"id": str(organization_id), "status": "active"}
+    await repository.create_organization(organization_id, status="active")
+    await repository.add_membership(
+        principal_id=owner_principal_id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"owner"}),
+    )
+    replayed = await _replay_or_none(
+        repository,
+        scope=IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE,
+        idempotency=idempotency,
+        response=response,
+    )
+    if replayed is not None:
+        return replayed
+    return CommandOutcome(created=True, response=response)
+
+
+async def create_workspace(
+    repository: IdentityRepositoryProtocol,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID,
+    name: str,
+    idempotency: IdempotencyRequest | None = None,
+) -> CommandOutcome:
+    response = {
+        "id": str(workspace_id),
+        "organization_id": str(organization_id),
+        "name": name,
+    }
+    await repository.create_workspace(workspace_id, organization_id=organization_id, name=name)
+    replayed = await _replay_or_none(
+        repository,
+        scope=IDEMPOTENCY_SCOPE_WORKSPACE_CREATE,
+        idempotency=idempotency,
+        response=response,
+    )
+    if replayed is not None:
+        return replayed
+    return CommandOutcome(created=True, response=response)
+
+
 async def add_org_membership(
     repository: IdentityRepositoryProtocol,
     *,
     principal_id: UUID,
     organization_id: UUID,
     role_bindings: frozenset[str] = frozenset(),
-) -> Membership:
+    idempotency: IdempotencyRequest | None = None,
+) -> CommandOutcome:
     await _require_active(repository, principal_id)
-    return await repository.add_membership(
+    response = {
+        "principal_id": str(principal_id),
+        "organization_id": str(organization_id),
+        "role_bindings": sorted(role_bindings),
+    }
+    await repository.add_membership(
         principal_id=principal_id,
         organization_id=organization_id,
         role_bindings=role_bindings,
     )
+    replayed = await _replay_or_none(
+        repository,
+        scope=IDEMPOTENCY_SCOPE_MEMBER_ADD,
+        idempotency=idempotency,
+        response=response,
+    )
+    if replayed is not None:
+        return replayed
+    return CommandOutcome(created=True, response=response)
 
 
 async def remove_org_membership(
-    repository: IdentityRepositoryProtocol, *, principal_id: UUID, organization_id: UUID
-) -> bool:
+    repository: IdentityRepositoryProtocol,
+    *,
+    principal_id: UUID,
+    organization_id: UUID,
+    idempotency: IdempotencyRequest | None = None,
+) -> CommandOutcome:
     """移除 Organization membership；disabled principal 仍可被移除（清理语义）。"""
-    return await repository.remove_membership(
-        principal_id=principal_id, organization_id=organization_id
+    response = {
+        "principal_id": str(principal_id),
+        "organization_id": str(organization_id),
+    }
+    await repository.remove_membership(principal_id=principal_id, organization_id=organization_id)
+    replayed = await _replay_or_none(
+        repository,
+        scope=IDEMPOTENCY_SCOPE_MEMBER_REMOVE,
+        idempotency=idempotency,
+        response=response,
     )
+    if replayed is not None:
+        return replayed
+    return CommandOutcome(created=True, response=response)
 
 
 async def add_workspace_membership(
@@ -176,13 +373,31 @@ async def add_workspace_membership(
 async def create_group(
     repository: IdentityRepositoryProtocol,
     *,
-    group_id: UUID | None = None,
+    group_id: UUID,
     organization_id: UUID,
+    workspace_id: UUID,
     name: str,
-) -> Group:
-    return await repository.create_group(
-        group_id or uuid4(), organization_id=organization_id, name=name
+    idempotency: IdempotencyRequest | None = None,
+) -> CommandOutcome:
+    """Workspace 内创建 Group；名称唯一范围是 Workspace。"""
+    response = {
+        "id": str(group_id),
+        "organization_id": str(organization_id),
+        "workspace_id": str(workspace_id),
+        "name": name,
+    }
+    await repository.create_group(
+        group_id, organization_id=organization_id, workspace_id=workspace_id, name=name
     )
+    replayed = await _replay_or_none(
+        repository,
+        scope=IDEMPOTENCY_SCOPE_GROUP_CREATE,
+        idempotency=idempotency,
+        response=response,
+    )
+    if replayed is not None:
+        return replayed
+    return CommandOutcome(created=True, response=response)
 
 
 async def add_group_member(
@@ -190,6 +405,7 @@ async def add_group_member(
     *,
     group_id: UUID,
     organization_id: UUID,
+    workspace_id: UUID,
     principal_id: UUID,
 ) -> GroupMember:
     """加入分组；重复执行幂等（返回既有成员行）。"""
@@ -197,5 +413,9 @@ async def add_group_member(
     return await repository.add_group_member(
         group_id=group_id,
         organization_id=organization_id,
+        workspace_id=workspace_id,
         principal_id=principal_id,
     )
+
+
+__all__.append("IdentityRepositoryProtocol")

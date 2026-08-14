@@ -1,17 +1,25 @@
-"""S1 identity：Principal / ExternalIdentity / Membership / Group 的 domain、commands 与 repositories。"""
+"""S1 identity：Principal / ExternalIdentity / Organization / Workspace / Membership / Group 的
+domain、commands 与 repositories。"""
 
 from __future__ import annotations
 
 from zhiwei.identity.commands import (
+    CommandOutcome,
     ExternalIdentityConflictError,
+    IdempotencyRequest,
+    IdempotencyResult,
     IdentityCommandError,
+    NameConflictError,
     PrincipalDisabledError,
     PrincipalNotFoundError,
     add_group_member,
     add_org_membership,
     add_workspace_membership,
+    canonical_request_digest,
     create_group,
+    create_organization,
     create_user,
+    create_workspace,
     disable_principal,
     remove_org_membership,
 )
@@ -21,33 +29,44 @@ from zhiwei.identity.domain import (
     Group,
     GroupMember,
     Membership,
+    Organization,
     Principal,
     PrincipalKind,
     PrincipalStatus,
+    Workspace,
     WorkspaceMembership,
 )
 from zhiwei.identity.repositories import IdentityRepository
 
 __all__ = [
     "ActorContext",
+    "CommandOutcome",
     "ExternalIdentity",
     "ExternalIdentityConflictError",
     "Group",
     "GroupMember",
+    "IdempotencyRequest",
+    "IdempotencyResult",
     "IdentityCommandError",
     "IdentityRepository",
     "Membership",
+    "NameConflictError",
+    "Organization",
     "Principal",
     "PrincipalDisabledError",
     "PrincipalKind",
     "PrincipalNotFoundError",
     "PrincipalStatus",
+    "Workspace",
     "WorkspaceMembership",
     "add_group_member",
     "add_org_membership",
     "add_workspace_membership",
+    "canonical_request_digest",
     "create_group",
+    "create_organization",
     "create_user",
+    "create_workspace",
     "disable_principal",
     "remove_org_membership",
 ]

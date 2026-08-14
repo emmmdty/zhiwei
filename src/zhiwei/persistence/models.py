@@ -159,23 +159,26 @@ class WorkspaceMembership(Base):
 
 
 class Group(Base):
-    """Organization 级用户分组；同一 Organization 内名称唯一，跨组织允许重名。"""
+    """Workspace 级用户分组（总设计 §3.1）；名称唯一范围是 Workspace，跨组织允许重名。"""
 
     __tablename__ = "groups"
     __table_args__ = (
         CheckConstraint("schema_version > 0", name="schema_version"),
         ForeignKeyConstraint(
-            ["organization_id"],
-            ["organizations.id"],
-            name="fk_groups_organization",
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_groups_workspace",
             ondelete="CASCADE",
         ),
-        UniqueConstraint("organization_id", "id", name="uq_groups_org_id"),
-        UniqueConstraint("organization_id", "name", name="uq_groups_org_name"),
+        UniqueConstraint("organization_id", "workspace_id", "id", name="uq_groups_scope_id"),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "name", name="uq_groups_scope_name"
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
@@ -184,13 +187,13 @@ class Group(Base):
 
 
 class GroupMember(Base):
-    """Group 的成员；(group_id, principal_id) 唯一，重试幂等。"""
+    """Group 的成员；(group_id, principal_id) 唯一，重试幂等，严格 Workspace scope。"""
 
     __tablename__ = "group_members"
     __table_args__ = (
         ForeignKeyConstraint(
-            ["organization_id", "group_id"],
-            ["groups.organization_id", "groups.id"],
+            ["organization_id", "workspace_id", "group_id"],
+            ["groups.organization_id", "groups.workspace_id", "groups.id"],
             name="fk_group_members_group",
             ondelete="CASCADE",
         ),
@@ -204,6 +207,7 @@ class GroupMember(Base):
 
     group_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
     principal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

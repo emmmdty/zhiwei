@@ -5,9 +5,8 @@ Revises: 0001_foundation
 
 租户边界（与 0001 的 GUC 约定一致）：
 - Principal / ExternalIdentity 是跨 Organization 的 identity-global 记录，不启用 RLS；
-- memberships / workspace_memberships / groups / group_members 是 tenant-owned：
-  memberships、groups、group_members 按 organization_id 隔离，workspace_memberships 按
-  organization_id + workspace_id 隔离；全部 FORCE RLS。
+- memberships 按 organization_id 隔离；workspace_memberships / groups / group_members 按
+  organization_id + workspace_id 隔离（总设计 §3.1：Group 位于 Workspace 之下）；全部 FORCE RLS。
 """
 
 from __future__ import annotations
@@ -31,8 +30,8 @@ _TENANT_RLS_POLICIES = {
     "workspace_memberships": (
         f"organization_id = {_ORG_GUC} AND workspace_id = {_WORKSPACE_GUC}"
     ),
-    "groups": f"organization_id = {_ORG_GUC}",
-    "group_members": f"organization_id = {_ORG_GUC}",
+    "groups": f"organization_id = {_ORG_GUC} AND workspace_id = {_WORKSPACE_GUC}",
+    "group_members": f"organization_id = {_ORG_GUC} AND workspace_id = {_WORKSPACE_GUC}",
 }
 _DROP_ORDER = (
     "group_members",
@@ -157,6 +156,7 @@ def upgrade() -> None:
         "groups",
         sa.Column("id", sa.Uuid(), nullable=False),
         sa.Column("organization_id", sa.Uuid(), nullable=False),
+        sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("name", sa.String(length=255), nullable=False),
         sa.Column("schema_version", sa.Integer(), nullable=False),
         sa.Column(
@@ -164,28 +164,34 @@ def upgrade() -> None:
         ),
         sa.CheckConstraint("schema_version > 0", name=op.f("ck_groups_schema_version")),
         sa.ForeignKeyConstraint(
-            ["organization_id"],
-            ["organizations.id"],
-            name="fk_groups_organization",
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_groups_workspace",
             ondelete="CASCADE",
         ),
         sa.PrimaryKeyConstraint("id", name="pk_groups"),
-        sa.UniqueConstraint("organization_id", "id", name="uq_groups_org_id"),
-        sa.UniqueConstraint("organization_id", "name", name="uq_groups_org_name"),
+        sa.UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_groups_scope_id"
+        ),
+        sa.UniqueConstraint(
+            "organization_id", "workspace_id", "name", name="uq_groups_scope_name"
+        ),
     )
     op.create_index("ix_groups_organization_id", "groups", ["organization_id"])
+    op.create_index("ix_groups_workspace_id", "groups", ["workspace_id"])
 
     op.create_table(
         "group_members",
         sa.Column("group_id", sa.Uuid(), nullable=False),
         sa.Column("organization_id", sa.Uuid(), nullable=False),
+        sa.Column("workspace_id", sa.Uuid(), nullable=False),
         sa.Column("principal_id", sa.Uuid(), nullable=False),
         sa.Column(
             "created_at", sa.DateTime(timezone=True), server_default=sa.text("now()"), nullable=False
         ),
         sa.ForeignKeyConstraint(
-            ["organization_id", "group_id"],
-            ["groups.organization_id", "groups.id"],
+            ["organization_id", "workspace_id", "group_id"],
+            ["groups.organization_id", "groups.workspace_id", "groups.id"],
             name="fk_group_members_group",
             ondelete="CASCADE",
         ),
@@ -197,7 +203,10 @@ def upgrade() -> None:
         ),
         sa.PrimaryKeyConstraint("group_id", "principal_id", name="pk_group_members"),
     )
-    op.create_index("ix_group_members_organization_id", "group_members", ["organization_id"])
+    op.create_index(
+        "ix_group_members_organization_id", "group_members", ["organization_id"]
+    )
+    op.create_index("ix_group_members_workspace_id", "group_members", ["workspace_id"])
 
     for table in ("principals", "external_identities"):
         op.execute(f'REVOKE ALL PRIVILEGES ON TABLE "{table}" FROM zhiwei_app')

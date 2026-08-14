@@ -3,6 +3,9 @@
 Principal / ExternalIdentity 是 identity-global（无需 tenant context）；memberships、
 workspace_memberships、groups、group_members 是 tenant-owned，repository 必须显式携带
 tenant predicate，RLS 只是纵深防御（PERMISSIONS §5、总设计 §9.2）。
+
+mutation 所需的资源 insert 使用 ON CONFLICT DO NOTHING：幂等命令的重放不会因资源已存在
+而炸掉，由 claim_idempotency 判定首次执行还是重放。
 """
 
 from __future__ import annotations
@@ -13,17 +16,21 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from zhiwei.identity.commands import IdempotencyResult
 from zhiwei.identity.domain import (
     ExternalIdentity,
     ExternalIdentityConflictError,
     Group,
     GroupMember,
     Membership,
+    NameConflictError,
+    Organization,
     Principal,
     PrincipalDisabledError,
     PrincipalKind,
     PrincipalNotFoundError,
     PrincipalStatus,
+    Workspace,
     WorkspaceMembership,
 )
 from zhiwei.persistence.models import (
@@ -39,11 +46,18 @@ from zhiwei.persistence.models import (
     Membership as MembershipRow,
 )
 from zhiwei.persistence.models import (
+    Organization as OrganizationRow,
+)
+from zhiwei.persistence.models import (
     Principal as PrincipalRow,
+)
+from zhiwei.persistence.models import (
+    Workspace as WorkspaceRow,
 )
 from zhiwei.persistence.models import (
     WorkspaceMembership as WorkspaceMembershipRow,
 )
+from zhiwei.persistence.repositories import TenantRepository
 from zhiwei.persistence.tenant import (
     TenantContext,
     TenantContextRequired,
@@ -57,6 +71,7 @@ class IdentityRepository:
     def __init__(self, session: AsyncSession, context: TenantContext | None) -> None:
         self._session = session
         self._context = context
+        self._tenant = TenantRepository(session, context)
 
     # ------------------------------------------------------------------ identity-global
 
@@ -112,7 +127,92 @@ class IdentityRepository:
         row = await self._session.get(ExternalIdentityRow, {"issuer": issuer, "subject": subject})
         return None if row is None else self._to_external_identity(row)
 
-    # ------------------------------------------------------------------ tenant-owned
+    # ------------------------------------------------------------------ organization / workspace
+
+    async def create_organization(self, organization_id: UUID, *, status: str) -> Organization:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        await self._session.execute(
+            insert(OrganizationRow)
+            .values(
+                id=organization_id,
+                status=status,
+                retention_policy={},
+                schema_version=1,
+            )
+            .on_conflict_do_nothing()
+        )
+        row = await self._session.get(OrganizationRow, organization_id)
+        if row is None:
+            # fail closed：ON CONFLICT DO NOTHING 后组织仍不可见，视为未创建
+            raise RuntimeError("organization is not visible in tenant context after create")
+        return self._to_organization(row)
+
+    async def get_organization(self, organization_id: UUID) -> Organization | None:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        row = await self._session.get(OrganizationRow, organization_id)
+        return None if row is None else self._to_organization(row)
+
+    async def create_workspace(
+        self, workspace_id: UUID, *, organization_id: UUID, name: str
+    ) -> Workspace:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        await self._session.execute(
+            insert(WorkspaceRow)
+            .values(
+                id=workspace_id,
+                organization_id=organization_id,
+                name=name,
+                classification_ceiling="PUBLIC",
+                budget_policy={},
+                schema_version=1,
+            )
+            .on_conflict_do_nothing()
+        )
+        row = (
+            await self._session.execute(
+                select(WorkspaceRow).where(WorkspaceRow.id == workspace_id)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            # insert 被 (organization_id, name) 唯一约束拦截：名称已占用
+            raise NameConflictError("workspace name is already taken in this organization")
+        return self._to_workspace(row)
+
+    async def list_workspaces(self, *, organization_id: UUID) -> list[Workspace]:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_org_level(context)
+        rows = await self._session.execute(
+            select(WorkspaceRow)
+            .where(WorkspaceRow.organization_id == organization_id)
+            .order_by(WorkspaceRow.name)
+        )
+        return [self._to_workspace(row) for row in rows.scalars()]
+
+    async def claim_idempotency(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_digest: str,
+        response: dict[str, object],
+    ) -> IdempotencyResult:
+        """委托 S0 idempotency 基础，只做应用层结果类型转换。"""
+        result = await self._tenant.claim_idempotency(
+            scope=scope,
+            key=key,
+            request_digest=request_digest,
+            response=response,
+        )
+        return IdempotencyResult(created=result.created, response=result.response)
+
+    # ------------------------------------------------------------------ memberships
 
     async def add_membership(
         self,
@@ -125,13 +225,23 @@ class IdentityRepository:
         self._require_organization(organization_id, context)
         self._require_org_level(context)
         await self._require_active(principal_id)
-        row = MembershipRow(
-            principal_id=principal_id,
-            organization_id=organization_id,
-            role_bindings=sorted(role_bindings),
+        await self._session.execute(
+            insert(MembershipRow)
+            .values(
+                principal_id=principal_id,
+                organization_id=organization_id,
+                role_bindings=sorted(role_bindings),
+            )
+            .on_conflict_do_nothing()
         )
-        self._session.add(row)
-        await self._session.flush()
+        row = (
+            await self._session.execute(
+                select(MembershipRow).where(
+                    MembershipRow.principal_id == principal_id,
+                    MembershipRow.organization_id == organization_id,
+                )
+            )
+        ).scalar_one()
         return self._to_membership(row)
 
     async def get_membership(
@@ -230,48 +340,78 @@ class IdentityRepository:
         )
         return [self._to_workspace_membership(row) for row in rows.scalars()]
 
+    # ------------------------------------------------------------------ groups（Workspace scope）
+
     async def create_group(
-        self, group_id: UUID, *, organization_id: UUID, name: str
+        self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID, name: str
     ) -> Group:
         context = self._require_context()
         self._require_organization(organization_id, context)
-        self._require_org_level(context)
-        row = GroupRow(id=group_id, organization_id=organization_id, name=name, schema_version=1)
-        self._session.add(row)
-        await self._session.flush()
-        return self._to_group(row)
-
-    async def get_group(self, group_id: UUID, *, organization_id: UUID) -> Group | None:
-        context = self._require_context()
-        self._require_organization(organization_id, context)
-        self._require_org_level(context)
+        self._require_workspace(workspace_id, context)
+        await self._session.execute(
+            insert(GroupRow)
+            .values(
+                id=group_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                name=name,
+                schema_version=1,
+            )
+            .on_conflict_do_nothing()
+        )
         row = (
             await self._session.execute(
                 select(GroupRow).where(
                     GroupRow.id == group_id,
                     GroupRow.organization_id == organization_id,
+                    GroupRow.workspace_id == workspace_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            # insert 被 (organization_id, workspace_id, name) 唯一约束拦截：名称已占用
+            raise NameConflictError("group name is already taken in this workspace")
+        return self._to_group(row)
+
+    async def get_group(
+        self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID
+    ) -> Group | None:
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_workspace(workspace_id, context)
+        row = (
+            await self._session.execute(
+                select(GroupRow).where(
+                    GroupRow.id == group_id,
+                    GroupRow.organization_id == organization_id,
+                    GroupRow.workspace_id == workspace_id,
                 )
             )
         ).scalar_one_or_none()
         return None if row is None else self._to_group(row)
 
-    async def list_groups(self, *, organization_id: UUID) -> list[Group]:
+    async def list_groups(
+        self, *, organization_id: UUID, workspace_id: UUID
+    ) -> list[Group]:
         context = self._require_context()
         self._require_organization(organization_id, context)
-        self._require_org_level(context)
+        self._require_workspace(workspace_id, context)
         rows = await self._session.execute(
             select(GroupRow)
-            .where(GroupRow.organization_id == organization_id)
+            .where(
+                GroupRow.organization_id == organization_id,
+                GroupRow.workspace_id == workspace_id,
+            )
             .order_by(GroupRow.name)
         )
         return [self._to_group(row) for row in rows.scalars()]
 
     async def add_group_member(
-        self, *, group_id: UUID, organization_id: UUID, principal_id: UUID
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
     ) -> GroupMember:
         context = self._require_context()
         self._require_organization(organization_id, context)
-        self._require_org_level(context)
+        self._require_workspace(workspace_id, context)
         await self._require_active(principal_id)
         row = (
             await self._session.execute(
@@ -279,6 +419,7 @@ class IdentityRepository:
                 .values(
                     group_id=group_id,
                     organization_id=organization_id,
+                    workspace_id=workspace_id,
                     principal_id=principal_id,
                 )
                 .on_conflict_do_nothing(constraint="pk_group_members")
@@ -292,6 +433,7 @@ class IdentityRepository:
                 select(GroupMemberRow).where(
                     GroupMemberRow.group_id == group_id,
                     GroupMemberRow.organization_id == organization_id,
+                    GroupMemberRow.workspace_id == workspace_id,
                     GroupMemberRow.principal_id == principal_id,
                 )
             )
@@ -299,16 +441,17 @@ class IdentityRepository:
         return self._to_group_member(existing)
 
     async def get_group_member(
-        self, *, group_id: UUID, organization_id: UUID, principal_id: UUID
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
     ) -> GroupMember | None:
         context = self._require_context()
         self._require_organization(organization_id, context)
-        self._require_org_level(context)
+        self._require_workspace(workspace_id, context)
         row = (
             await self._session.execute(
                 select(GroupMemberRow).where(
                     GroupMemberRow.group_id == group_id,
                     GroupMemberRow.organization_id == organization_id,
+                    GroupMemberRow.workspace_id == workspace_id,
                     GroupMemberRow.principal_id == principal_id,
                 )
             )
@@ -316,16 +459,17 @@ class IdentityRepository:
         return None if row is None else self._to_group_member(row)
 
     async def list_group_members(
-        self, *, group_id: UUID, organization_id: UUID
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID
     ) -> list[GroupMember]:
         context = self._require_context()
         self._require_organization(organization_id, context)
-        self._require_org_level(context)
+        self._require_workspace(workspace_id, context)
         rows = await self._session.execute(
             select(GroupMemberRow)
             .where(
                 GroupMemberRow.group_id == group_id,
                 GroupMemberRow.organization_id == organization_id,
+                GroupMemberRow.workspace_id == workspace_id,
             )
             .order_by(GroupMemberRow.principal_id)
         )
@@ -379,6 +523,29 @@ class IdentityRepository:
         return ExternalIdentity(issuer=row.issuer, subject=row.subject, principal_id=row.principal_id)
 
     @staticmethod
+    def _to_organization(row: OrganizationRow) -> Organization:
+        return Organization(
+            id=row.id,
+            status=row.status,
+            policy_ref=row.policy_ref,
+            retention_policy=row.retention_policy,
+            schema_version=row.schema_version,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
+    def _to_workspace(row: WorkspaceRow) -> Workspace:
+        return Workspace(
+            id=row.id,
+            organization_id=row.organization_id,
+            name=row.name,
+            classification_ceiling=row.classification_ceiling,
+            budget_policy=row.budget_policy,
+            schema_version=row.schema_version,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
     def _to_membership(row: MembershipRow) -> Membership:
         return Membership(
             principal_id=row.principal_id,
@@ -400,6 +567,7 @@ class IdentityRepository:
         return Group(
             id=row.id,
             organization_id=row.organization_id,
+            workspace_id=row.workspace_id,
             name=row.name,
             schema_version=row.schema_version,
             created_at=row.created_at,
@@ -410,6 +578,7 @@ class IdentityRepository:
         return GroupMember(
             group_id=row.group_id,
             organization_id=row.organization_id,
+            workspace_id=row.workspace_id,
             principal_id=row.principal_id,
             created_at=row.created_at,
         )
