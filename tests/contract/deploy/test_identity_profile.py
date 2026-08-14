@@ -9,7 +9,10 @@
   compose 没有任何 ZhiWei 服务可挂载它——尤其 Keycloak 绝不挂载 master key，
   也不得为挂载制造 dummy service（修订：原「任意服务挂载即可」断言已删除）；
 - realm 注入的字符契约：`/` 与 `&` 等 sed 危险字符必须正确转义处理；`"`、反斜杠、
-  控制字符、空值必须在写文件前 fail closed（容器退出，日志不泄露 secret）；
+  控制字符（换行/CR/TAB）、空值必须在写文件前 fail closed（容器退出，日志不泄露 secret）；
+- 验收修订 5（本 RED 冻结）：控制字符检测必须覆盖整个 shell value（不得依赖逐行 sed
+  正则——sed 按行处理会把换行当行分隔符漏检）；渲染先写受控临时文件，sed 成功后再
+  原子移动到 realm.json，失败清理临时文件；危险值不得创建/截断最终输出文件；
 - 固定镜像内的对抗测试：危险字符 secret → 容器在写文件前退出且日志不泄露；
   合法含 `/`/`&` 的 secret → realm.json 可解析、Keycloak 启动并通过 healthcheck；
 - `docker compose ... config --quiet` 只证明 YAML 可解析，不是启动 Gate；
@@ -21,7 +24,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -108,59 +110,100 @@ def test_entrypoint_does_not_depend_on_envsubst() -> None:
     )
 
 
-def test_entrypoint_render_contract_fail_closed_on_dangerous_values() -> None:
-    """对抗（宿主层，验收阻断 4）：realm 注入的明确字符契约。
+def _render_env(out_dir: Path) -> dict[str, str]:
+    return {
+        **os.environ,
+        "ZHIWEI_KC_IMPORT_DIR": str(out_dir),
+        "ZHIWEI_KC_REALM_TEMPLATE": str(REALM_TEMPLATE),
+        "ZHIWEI_KC_REALM_OUTPUT": str(out_dir / "realm.json"),
+        "ZHIWEI_KC_RENDER_ONLY": "1",
+    }
 
-    - 危险字符（双引号 / 反斜杠 / 控制字符 / 空值）必须在写文件前 fail closed：
-      非零退出、stderr 出现字符契约消息、不写 realm.json、stderr 不泄露注入值；
-    - 合法值（含 `/`、`&` 等 sed 危险字符）必须渲染出可解析 JSON 且值正确注入。
+
+@pytest.mark.parametrize(
+    "dangerous",
+    [
+        "",  # 空值
+        "\n",  # 单独换行
+        "dev\nsecret",  # 嵌入换行
+        "dev\rsecret",  # CR
+        "dev\tsecret",  # TAB
+        'dev"quote"secret',  # 双引号
+        "dev\\backslash",  # 反斜杠
+    ],
+    ids=["empty", "standalone-newline", "embedded-newline", "cr", "tab", "double-quote", "backslash"],
+)
+def test_entrypoint_render_fails_closed_on_control_characters(dangerous: str) -> None:
+    """对抗（宿主层，验收修订 5）：realm 注入的危险值必须 fail closed。
+
+    - 非零退出；
+    - stderr 出现明确字符契约消息，但绝不回显注入值；
+    - 最终 realm.json 不存在——不得先创建/截断最终输出文件；
+    - 渲染目录不留任何残留（无 realm.json、无临时文件）。
+
+    换行/CR 检测不得依赖逐行 sed 正则（sed 按行处理会把换行当行分隔符漏检）；
+    渲染必须先写受控临时文件，sed 成功后再原子移动到 realm.json，失败清理临时文件。
     """
     with tempfile.TemporaryDirectory() as tmp:
         out_dir = Path(tmp) / "import"
         out_dir.mkdir()
-        env = {
-            **os.environ,
-            "ZHIWEI_KC_IMPORT_DIR": str(out_dir),
-            "ZHIWEI_KC_REALM_TEMPLATE": str(REALM_TEMPLATE),
-            "ZHIWEI_KC_REALM_OUTPUT": str(out_dir / "realm.json"),
-            "ZHIWEI_KC_RENDER_ONLY": "1",
-        }
-
-        # 1) 危险字符 fail closed（双引号破坏 JSON 结构）
-        dangerous = 'dev"quote"secret'
         result = subprocess.run(
             ["sh", str(ENTRYPOINT)],
             capture_output=True,
             text=True,
             env={
-                **env,
+                **_render_env(out_dir),
                 "KEYCLOAK_TEST_CLIENT_SECRET": dangerous,
                 "KEYCLOAK_TEST_USER_PASSWORD": "s1-dev-user-password-only",
             },
         )
-        assert result.returncode != 0, "危险字符必须在写文件前 fail closed"
-        assert not (out_dir / "realm.json").exists(), "fail closed 不得写出 realm 文件"
-        assert dangerous not in result.stderr, "fail closed 消息不得泄露注入值"
+        assert result.returncode != 0, "危险值必须在写文件前 fail closed"
+        if dangerous:
+            assert dangerous not in result.stderr, "fail closed 消息不得回显注入值"
+        else:
+            assert "empty" in result.stderr, "空值必须被拒绝并说明原因"
         assert "allowed" in result.stderr or "fail closed" in result.stderr, (
             f"stderr 必须出现明确字符契约消息:\n{result.stderr}"
         )
+        assert not (out_dir / "realm.json").exists(), "fail closed 不得写出 realm 文件"
+        assert list(out_dir.iterdir()) == [], (
+            f"fail closed 不得残留临时文件:\n{sorted(p.name for p in out_dir.iterdir())}"
+        )
 
-        # 2) 合法但 sed 危险的值（/ 与 &）必须正确渲染
-        safe_secret = "dev/s1&prod+secret@x"
+
+@pytest.mark.parametrize(
+    "legal",
+    [
+        "dev/s1&prod+secret@x",
+        "a+b%c@d/e:f_g-h.i",
+        "plainsecret",
+    ],
+    ids=["slash-amp-plus", "url-safe-set", "plain"],
+)
+def test_entrypoint_render_succeeds_with_legal_special_characters(legal: str) -> None:
+    """对抗（宿主层，验收修订 5）：合法但 sed 危险的字符（/ & + % @）必须正确渲染。
+
+    渲染成功：退出码 0、realm.json 可解析、值正确注入、目录无残留临时文件。
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "import"
+        out_dir.mkdir()
         result = subprocess.run(
             ["sh", str(ENTRYPOINT)],
             capture_output=True,
             text=True,
             env={
-                **env,
-                "KEYCLOAK_TEST_CLIENT_SECRET": safe_secret,
+                **_render_env(out_dir),
+                "KEYCLOAK_TEST_CLIENT_SECRET": legal,
                 "KEYCLOAK_TEST_USER_PASSWORD": "s1-dev-user-password-only",
             },
         )
         assert result.returncode == 0, f"合法值应渲染成功:\n{result.stderr}"
         rendered = json.loads((out_dir / "realm.json").read_text(encoding="utf-8"))
-        assert rendered["clients"][0]["secret"] == safe_secret
+        assert rendered["clients"][0]["secret"] == legal
         assert rendered["users"][0]["credentials"][0]["value"] == "s1-dev-user-password-only"
+        leftover = [p.name for p in out_dir.iterdir() if p.name != "realm.json"]
+        assert leftover == [], f"渲染成功后不得残留临时文件: {leftover}"
 
 
 @pytest.mark.slow

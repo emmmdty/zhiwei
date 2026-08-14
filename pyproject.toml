@@ -89,9 +89,6 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "evals/scripts/data/*.py" = ["E501"]  # 基础数据表为对齐可读性保留长行
-# 锁定测试（S1-T2 RED 提交 021de82 冻结，handoff-check 要求逐字节一致）：
-# 导入的 re 在最终版契约测试中未使用，但删除它会令 tests/ 漂移——按文件豁免。
-"tests/contract/deploy/test_identity_profile.py" = ["F401"]
 
 [tool.pyright]
 # evals/scripts 是独立可执行的脚本目录（非 src 包），需要显式告知静态检查器搜索路径

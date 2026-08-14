@@ -99,37 +99,74 @@ def test_auth_session_refresh_state_is_enum_limited() -> None:
             _valid_session(refresh_state=invalid)
     _valid_session(refresh_state="idle")
     owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
     for state in ("leased", "calling"):
-        _valid_session(refresh_state=state, refresh_owner_token_hash=owner_hash)
+        _valid_session(
+            refresh_state=state,
+            refresh_owner_token_hash=owner_hash,
+            refresh_lease_expires_at=lease_expires_at,
+        )
 
 
 def test_auth_session_owner_token_required_when_leased_or_calling() -> None:
     """fencing 前提：leased/calling 必须有 opaque owner token；idle 必须没有。"""
     owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
     for state in ("leased", "calling"):
         with pytest.raises(ValidationError):
-            _valid_session(refresh_state=state)
+            _valid_session(
+                refresh_state=state, refresh_lease_expires_at=lease_expires_at
+            )
         session = _valid_session(
-            refresh_state=state, refresh_owner_token_hash=owner_hash
+            refresh_state=state,
+            refresh_owner_token_hash=owner_hash,
+            refresh_lease_expires_at=lease_expires_at,
         )
         assert session.refresh_owner_token_hash == owner_hash
     with pytest.raises(ValidationError):
         _valid_session(refresh_state="idle", refresh_owner_token_hash=owner_hash)
 
 
-def test_auth_session_revoked_clears_refresh_lease_and_owner_token() -> None:
-    """revoke 后不得保留 lease：revoked + calling 状态组合是非法状态。"""
+def test_auth_session_lease_consistency_with_refresh_state() -> None:
+    """修订（验收修订 5）：leased/calling 必须同时持有 owner token 与 lease；idle 必须皆无。"""
     owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    lease_expires_at = datetime.now(UTC) + timedelta(seconds=30)
+    for state in ("leased", "calling"):
+        with pytest.raises(ValidationError):
+            _valid_session(
+                refresh_state=state, refresh_owner_token_hash=owner_hash
+            )
+    with pytest.raises(ValidationError):
+        _valid_session(refresh_state="idle", refresh_lease_expires_at=lease_expires_at)
+    _valid_session(
+        refresh_state="leased",
+        refresh_owner_token_hash=owner_hash,
+        refresh_lease_expires_at=lease_expires_at,
+    )
+    _valid_session(
+        refresh_state="calling",
+        refresh_owner_token_hash=owner_hash,
+        refresh_lease_expires_at=lease_expires_at,
+    )
+
+
+def test_auth_session_revoked_clears_refresh_lease_and_owner_token() -> None:
+    """revoke 后不得保留 lease/owner：revoked + calling 状态组合是非法状态。"""
+    owner_hash = hashlib.sha256(b"owner-token").hexdigest()
+    now = datetime.now(UTC)
     with pytest.raises(ValidationError):
         _valid_session(
-            revoked_at=datetime.now(UTC),
+            revoked_at=now,
             refresh_state="calling",
             refresh_owner_token_hash=owner_hash,
+            refresh_lease_expires_at=now + timedelta(seconds=5),
         )
     with pytest.raises(ValidationError):
         _valid_session(
-            revoked_at=datetime.now(UTC), refresh_lease_expires_at=datetime.now(UTC) + timedelta(seconds=5)
+            revoked_at=now, refresh_lease_expires_at=now + timedelta(seconds=5)
         )
+    with pytest.raises(ValidationError):
+        _valid_session(revoked_at=now, refresh_owner_token_hash=owner_hash)
 
 
 def test_auth_session_cookie_token_hash_is_sha256_hex() -> None:

@@ -33,6 +33,18 @@
     LocalSecretBackend 的 concrete-only 参数（external_session）；
 - logout 单调安全：同一 session 的 refresh 不得使撤销失效；API 只在服务端撤销确认后返回
   204，本地撤销失败 fail closed，不得假装成功；
+- 验收修订 5（本 RED 冻结，expired-calling 撤销竞态）：expired calling 的 fail-closed
+  revoke 必须是 refresh 专用**条件撤销**（同时 CAS session_id + expected_version +
+  refresh_state='calling' + observed owner token hash + lease 已过期），不得调用 logout 的
+  「按 session id 单调 revoke」——winner A 在 loser B 观察到 expired calling 之后、B 撤销
+  之前提交 v2 时，B 不得撤销 v2；条件撤销失败后必须重读分类：winner 已提交 expected+1 →
+  返回 winner；已被其他路径撤销 → SessionRevokedError；其他状态 → SessionConflictError；
+- 验收修订 5（本 RED 冻结，DB 状态不变量）：0004/model/domain 统一约束——
+  idle ⟺ refresh_owner_token_hash IS NULL AND refresh_lease_expires_at IS NULL；
+  leased/calling ⟹ 两者皆非 NULL；revoked 必须 idle 且 owner/lease 全空；非法持久化
+  状态必须 fail closed，不得投影成看似合法的 domain 对象（_to_auth_session 不得静默掩盖）；
+  0003→0004 升级必须先归一化 legacy 'refreshing' 行（fail-closed revoke）再建新约束，
+  绝不把不确定的 legacy refreshing 会话恢复为 active；
 - 全程 MockTransport + 本地签名 key，不访问真实 IdP；IdP token 不出现在任何 API 响应。
 """
 
@@ -522,6 +534,83 @@ async def _session_row(cookie_token: str) -> dict[str, Any] | None:
 def _owner_hash() -> str:
     """测试用 opaque owner token 的 SHA-256（合法 64 位 hex 占位）。"""
     return hashlib.sha256(b"test-owner-token").hexdigest()
+
+
+async def _seed_legacy_refreshing_rows(seeded: list[Any]) -> None:
+    """0003 schema 下 seed 合法 auth_sessions 行（refreshing / idle / revoked）。"""
+    principal = await _seed_principal("migration-probe")
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        for state, lease_sql, revoked_sql in [
+            ("refreshing", "now() + interval '30 seconds'", "NULL"),
+            ("refreshing", "now() + interval '30 seconds'", "NULL"),
+            ("idle", "NULL", "NULL"),
+            ("idle", "NULL", "now()"),
+        ]:
+            session_id = uuid4()
+            seeded.append(session_id)
+            await connection.execute(
+                "INSERT INTO auth_sessions (id, cookie_token_hash, principal_id, "
+                "issuer, subject, encrypted_token_ref, csrf_hash, expires_at, "
+                "idle_expires_at, created_at, updated_at, revoked_at, version, "
+                "refresh_state, refresh_lease_expires_at, schema_version) "
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '8 hours', "
+                f"now() + interval '30 minutes', now(), now(), {revoked_sql}, 1, $8, "
+                f"{lease_sql}, 1)",
+                session_id,
+                hashlib.sha256(os.urandom(16)).hexdigest(),
+                principal,
+                ISSUER,
+                "migration-probe",
+                str(uuid4()),
+                hashlib.sha256(os.urandom(16)).hexdigest(),
+                state,
+            )
+    finally:
+        await connection.close()
+
+
+async def _verify_0004_normalized_rows(seeded: list[Any]) -> None:
+    """升级后断言：refreshing → fail-closed revoke；idle/revoked 行保持合法。"""
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        rows = await connection.fetch(
+            "SELECT id, revoked_at, refresh_state, refresh_lease_expires_at, "
+            "refresh_owner_token_hash, version FROM auth_sessions "
+            "WHERE id = ANY($1::uuid[])",
+            seeded,
+        )
+    finally:
+        await connection.close()
+    assert len(rows) == len(seeded)
+    by_state: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        by_state.setdefault(r["refresh_state"], []).append(dict(r))
+    refreshing_rows = by_state.pop("refreshing", [])
+    idle_rows = by_state.pop("idle", [])
+    assert by_state == {}, f"升级后出现意外 refresh_state: {by_state}"
+    assert len(refreshing_rows) == 2, "refreshing 行必须被归一化"
+    for r in refreshing_rows:
+        assert r["revoked_at"] is not None, "legacy refreshing 必须 fail-closed revoke"
+        assert r["refresh_lease_expires_at"] is None
+        assert r["refresh_owner_token_hash"] is None
+        assert r["version"] == 2, "fail-closed revoke 必须单调递增版本（1 → 2）"
+    for r in idle_rows:
+        assert r["revoked_at"] is None
+        assert r["refresh_lease_expires_at"] is None
+        assert r["refresh_owner_token_hash"] is None
+        assert r["version"] == 1
+
+
+async def _delete_seeded_sessions(seeded: list[Any]) -> None:
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        if seeded:
+            await connection.execute(
+                "DELETE FROM auth_sessions WHERE id = ANY($1::uuid[])", seeded
+            )
+    finally:
+        await connection.close()
 
 
 def _assert_no_sentinels(*texts: str) -> None:
@@ -1326,6 +1415,9 @@ async def test_refresh_loser_accepts_concurrent_winner_under_app_db_clock_skew(
     独立反例：应用时钟比 DB 快 5s 时，并发 winner 的 updated_at（DB）落在 loser 的
     attempted_at（应用时钟）之前，被判为 stale。attempt 时间必须与 updated_at 同源
     （数据库时钟域），时钟偏差不得改变并发 winner 判定。
+
+    修订（验收修订 5）：模拟 winner 完成的 UPDATE 必须同时清除 refresh_owner_token_hash
+    ——idle 不变量要求 owner/lease 皆空，不得靠放宽 DB 约束通过。
     """
     await _seed_alice_flow()
     _, client, _ = app_and_client
@@ -1368,7 +1460,8 @@ async def test_refresh_loser_accepts_concurrent_winner_under_app_db_clock_skew(
                 try:
                     await connection.execute(
                         "UPDATE auth_sessions SET version = 2, updated_at = now(), "
-                        "refresh_state = 'idle', refresh_lease_expires_at = NULL "
+                        "refresh_state = 'idle', refresh_lease_expires_at = NULL, "
+                        "refresh_owner_token_hash = NULL "
                         "WHERE id = $1",
                         session_id,
                     )
@@ -1927,3 +2020,339 @@ async def test_session_service_depends_only_on_secret_backend_port(
     assert row is not None
     assert row["revoked_at"] is None
     assert row["version"] == 2
+
+
+# --------------------------------------------------------------------------- H. 验收修订 5 冻结：expired-calling 条件撤销与 DB 状态不变量
+
+
+@pytest.mark.asyncio
+async def test_expired_calling_revoke_race_preserves_winner_commit(
+    migrated_database: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    keyring_path: Path,
+    idp: FakeIdP,
+) -> None:
+    """冻结（验收修订 5）：expired-calling 撤销竞态——loser 不得撤销 winner 的 v2。
+
+    对抗排列：
+    1. winner A 处于 calling（真实 refresh 路径），lease 到期；
+    2. loser B 观察到 expired calling，准备 fail-closed revoke；
+    3. 在 B 的观察与 revoke 之间，A 成功提交 v2（真实 complete 路径）；
+    4. B 必须撤销失败并重读：返回 winner 的新版本 v2，**不得**撤销 v2；
+    5. 最终必须保持 version=2、revoked_at=NULL；IdP refresh 调用仍为 1。
+
+    refresh 故障处理不得调用 logout 的「按 session id 单调 revoke」：单调 revoke 会
+    无视版本撤销 v2。loser 必须使用 refresh 专用条件撤销（CAS session_id +
+    expected_version + calling + observed owner hash + lease 过期），失败后重读分类。
+    """
+    await _seed_alice_flow()
+    app, client, _ = app_and_client
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+    sid = row["id"]
+
+    second = _new_app(keyring_path, idp)
+    try:
+        s1 = app.state.session_service
+        s2 = second.state.session_service
+        a_in_complete = asyncio.Event()
+        release_a = asyncio.Event()
+
+        # winner A：调用 IdP 后卡在 complete 之前（停在 calling）
+        orig_complete = s1._session_store.complete_refresh
+
+        async def gated_complete(*args: Any, **kwargs: Any) -> Any:
+            a_in_complete.set()
+            await release_a.wait()
+            return await orig_complete(*args, **kwargs)
+
+        s1._session_store.complete_refresh = gated_complete
+        a_task = asyncio.create_task(s1.refresh_session(sid, expected_version=1))
+        await asyncio.wait_for(a_in_complete.wait(), timeout=15)
+        assert idp.refresh_calls == 1, "A 进入 calling 前必须恰好调用一次 IdP"
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            state = await connection.fetchval(
+                "SELECT refresh_state FROM auth_sessions WHERE id = $1", sid
+            )
+            assert state == "calling"
+            await connection.execute(
+                "UPDATE auth_sessions SET refresh_lease_expires_at = now() - interval '1 second' "
+                "WHERE id = $1",
+                sid,
+            )
+        finally:
+            await connection.close()
+
+        # loser B：在「观察到 expired calling」与「revoke」之间释放 A 提交 v2
+        orig_revoke = s2._session_store.revoke_session
+        orig_expired_revoke = getattr(s2._session_store, "revoke_expired_calling", None)
+
+        async def racy_revoke(*args: Any, **kwargs: Any) -> Any:
+            release_a.set()
+            await a_task
+            return await orig_revoke(*args, **kwargs)
+
+        async def racy_expired_revoke(*args: Any, **kwargs: Any) -> Any:
+            assert orig_expired_revoke is not None
+            release_a.set()
+            await a_task
+            return await orig_expired_revoke(*args, **kwargs)
+
+        s2._session_store.revoke_session = racy_revoke
+        if orig_expired_revoke is not None:
+            s2._session_store.revoke_expired_calling = racy_expired_revoke
+        try:
+            result = await s2.refresh_session(sid, expected_version=1)
+        finally:
+            s2._session_store.revoke_session = orig_revoke
+            if orig_expired_revoke is not None:
+                s2._session_store.revoke_expired_calling = orig_expired_revoke
+            s1._session_store.complete_refresh = orig_complete
+
+        # B 必须重读并接受 winner 的 v2，不得撤销
+        assert result.id == sid
+        assert result.version == 2
+        assert idp.refresh_calls == 1, "B 是 loser，不得触发第二次 IdP 调用"
+        final = await _session_row(cookie)
+        assert final is not None
+        assert final["version"] == 2
+        assert final["revoked_at"] is None
+        assert final["refresh_state"] == "idle"
+        assert final["refresh_lease_expires_at"] is None
+        assert final["refresh_owner_token_hash"] is None
+        assert (await client.get("/api/v1/me")).status_code == 200
+    finally:
+        await second.state.dispose_engines()
+
+
+@pytest.mark.asyncio
+async def test_expired_calling_revoke_race_reclassified_when_other_path_revoked(
+    migrated_database: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    keyring_path: Path,
+    idp: FakeIdP,
+) -> None:
+    """冻结（验收修订 5）：条件撤销失败后的重读分类——已被其他路径撤销 → SessionRevokedError。
+
+    loser 观察到 expired calling 后、条件撤销执行前，logout 抢先单调撤销（version+1、
+    revoked_at 非空）：条件撤销 CAS 失败，重读发现已撤销 → SessionRevokedError，
+    不得把已撤销 session 当成 winner 返回。
+    """
+    await _seed_alice_flow()
+    _, client, _ = app_and_client
+    cookie = await _perform_login(client, idp)
+    row = await _session_row(cookie)
+    assert row is not None
+    sid = row["id"]
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "UPDATE auth_sessions SET refresh_state = 'calling', "
+            "refresh_owner_token_hash = $2, "
+            "refresh_lease_expires_at = now() - interval '1 second' "
+            "WHERE id = $1",
+            sid,
+            _owner_hash(),
+        )
+    finally:
+        await connection.close()
+
+    second = _new_app(keyring_path, idp)
+    try:
+        s2 = second.state.session_service
+        orig_revoke = s2._session_store.revoke_session
+        orig_expired_revoke = getattr(s2._session_store, "revoke_expired_calling", None)
+
+        async def racy_expired_revoke(*args: Any, **kwargs: Any) -> Any:
+            # 条件撤销执行前，logout 路径抢先单调撤销（v1 → v2 revoked）
+            await orig_revoke(sid, expected_version=1)
+            assert orig_expired_revoke is not None
+            return await orig_expired_revoke(*args, **kwargs)
+
+        if orig_expired_revoke is not None:
+            s2._session_store.revoke_expired_calling = racy_expired_revoke
+        try:
+            with pytest.raises(SessionRevokedError):
+                await s2.refresh_session(sid, expected_version=1)
+        finally:
+            if orig_expired_revoke is not None:
+                s2._session_store.revoke_expired_calling = orig_expired_revoke
+    finally:
+        await second.state.dispose_engines()
+
+    final = await _session_row(cookie)
+    assert final is not None
+    assert final["revoked_at"] is not None
+    assert final["version"] == 2
+    assert (await client.get("/api/v1/me")).status_code == 401
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("refresh_state", "owner_hash", "lease_sql", "revoked_sql", "label"),
+    [
+        ("idle", _owner_hash(), "NULL", "NULL", "idle + owner hash"),
+        ("idle", "NULL", "now() + interval '30 seconds'", "NULL", "idle + lease"),
+        ("leased", "NULL", "now() + interval '30 seconds'", "NULL", "leased + null owner"),
+        ("calling", "NULL", "now() + interval '30 seconds'", "NULL", "calling + null owner"),
+        ("leased", _owner_hash(), "NULL", "NULL", "leased + null lease"),
+        ("calling", _owner_hash(), "NULL", "NULL", "calling + null lease"),
+        ("idle", _owner_hash(), "NULL", "now()", "revoked + owner"),
+        ("idle", "NULL", "now() + interval '30 seconds'", "now()", "revoked + lease"),
+    ],
+)
+async def test_db_rejects_violating_refresh_state_invariants(
+    migrated_database: None,
+    refresh_state: str,
+    owner_hash: str,
+    lease_sql: str,
+    revoked_sql: str,
+    label: str,
+) -> None:
+    """冻结（验收修订 5）：raw SQL 反例——非法持久化状态必须被 DB CHECK 拒绝。
+
+    统一不变量（0004/model/domain）：idle ⟺ owner/lease 皆 NULL；leased/calling ⟹
+    owner/lease 皆非 NULL；revoked 必须 idle 且 owner/lease 全空。任何绕过应用层
+    的非法 INSERT 必须收到 CheckViolationError。
+    """
+    principal = await _seed_principal("invariant-probe")
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        session_id = uuid4()
+        try:
+            await connection.execute(
+                "INSERT INTO auth_sessions (id, cookie_token_hash, principal_id, issuer, "
+                "subject, encrypted_token_ref, csrf_hash, expires_at, idle_expires_at, "
+                "created_at, updated_at, revoked_at, version, refresh_state, "
+                "refresh_lease_expires_at, refresh_owner_token_hash, schema_version) "
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '8 hours', "
+                f"now() + interval '30 minutes', now(), now(), {revoked_sql}, 1, $8, "
+                f"{lease_sql}, {owner_hash}, 1)",
+                session_id,
+                hashlib.sha256(os.urandom(16)).hexdigest(),
+                principal,
+                ISSUER,
+                "invariant-probe",
+                str(uuid4()),
+                hashlib.sha256(os.urandom(16)).hexdigest(),
+                refresh_state,
+            )
+        except asyncpg.CheckViolationError:
+            return
+        pytest.fail(f"非法状态未被 DB CHECK 拒绝: {label}")
+    finally:
+        await connection.close()
+
+
+def test_to_auth_session_fails_closed_on_illegal_persisted_state() -> None:
+    """冻结（验收修订 5）：投影层不得静默掩盖非法持久化状态。
+
+    DB CHECK 是最后防线；_to_auth_session 也必须 fail closed——idle 残留 owner
+    hash/lease、leased/calling 缺 owner/lease、revoked 携带 owner/lease 一律抛
+    SessionRevokedError，不得投影成看似合法的 AuthSession（旧实现把 idle 残留 owner
+    hash 静默忽略）。
+    """
+    from zhiwei.identity.sessions import _to_auth_session
+    from zhiwei.persistence.models import AuthSession as AuthSessionRow
+
+    now = datetime.now(UTC)
+    owner_hash = _owner_hash()
+
+    def row(**overrides: Any) -> AuthSessionRow:
+        values: dict[str, Any] = {
+            "id": uuid4(),
+            "cookie_token_hash": hashlib.sha256(b"cookie-token").hexdigest(),
+            "principal_id": uuid4(),
+            "issuer": ISSUER,
+            "subject": "alice-oidc",
+            "encrypted_token_ref": str(uuid4()),
+            "csrf_hash": hashlib.sha256(b"csrf-secret").hexdigest(),
+            "expires_at": now + timedelta(hours=8),
+            "idle_expires_at": now + timedelta(minutes=30),
+            "created_at": now,
+            "updated_at": now,
+            "revoked_at": None,
+            "version": 1,
+            "refresh_state": "idle",
+            "refresh_lease_expires_at": None,
+            "refresh_owner_token_hash": None,
+            "schema_version": 1,
+        }
+        values.update(overrides)
+        return AuthSessionRow(**values)
+
+    cases = [
+        ("idle + owner hash", {"refresh_owner_token_hash": owner_hash}),
+        ("idle + lease", {"refresh_lease_expires_at": now + timedelta(seconds=30)}),
+        (
+            "leased + null owner",
+            {
+                "refresh_state": "leased",
+                "refresh_lease_expires_at": now + timedelta(seconds=30),
+            },
+        ),
+        (
+            "calling + null owner",
+            {
+                "refresh_state": "calling",
+                "refresh_lease_expires_at": now + timedelta(seconds=30),
+            },
+        ),
+        (
+            "leased + null lease",
+            {"refresh_state": "leased", "refresh_owner_token_hash": owner_hash},
+        ),
+        (
+            "calling + null lease",
+            {"refresh_state": "calling", "refresh_owner_token_hash": owner_hash},
+        ),
+        ("revoked + owner", {"revoked_at": now, "refresh_owner_token_hash": owner_hash}),
+        (
+            "revoked + lease",
+            {"revoked_at": now, "refresh_lease_expires_at": now + timedelta(seconds=30)},
+        ),
+        (
+            "revoked + leased state",
+            {
+                "revoked_at": now,
+                "refresh_state": "leased",
+                "refresh_owner_token_hash": owner_hash,
+                "refresh_lease_expires_at": now + timedelta(seconds=30),
+            },
+        ),
+    ]
+    for _label, overrides in cases:
+        with pytest.raises(SessionRevokedError, match="illegal persisted session state"):
+            _to_auth_session(row(**overrides))
+
+
+def test_migration_0003_to_0004_normalizes_legacy_refreshing_fail_closed(
+    migrated_database: None,
+) -> None:
+    """冻结（验收修订 5）：0003→0004 升级必须归一化 legacy 'refreshing' 行再建新约束。
+
+    - downgrade 到 0003，seed 合法的 refresh_state='refreshing' 行（0003 语义：
+      refreshing = 刷新在途，lease 非空）；
+    - upgrade 到 head 必须成功（旧实现直接建新 CHECK 会因 refreshing 行失败）；
+    - 旧状态无法判断 IdP 是否已调用 → fail closed：revoked_at 非空、state=idle、
+      lease/owner 均为空、version 单调递增（seeded 1 → 2）；
+    - 绝不把不确定的 legacy refreshing 会话恢复为 active；idle / revoked 行保持合法。
+
+    同步测试：alembic env.py 在模块层 asyncio.run()，不能在已运行的事件循环里调用
+    command.downgrade/upgrade（与 migrated_database fixture 同一模式）。
+    """
+    config = _alembic_config()
+    command.downgrade(config, "0003_auth_sessions")
+    seeded: list[Any] = []
+    try:
+        asyncio.run(_seed_legacy_refreshing_rows(seeded))
+        # 升级必须成功（旧实现会在创建新 CHECK 时因 refreshing 行失败）
+        command.upgrade(config, "head")
+        asyncio.run(_verify_0004_normalized_rows(seeded))
+    finally:
+        # 无论测试结果如何都恢复环境：删除 seed 行并把数据库恢复到 head
+        asyncio.run(_delete_seeded_sessions(seeded))
+        command.upgrade(config, "head")
