@@ -55,7 +55,7 @@ from zhiwei.identity.commands import (
 )
 from zhiwei.identity.domain import ActorContext, PrincipalKind, PrincipalStatus
 from zhiwei.identity.repositories import IdentityRepository
-from zhiwei.persistence.repositories import TenantRepository
+from zhiwei.persistence.repositories import IdempotencyConflict, TenantRepository
 from zhiwei.persistence.tenant import (
     TenantContext,
     TenantContextRequired,
@@ -1698,3 +1698,192 @@ async def test_api_idempotency_key_rejects_missing_empty_whitespace(
                 headers=headers,
             )
             assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------- ABA 幂等重放契约（Repair-3）
+
+
+@pytest.mark.asyncio
+async def test_api_stale_add_replay_does_not_resurrect_membership(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """ADD 后 DELETE，重放旧 ADD：返回原结果，membership 保持不存在，幂等记录不新增。"""
+    organization_id, principal_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, uuid4(), workspace_name="Sales"
+    )
+    await _seed_principal(sessions, principal_id)
+    context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        first = await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"member"}),
+            idempotency=_idempotency("add-old", "1"),
+        )
+        assert first.created is True
+        removal = await remove_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            idempotency=_idempotency("delete-new", "1"),
+        )
+        assert removal.created is True
+
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        replayed = await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"member"}),
+            idempotency=_idempotency("add-old", "1"),
+        )
+        assert replayed.created is False
+        assert replayed.response == first.response
+        assert (
+            await repository.get_membership(
+                principal_id=principal_id, organization_id=organization_id
+            )
+        ) is None
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records WHERE organization_id = $1",
+            organization_id,
+        ) == 2
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_stale_delete_replay_does_not_remove_replacement(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """DELETE 后用新 key 重新 ADD，重放旧 DELETE：替代 membership 及其角色保持不变。"""
+    organization_id, principal_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, uuid4(), workspace_name="Sales"
+    )
+    await _seed_principal(sessions, principal_id)
+    context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"member"}),
+            idempotency=_idempotency("add-first", "1"),
+        )
+        removal = await remove_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            idempotency=_idempotency("delete-old", "1"),
+        )
+        assert removal.created is True
+        replacement = await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"builder"}),
+            idempotency=_idempotency("add-replacement", "1"),
+        )
+        assert replacement.created is True
+
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        replayed = await remove_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            idempotency=_idempotency("delete-old", "1"),
+        )
+        assert replayed.created is False
+        assert replayed.response == removal.response
+        membership = await repository.get_membership(
+            principal_id=principal_id, organization_id=organization_id
+        )
+        assert membership is not None
+        assert membership.role_bindings == frozenset({"builder"})
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records WHERE organization_id = $1",
+            organization_id,
+        ) == 3
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_conflicting_member_replay_is_side_effect_free(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """同 key 不同 digest 的 ADD/DELETE 重放：409 前零写入，membership 逐字段不变。"""
+    organization_id, principal_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, uuid4(), workspace_name="Sales"
+    )
+    await _seed_principal(sessions, principal_id)
+    context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"member"}),
+            idempotency=_idempotency("add-key", "1"),
+        )
+        await remove_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            idempotency=_idempotency("delete-key", "1"),
+        )
+        replacement = await add_org_membership(
+            repository,
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"builder"}),
+            idempotency=_idempotency("add-replacement", "1"),
+        )
+        assert replacement.created is True
+
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        with pytest.raises(IdempotencyConflict):
+            await add_org_membership(
+                repository,
+                principal_id=principal_id,
+                organization_id=organization_id,
+                role_bindings=frozenset({"owner"}),
+                idempotency=_idempotency("add-key", "2"),
+            )
+        with pytest.raises(IdempotencyConflict):
+            await remove_org_membership(
+                repository,
+                principal_id=principal_id,
+                organization_id=organization_id,
+                idempotency=_idempotency("delete-key", "2"),
+            )
+        membership = await repository.get_membership(
+            principal_id=principal_id, organization_id=organization_id
+        )
+        assert membership is not None
+        assert membership.role_bindings == frozenset({"builder"})
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM idempotency_records WHERE organization_id = $1",
+            organization_id,
+        ) == 3
+    finally:
+        await connection.close()

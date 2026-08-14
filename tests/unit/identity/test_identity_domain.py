@@ -580,7 +580,6 @@ def test_actor_context_workspace_requires_organization() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_create_user_creates_user_principal_and_binds_identity() -> None:
     repository = FakeIdentityRepository()
     principal = await create_user(
@@ -597,7 +596,6 @@ async def test_create_user_creates_user_principal_and_binds_identity() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_create_user_rejects_reused_external_identity() -> None:
     repository = FakeIdentityRepository()
     await create_user(repository, issuer="https://idp.example.com", subject="alice")
@@ -605,7 +603,6 @@ async def test_create_user_rejects_reused_external_identity() -> None:
         await create_user(repository, issuer="https://idp.example.com", subject="alice")
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_disable_principal_command_lifecycle() -> None:
     repository = FakeIdentityRepository()
@@ -619,7 +616,6 @@ async def test_disable_principal_command_lifecycle() -> None:
         await disable_principal(repository, uuid4())
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_create_organization_bootstraps_org_and_owner_membership() -> None:
     repository = FakeIdentityRepository()
@@ -639,7 +635,6 @@ async def test_create_organization_bootstraps_org_and_owner_membership() -> None
     assert membership.role_bindings == frozenset({"owner"})
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_create_organization_is_idempotent_on_replay() -> None:
     repository = FakeIdentityRepository()
@@ -664,7 +659,6 @@ async def test_create_organization_is_idempotent_on_replay() -> None:
     assert len(repository.memberships) == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_member_add_conflicting_payload_rejected() -> None:
     """org 级 mutation 的幂等键空间稳定（(org, scope, key)）：同 key + 不同 digest 冲突。
@@ -693,7 +687,6 @@ async def test_member_add_conflicting_payload_rejected() -> None:
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_create_workspace_command_is_idempotent_on_replay() -> None:
     repository = FakeIdentityRepository()
@@ -729,7 +722,6 @@ async def test_create_workspace_command_is_idempotent_on_replay() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_disabled_principal_cannot_gain_new_membership() -> None:
     repository = FakeIdentityRepository()
     principal = await create_user(
@@ -758,7 +750,6 @@ async def test_disabled_principal_cannot_gain_new_membership() -> None:
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_principal_can_join_multiple_organizations() -> None:
     repository = FakeIdentityRepository()
@@ -791,7 +782,6 @@ async def test_principal_can_join_multiple_organizations() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_role_bindings_do_not_cross_organization_and_workspace_scope() -> None:
     repository = FakeIdentityRepository()
     principal = await create_user(
@@ -817,7 +807,6 @@ async def test_role_bindings_do_not_cross_organization_and_workspace_scope() -> 
     assert "owner" not in workspace_membership.role_bindings
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_member_add_and_remove_are_idempotent_on_replay() -> None:
     repository = FakeIdentityRepository()
@@ -862,7 +851,6 @@ async def test_member_add_and_remove_are_idempotent_on_replay() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_group_member_add_is_idempotent_on_retry() -> None:
     repository = FakeIdentityRepository()
     principal = await create_user(
@@ -899,7 +887,6 @@ async def test_group_member_add_is_idempotent_on_retry() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_same_name_groups_in_different_workspaces_of_same_org_allowed() -> None:
     repository = FakeIdentityRepository()
     organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
@@ -921,7 +908,6 @@ async def test_same_name_groups_in_different_workspaces_of_same_org_allowed() ->
 
 
 @pytest.mark.asyncio
-@pytest.mark.asyncio
 async def test_disabled_principal_can_still_be_removed_from_membership() -> None:
     repository = FakeIdentityRepository()
     principal = await create_user(
@@ -938,7 +924,6 @@ async def test_disabled_principal_can_still_be_removed_from_membership() -> None
     assert removal.created is True
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_command_outcome_is_frozen() -> None:
     outcome = CommandOutcome(created=True, response={"id": str(uuid4())})
@@ -1151,3 +1136,200 @@ def test_request_digest_uses_sha256_canonical_format() -> None:
     digest_text = canonical_request_digest("POST", "/p", {"a": 1})
     assert digest_text.startswith("sha256:")
     assert len(digest_text) == 7 + 64
+
+
+# --------------------------------------------------------------------------- ABA 幂等重放契约（Repair-3）
+
+
+@pytest.mark.asyncio
+async def test_stale_add_replay_does_not_resurrect_deleted_membership() -> None:
+    """ADD 完成后 DELETE，重放旧 ADD：只返回原始结果，membership 必须保持不存在。
+
+    重放旧请求绝不能覆盖请求完成之后产生的新状态（旧 ADD 不得复活已被删除的 membership）。
+    """
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    first = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-old"),
+    )
+    removal = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-new"),
+    )
+    assert first.created is True
+    assert removal.created is True
+    records_before = len(repository.idempotency)
+
+    replayed = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-old"),
+    )
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) is None
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_stale_delete_replay_does_not_remove_replacement_membership() -> None:
+    """DELETE 后用新 key 重新 ADD，重放旧 DELETE：只返回原结果，替代 membership 保留。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-first"),
+    )
+    removal = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-old"),
+    )
+    assert removal.created is True
+    replacement = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"builder"}),
+        idempotency=_idempotency(key="add-replacement"),
+    )
+    assert replacement.created is True
+    records_before = len(repository.idempotency)
+
+    replayed = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-old"),
+    )
+    assert replayed.created is False
+    assert replayed.response == removal.response
+    membership = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    assert membership is not None
+    assert membership.role_bindings == frozenset({"builder"})
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_conflicting_member_add_replay_is_side_effect_free() -> None:
+    """已存在 key 但 digest 不同：任何 INSERT/DELETE 之前 409，membership 逐字段不变。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(),
+    )
+    existing = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    with pytest.raises(IdempotencyConflict):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(digest_digit="2"),
+        )
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) == existing
+
+    await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="remove-key"),
+    )
+    records_before = len(repository.idempotency)
+    with pytest.raises(IdempotencyConflict):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(digest_digit="2"),
+        )
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) is None
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_conflicting_member_remove_replay_is_side_effect_free() -> None:
+    """DELETE key 被不同 digest 复用：任何 DELETE 之前 409，替代 membership 保留。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-key"),
+    )
+    await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-key"),
+    )
+    replacement = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"builder"}),
+        idempotency=_idempotency(key="add-replacement"),
+    )
+    assert replacement.created is True
+    records_before = len(repository.idempotency)
+
+    with pytest.raises(IdempotencyConflict):
+        await remove_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            idempotency=_idempotency(key="delete-key", digest_digit="2"),
+        )
+    membership = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    assert membership is not None
+    assert membership.role_bindings == frozenset({"builder"})
+    assert len(repository.idempotency) == records_before
