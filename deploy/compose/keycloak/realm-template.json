@@ -9,7 +9,6 @@
   "editUsernameAllowed": false,
   "sslRequired": "external",
   "accessTokenLifespan": 3600,
-  "refreshTokenLifespan": 3600,
   "clients": [
     {
       "clientId": "zhiwei-bff",

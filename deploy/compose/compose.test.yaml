@@ -18,11 +18,15 @@ services:
       - ./postgres/init-test-roles.sql:/docker-entrypoint-initdb.d/00-zhiwei-roles.sql:ro
       - zhiwei_s0_postgres:/var/lib/postgresql/data
 
-  # S1-T2 identity profile：local-product OIDC IdP。测试只做 `config --quiet` 校验与
-  # 本地开发；CI/测试进程不连接它（OIDC 契约测试用 MockTransport）。
+  # S1-T2 identity profile：local-product OIDC IdP。测试只做静态校验与本地开发；
+  # CI/测试进程不连接它（OIDC 契约测试用 MockTransport）。
+  # 启动 Gate 是 tests/contract/deploy 的 docker 测试（真实拉起 + healthcheck），
+  # `docker compose ... config --quiet` 只证明 YAML 可解析，不是启动 Gate。
   keycloak:
     profiles: ["identity"]
-    image: quay.io/keycloak/keycloak:26.1@sha256:dc23dd938a5dc5dfaabc71e44d014928284fafff9122e0395659f1cdcf534da8
+    # tag + manifest digest 双重 pin；digest 必须通过 registry manifest 校验
+    # （docker manifest inspect），且可被 docker 拉取。
+    image: quay.io/keycloak/keycloak:26.1@sha256:be6a86215213145bfb4fb3e2b3ab982a806d00262655abdcf3ffa6a38d241c7c
     entrypoint: ["/opt/keycloak/entrypoint.sh"]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN_USERNAME:-zhiwei-admin}"
@@ -31,6 +35,12 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-zhiwei-dev-admin-only}"
       KEYCLOAK_TEST_CLIENT_SECRET: "${KEYCLOAK_TEST_CLIENT_SECRET:-s1-dev-client-secret-only}"
       KEYCLOAK_TEST_USER_PASSWORD: "${KEYCLOAK_TEST_USER_PASSWORD:-s1-dev-user-password-only}"
+    secrets:
+      # 计划要求的 Docker-secret master-key 挂载：keyring 文件只从显式挂载路径加载，
+      # 应用以 ZHIWEI_IDENTITY_MASTER_KEY_FILE=/run/secrets/zhiwei_identity_master_key
+      # 消费。仓库里的文件是本地开发占位，真实部署必须由 operator 覆盖。
+      - source: zhiwei_identity_master_key
+        target: /run/secrets/zhiwei_identity_master_key
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -42,6 +52,12 @@ services:
       interval: 5s
       timeout: 3s
       retries: 60
+
+secrets:
+  # 本地开发占位 keyring（key_id=base64 32 字节）；真实部署由 operator 以外部
+  # secret 覆盖或轮换，仓库不提交真实 master key。
+  zhiwei_identity_master_key:
+    file: ./secrets/zhiwei_identity_master_key
 
 volumes:
   zhiwei_s0_postgres:
