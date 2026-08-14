@@ -408,10 +408,15 @@ class SessionService:
         if session.idle_expires_at <= now:
             raise SessionRevokedError("session is idle-expired")
 
+        # attempted_at 必须取在任何 I/O 之前：并发 loser 的连接建立可能被延迟到
+        # winner 完成之后，若取晚了会把「刚完成的并发赢家」误判成 stale
+        attempted_at = utc_now()
         if not await self._session_store.acquire_refresh_lease(
             session_id, expected_version, REFRESH_LEASE
         ):
-            return await self._wait_for_winner(session_id, expected_version)
+            return await self._wait_for_winner(
+                session_id, expected_version, attempted_at=attempted_at
+            )
         try:
             return await self._refresh_as_winner(session, expected_version)
         except (SessionRevokedError, SessionConflictError):
@@ -464,21 +469,28 @@ class SessionService:
             raise SessionRevokedError("session disappeared during refresh")
         return refreshed
 
-    async def _wait_for_winner(self, session_id: UUID, expected_version: int) -> AuthSession:
+    async def _wait_for_winner(
+        self, session_id: UUID, expected_version: int, *, attempted_at: datetime
+    ) -> AuthSession:
         """lease 竞争失败后的确定性判定：读取 winner 新版本或 fail closed。
 
-        acquire 失败后立刻重读行，按状态区分三种情形（读在 acquire 之后，先看到
-        赢家仍在持有 lease 时判定为并发，与「纯 stale expected_version」可区分）：
-        - version != expected_version：expected_version 已过期 → SessionConflictError；
+        acquire 失败后立刻重读行，按状态区分三种情形：
+        - version != expected_version：expected_version 已过期。若行版本恰好是
+          expected+1 且 updated_at 晚于本调用发起时刻（attempted_at），说明是
+          并发赢家在我们 acquire 与读之间完成了刷新 → 返回 winner 的新版本
+          （绝不复用旧 refresh token）；否则是纯 stale 调用 → SessionConflictError；
         - version == expected_version 且 refreshing：并发 refresh 在途 → 轮询 winner；
         - revoked → SessionRevokedError。
-        轮询期间 winner 完成则返回其新版本（绝不复用旧 refresh token）；lease 过期
-        仍未完成 → fail closed。
         """
         current = await self._session_store.get_session(session_id)
         if current is None or current.revoked_at is not None:
             raise SessionRevokedError("session revoked by another replica")
         if current.version != expected_version:
+            if (
+                current.version == expected_version + 1
+                and current.updated_at >= attempted_at
+            ):
+                return current
             raise SessionConflictError("stale expected_version for refresh")
         for _ in range(REFRESH_WAIT_POLLS):
             if current.refresh_state == "refreshing":
