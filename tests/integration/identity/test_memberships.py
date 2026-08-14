@@ -1,20 +1,22 @@
-"""S1-T1 RED：identity 迁移、RLS 隔离与 tenant-scoped repository 集成契约。
+"""S1-T1 CONTRACT REPAIR RED：identity 迁移、RLS、tenant-scoped repository 与 /api/v1 契约。
 
-冻结的事实源：
-- 边界裁决 S1-T1：Principal / ExternalIdentity 是 identity-global；Membership、
-  WorkspaceMembership、Group、GroupMember 是 tenant-owned，缺 tenant context fail closed，
-  repository 显式携带 tenant predicate，RLS 只是纵深防御；
-- PERMISSIONS §5：所有租户表启用 FORCE RLS；app role 不是 owner/BYPASSRLS；
-  两个 Organization 用重名 Workspace/Group 互不泄露；guessed cross-org ID 返回 absent/拒绝；
-- 总设计 §9.2：repository 仍显式传 org/workspace。
+上位契约（设计/验收方裁决）：
+- 冻结总设计 §3.1 + docs/API.md §2：Group 是 Workspace scope（organization_id + workspace_id），
+  名称唯一范围是 Workspace；跨 Workspace guessed group ID 返回 absent/拒绝；
+- Group/GroupMember RLS 同时检查 zhiwei.organization_id 与 zhiwei.workspace_id；
+- API route shape 全部采用 /api/v1；所有 mutation 要求非空 Idempotency-Key（重复 key +
+  相同 payload 返回原结果，不同 payload 冲突，接入 S0 idempotency 基础）；
+- 读跨租户或不存在资源统一 404；已知资源上的未授权 mutation 返回 403；不泄露存在性；
+- bootstrap 命令原子创建 Organization + Owner Membership；首登 principal 可以没有 active org；
+- OIDC 身份来源留给 T2，本文件用测试 stub actor。
 
-API 层（S1-T1 "API 基础"）：routers 必须经显式 actor dependency 注入身份与 tenant context，
-没有默认 allow；缺少时拒绝。OIDC 真实依赖注入在 S1-T2，本文件只用测试 stub。
+API 层：routers 必须经显式 actor dependency 注入身份与 tenant context，没有默认 allow。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -41,11 +43,12 @@ from zhiwei.api.organizations import create_organizations_router
 from zhiwei.api.workspaces import create_workspaces_router
 from zhiwei.identity.commands import (
     ExternalIdentityConflictError,
+    IdempotencyRequest,
     PrincipalDisabledError,
     add_group_member,
     add_org_membership,
     add_workspace_membership,
-    create_group,
+    create_organization,
     create_user,
     disable_principal,
     remove_org_membership,
@@ -141,6 +144,14 @@ def _org_actor(organization_id: UUID, *, workspace_id: UUID | None = None) -> Ac
     return ActorContext(
         principal_id=uuid4(), organization_id=organization_id, workspace_id=workspace_id
     )
+
+
+def _no_org_actor(principal_id: UUID | None = None) -> ActorContext:
+    return ActorContext(principal_id=principal_id or uuid4())
+
+
+def _idempotency(key: str, digest_digit: str) -> IdempotencyRequest:
+    return IdempotencyRequest(key=key, request_digest="sha256:" + digest_digit * 64)
 
 
 # --------------------------------------------------------------------------- migration 与 RLS 结构
@@ -275,17 +286,22 @@ async def test_missing_tenant_context_denies_identity_tenant_tables(
             workspace_id,
         )
         await connection.execute(
-            "INSERT INTO groups (id, organization_id, name, schema_version) VALUES ($1, $2, 'seeded', 1)",
-            group_id,
-            organization_id,
-        )
-        await connection.execute(
             """
-            INSERT INTO group_members (group_id, organization_id, principal_id)
-            VALUES ($1, $2, $3)
+            INSERT INTO groups (id, organization_id, workspace_id, name, schema_version)
+            VALUES ($1, $2, $3, 'seeded', 1)
             """,
             group_id,
             organization_id,
+            workspace_id,
+        )
+        await connection.execute(
+            """
+            INSERT INTO group_members (group_id, organization_id, workspace_id, principal_id)
+            VALUES ($1, $2, $3, $4)
+            """,
+            group_id,
+            organization_id,
+            workspace_id,
             principal_id,
         )
     finally:
@@ -306,9 +322,13 @@ async def test_missing_tenant_context_denies_identity_tenant_tables(
             )
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await connection.execute(
-                "INSERT INTO groups (id, organization_id, name, schema_version) VALUES ($1, $2, 'blocked', 1)",
+                """
+                INSERT INTO groups (id, organization_id, workspace_id, name, schema_version)
+                VALUES ($1, $2, $3, 'blocked', 1)
+                """,
                 uuid4(),
                 organization_id,
+                workspace_id,
             )
     finally:
         await connection.close()
@@ -331,17 +351,38 @@ async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
     await _seed_principal(sessions, first_member)
     await _seed_principal(sessions, second_member)
 
-    async with tenant_session(sessions, TenantContext(organization_id=first_org)) as session:
-        repository = IdentityRepository(session, TenantContext(organization_id=first_org))
-        await repository.create_group(first_group, organization_id=first_org, name="Finance")
-        await repository.add_group_member(
-            group_id=first_group, organization_id=first_org, principal_id=first_member
+    async with tenant_session(
+        sessions, TenantContext(organization_id=first_org, workspace_id=first_workspace)
+    ) as session:
+        repository = IdentityRepository(
+            session, TenantContext(organization_id=first_org, workspace_id=first_workspace)
         )
-    async with tenant_session(sessions, TenantContext(organization_id=second_org)) as session:
-        repository = IdentityRepository(session, TenantContext(organization_id=second_org))
-        await repository.create_group(second_group, organization_id=second_org, name="Finance")
+        await repository.create_group(
+            first_group, organization_id=first_org, workspace_id=first_workspace, name="Finance"
+        )
         await repository.add_group_member(
-            group_id=second_group, organization_id=second_org, principal_id=second_member
+            group_id=first_group,
+            organization_id=first_org,
+            workspace_id=first_workspace,
+            principal_id=first_member,
+        )
+    async with tenant_session(
+        sessions, TenantContext(organization_id=second_org, workspace_id=second_workspace)
+    ) as session:
+        repository = IdentityRepository(
+            session, TenantContext(organization_id=second_org, workspace_id=second_workspace)
+        )
+        await repository.create_group(
+            second_group,
+            organization_id=second_org,
+            workspace_id=second_workspace,
+            name="Finance",
+        )
+        await repository.add_group_member(
+            group_id=second_group,
+            organization_id=second_org,
+            workspace_id=second_workspace,
+            principal_id=second_member,
         )
 
     async with tenant_session(
@@ -360,7 +401,9 @@ async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
         assert set(
             (
                 await session.execute(
-                    text("SELECT principal_id FROM group_members WHERE group_id = :group_id"),
+                    text(
+                        "SELECT principal_id FROM group_members WHERE group_id = :group_id"
+                    ),
                     {"group_id": second_group},
                 )
             ).scalars()
@@ -382,11 +425,128 @@ async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
         assert set(
             (
                 await session.execute(
-                    text("SELECT principal_id FROM group_members WHERE group_id = :group_id"),
+                    text(
+                        "SELECT principal_id FROM group_members WHERE group_id = :group_id"
+                    ),
                     {"group_id": first_group},
                 )
             ).scalars()
         ) == set()
+
+
+@pytest.mark.asyncio
+async def test_cross_workspace_group_ids_return_absent_or_reject(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    """同一 Organization 内，跨 Workspace 的 Group 不可见也不可写。"""
+    organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
+    group_id, principal_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, first_workspace, workspace_name="Sales"
+    )
+    second_context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, second_context) as session:
+        await TenantRepository(session, second_context).create_workspace(
+            second_workspace, name="Eng"
+        )
+    await _seed_principal(sessions, principal_id)
+
+    async with tenant_session(
+        sessions, TenantContext(organization_id=organization_id, workspace_id=first_workspace)
+    ) as session:
+        repository = IdentityRepository(
+            session, TenantContext(organization_id=organization_id, workspace_id=first_workspace)
+        )
+        await repository.create_group(
+            group_id, organization_id=organization_id, workspace_id=first_workspace, name="Finance"
+        )
+
+    wrong_workspace_context = TenantContext(
+        organization_id=organization_id, workspace_id=second_workspace
+    )
+    async with tenant_session(sessions, wrong_workspace_context) as session:
+        repository = IdentityRepository(session, wrong_workspace_context)
+        with pytest.raises(TenantScopeError):
+            await repository.get_group(
+                group_id, organization_id=organization_id, workspace_id=first_workspace
+            )
+        assert (
+            await repository.get_group(
+                group_id, organization_id=organization_id, workspace_id=second_workspace
+            )
+        ) is None
+        assert await session.scalar(
+            text("SELECT count(*) FROM groups WHERE id = :group_id"),
+            {"group_id": group_id},
+        ) == 0
+        with pytest.raises(DBAPIError):
+            await session.execute(
+                text(
+                    """
+                    INSERT INTO group_members (group_id, organization_id, workspace_id, principal_id)
+                    VALUES (:group_id, :organization_id, :workspace_id, :principal_id)
+                    """
+                ),
+                {
+                    "group_id": group_id,
+                    "organization_id": organization_id,
+                    "workspace_id": first_workspace,
+                    "principal_id": principal_id,
+                },
+            )
+
+
+@pytest.mark.asyncio
+async def test_same_name_groups_in_different_workspaces_of_same_org_allowed(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
+    first_group, second_group = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, first_workspace, workspace_name="Sales"
+    )
+    second_context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, second_context) as session:
+        await TenantRepository(session, second_context).create_workspace(
+            second_workspace, name="Eng"
+        )
+
+    first_group_context = TenantContext(
+        organization_id=organization_id, workspace_id=first_workspace
+    )
+    async with tenant_session(sessions, first_group_context) as session:
+        repository = IdentityRepository(session, first_group_context)
+        await repository.create_group(
+            first_group,
+            organization_id=organization_id,
+            workspace_id=first_workspace,
+            name="Finance",
+        )
+    second_group_context = TenantContext(
+        organization_id=organization_id, workspace_id=second_workspace
+    )
+    async with tenant_session(sessions, second_group_context) as session:
+        repository = IdentityRepository(session, second_group_context)
+        await repository.create_group(
+            second_group,
+            organization_id=organization_id,
+            workspace_id=second_workspace,
+            name="Finance",
+        )
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        rows = await connection.fetch(
+            "SELECT id, organization_id, workspace_id, name FROM groups "
+            "WHERE name = 'Finance' AND organization_id = $1",
+            organization_id,
+        )
+        assert {(row["id"], row["workspace_id"]) for row in rows} == {
+            (first_group, first_workspace),
+            (second_group, second_workspace),
+        }
+    finally:
+        await connection.close()
 
 
 @pytest.mark.asyncio
@@ -407,13 +567,26 @@ async def test_guessed_cross_org_ids_return_absent_or_reject(
     async with tenant_session(sessions, TenantContext(organization_id=first_org)) as session:
         repository = IdentityRepository(session, TenantContext(organization_id=first_org))
         await repository.add_membership(
-            principal_id=principal_id, organization_id=first_org, role_bindings=frozenset({"member"})
+            principal_id=principal_id,
+            organization_id=first_org,
+            role_bindings=frozenset({"member"}),
         )
-        await repository.create_group(group_id, organization_id=first_org, name="Finance")
+    async with tenant_session(
+        sessions, TenantContext(organization_id=first_org, workspace_id=first_workspace)
+    ) as session:
+        repository = IdentityRepository(
+            session, TenantContext(organization_id=first_org, workspace_id=first_workspace)
+        )
+        await repository.create_group(
+            group_id,
+            organization_id=first_org,
+            workspace_id=first_workspace,
+            name="Finance",
+        )
 
-    second_context = TenantContext(organization_id=second_org)
-    async with tenant_session(sessions, second_context) as session:
-        repository = IdentityRepository(session, second_context)
+    second_org_context = TenantContext(organization_id=second_org)
+    async with tenant_session(sessions, second_org_context) as session:
+        repository = IdentityRepository(session, second_org_context)
         with pytest.raises(TenantScopeError):
             await repository.get_membership(
                 principal_id=principal_id, organization_id=first_org
@@ -423,9 +596,6 @@ async def test_guessed_cross_org_ids_return_absent_or_reject(
                 principal_id=principal_id, organization_id=second_org
             )
         ) is None
-        with pytest.raises(TenantScopeError):
-            await repository.get_group(group_id, organization_id=first_org)
-        assert (await repository.get_group(group_id, organization_id=second_org)) is None
         assert await session.scalar(
             text(
                 "SELECT count(*) FROM memberships WHERE principal_id = :principal_id "
@@ -442,6 +612,16 @@ async def test_guessed_cross_org_ids_return_absent_or_reject(
                     """
                 ),
                 {"principal_id": principal_id, "organization_id": first_org},
+            )
+
+    second_workspace_context = TenantContext(
+        organization_id=second_org, workspace_id=second_workspace
+    )
+    async with tenant_session(sessions, second_workspace_context) as session:
+        repository = IdentityRepository(session, second_workspace_context)
+        with pytest.raises(TenantScopeError):
+            await repository.get_group(
+                group_id, organization_id=first_org, workspace_id=first_workspace
             )
 
 
@@ -462,16 +642,14 @@ async def test_membership_commands_and_scope_separation(
     org_context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, org_context) as session:
         repository = IdentityRepository(session, org_context)
-        membership = await add_org_membership(
+        outcome = await add_org_membership(
             repository,
             principal_id=principal.id,
             organization_id=organization_id,
             role_bindings=frozenset({"owner"}),
         )
-        assert (membership.principal_id, membership.organization_id) == (
-            principal.id,
-            organization_id,
-        )
+        assert outcome.created is True
+        assert outcome.response["principal_id"] == str(principal.id)
 
     workspace_context = TenantContext(
         organization_id=organization_id, workspace_id=workspace_id
@@ -506,9 +684,10 @@ async def test_membership_commands_and_scope_separation(
 
     async with tenant_session(sessions, org_context) as session:
         repository = IdentityRepository(session, org_context)
-        assert await remove_org_membership(
+        removal = await remove_org_membership(
             repository, principal_id=principal.id, organization_id=organization_id
-        ) is True
+        )
+        assert removal.created is True
         assert await repository.list_memberships(organization_id=organization_id) == []
 
 
@@ -605,6 +784,50 @@ async def test_workspace_membership_requires_matching_workspace_context(
 
 
 @pytest.mark.asyncio
+async def test_group_operations_require_matching_workspace_context(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    organization_id, workspace_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, workspace_id, workspace_name="Sales"
+    )
+    group_id = uuid4()
+    org_only_context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, org_only_context) as session:
+        repository = IdentityRepository(session, org_only_context)
+        with pytest.raises(TenantScopeError):
+            await repository.create_group(
+                group_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                name="Finance",
+            )
+
+    workspace_context = TenantContext(
+        organization_id=organization_id, workspace_id=workspace_id
+    )
+    async with tenant_session(sessions, workspace_context) as session:
+        repository = IdentityRepository(session, workspace_context)
+        group = await repository.create_group(
+            group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Finance",
+        )
+        assert group.workspace_id == workspace_id
+        assert (
+            await repository.get_group(
+                group_id, organization_id=organization_id, workspace_id=workspace_id
+            )
+        ) == group
+        assert [
+            g.id for g in await repository.list_groups(
+                organization_id=organization_id, workspace_id=workspace_id
+            )
+        ] == [group_id]
+
+
+@pytest.mark.asyncio
 async def test_disabled_principal_blocked_from_new_memberships(
     migrated_database: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
@@ -640,20 +863,10 @@ async def test_disabled_principal_blocked_from_new_memberships(
                 organization_id=organization_id,
                 role_bindings=frozenset({"owner"}),
             )
-        group_id = uuid4()
-        await repository.create_group(
-            group_id, organization_id=organization_id, name="Finance"
-        )
-        with pytest.raises(PrincipalDisabledError):
-            await add_group_member(
-                repository,
-                group_id=group_id,
-                organization_id=organization_id,
-                principal_id=principal.id,
-            )
-        assert await remove_org_membership(
+        removal = await remove_org_membership(
             repository, principal_id=principal.id, organization_id=organization_id
-        ) is True
+        )
+        assert removal.created is True
 
     workspace_context = TenantContext(
         organization_id=organization_id, workspace_id=workspace_id
@@ -668,23 +881,45 @@ async def test_disabled_principal_blocked_from_new_memberships(
                 workspace_id=workspace_id,
                 role_bindings=frozenset(),
             )
+        group_id = uuid4()
+        await repository.create_group(
+            group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Finance",
+        )
+        with pytest.raises(PrincipalDisabledError):
+            await add_group_member(
+                repository,
+                group_id=group_id,
+                organization_id=organization_id,
+                workspace_id=workspace_id,
+                principal_id=principal.id,
+            )
 
 
 @pytest.mark.asyncio
 async def test_group_member_add_is_idempotent_on_retry(
     migrated_database: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
-    organization_id = uuid4()
+    organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
-        sessions, organization_id, uuid4(), workspace_name="Sales"
+        sessions, organization_id, workspace_id, workspace_name="Sales"
     )
     principal_id = uuid4()
     await _seed_principal(sessions, principal_id)
-    context = TenantContext(organization_id=organization_id)
+    context = TenantContext(
+        organization_id=organization_id, workspace_id=workspace_id
+    )
     group_id = uuid4()
     async with tenant_session(sessions, context) as session:
         repository = IdentityRepository(session, context)
-        await create_group(repository, group_id=group_id, organization_id=organization_id, name="Finance")
+        await repository.create_group(
+            group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Finance",
+        )
 
     async with tenant_session(sessions, context) as session:
         repository = IdentityRepository(session, context)
@@ -692,19 +927,63 @@ async def test_group_member_add_is_idempotent_on_retry(
             repository,
             group_id=group_id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             principal_id=principal_id,
         )
         second = await add_group_member(
             repository,
             group_id=group_id,
             organization_id=organization_id,
+            workspace_id=workspace_id,
             principal_id=principal_id,
         )
         assert first == second
         members = await repository.list_group_members(
-            group_id=group_id, organization_id=organization_id
+            group_id=group_id, organization_id=organization_id, workspace_id=workspace_id
         )
         assert members == [first]
+
+
+@pytest.mark.asyncio
+async def test_organization_bootstrap_creates_org_and_owner_membership_atomically(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    principal_id = uuid4()
+    await _seed_principal(sessions, principal_id)
+    organization_id = uuid4()
+    context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, context) as session:
+        repository = IdentityRepository(session, context)
+        first = await create_organization(
+            repository,
+            organization_id=organization_id,
+            owner_principal_id=principal_id,
+            idempotency=_idempotency("bootstrap-key", "1"),
+        )
+        replayed = await create_organization(
+            repository,
+            organization_id=organization_id,
+            owner_principal_id=principal_id,
+            idempotency=_idempotency("bootstrap-key", "1"),
+        )
+        assert first.created is True
+        assert replayed.created is False
+        assert replayed.response == first.response
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM organizations WHERE id = $1", organization_id
+        ) == 1
+        rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1",
+            organization_id,
+        )
+        assert len(rows) == 1
+        assert rows[0]["principal_id"] == principal_id
+        assert json.loads(rows[0]["role_bindings"]) == ["owner"]
+    finally:
+        await connection.close()
 
 
 # --------------------------------------------------------------------------- API 基础
@@ -717,6 +996,104 @@ def test_api_composition_requires_explicit_actor_dependency() -> None:
         create_workspaces_router()  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         create_memberships_router()  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_api_requires_idempotency_key_for_mutations(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    principal_id = uuid4()
+    await _seed_principal(sessions, principal_id)
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _no_org_actor(principal_id), sessions=sessions
+        )
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/organizations", json={"organization_id": str(uuid4())}
+        )
+        assert response.status_code == 422
+
+        organization_id = uuid4()
+        body = {"organization_id": str(organization_id)}
+        first = await client.post(
+            "/api/v1/organizations", json=body, headers={"Idempotency-Key": "create-org-1"}
+        )
+        assert first.status_code == 201
+        assert first.json() == {"id": str(organization_id), "status": "active"}
+
+        replayed = await client.post(
+            "/api/v1/organizations", json=body, headers={"Idempotency-Key": "create-org-1"}
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == first.json()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM organizations WHERE id = $1", organization_id
+        ) == 1
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_organization_bootstrap_and_list(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    organization_id = uuid4()
+    principal_id = uuid4()
+    await _seed_principal(sessions, principal_id)
+    actor = _no_org_actor(principal_id)
+    app = FastAPI()
+    app.include_router(
+        create_organizations_router(actor_dependency=lambda: actor, sessions=sessions)
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/api/v1/organizations")
+        assert response.status_code == 200
+        assert response.json() == []
+
+        response = await client.post(
+            "/api/v1/organizations",
+            json={"organization_id": str(organization_id)},
+            headers={"Idempotency-Key": "bootstrap"},
+        )
+        assert response.status_code == 201
+        assert response.json() == {"id": str(organization_id), "status": "active"}
+
+        # 首登无组织时 list 仍为空（跨租户枚举属于 T2 identity-global 设计）
+        response = await client.get("/api/v1/organizations")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        owner_rows = await connection.fetch(
+            "SELECT role_bindings FROM memberships WHERE organization_id = $1",
+            organization_id,
+        )
+        assert len(owner_rows) == 1
+        assert json.loads(owner_rows[0]["role_bindings"]) == ["owner"]
+    finally:
+        await connection.close()
+
+    with_org_app = FastAPI()
+    with_org_app.include_router(
+        create_organizations_router(
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=with_org_app), base_url="http://test"
+    ) as client:
+        response = await client.get("/api/v1/organizations")
+        assert response.status_code == 200
+        assert response.json() == [{"id": str(organization_id), "status": "active"}]
 
 
 @pytest.mark.asyncio
@@ -738,29 +1115,179 @@ async def test_api_organization_read_is_scoped_to_actor_org(
     )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(f"/organizations/{first_org}")
+        response = await client.get(f"/api/v1/organizations/{first_org}")
         assert response.status_code == 200
         assert response.json()["id"] == str(first_org)
-        # 读操作防枚举：跨租户 org 与不存在的 id 都返回 404，不泄露组织是否存在
-        response = await client.get(f"/organizations/{second_org}")
+        # 读操作防枚举：跨租户 org 与不存在的 id 统一 404，不泄露组织是否存在
+        response = await client.get(f"/api/v1/organizations/{second_org}")
         assert response.status_code == 404
-        response = await client.get(f"/organizations/{uuid4()}")
+        response = await client.get(f"/api/v1/organizations/{uuid4()}")
+        assert response.status_code == 404
+
+    no_org_app = FastAPI()
+    no_org_app.include_router(
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions)
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=no_org_app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/v1/organizations/{first_org}")
         assert response.status_code == 404
 
 
 @pytest.mark.asyncio
-async def test_api_membership_and_group_endpoints_enforce_actor_scope(
+async def test_api_workspaces_and_groups_endpoints_enforce_scope(
     migrated_database: None, sessions: async_sessionmaker[AsyncSession]
 ) -> None:
-    organization_id, workspace_id = uuid4(), uuid4()
+    organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
     await _seed_organization_and_workspace(
-        sessions, organization_id, workspace_id, workspace_name="Sales"
+        sessions, organization_id, first_workspace, workspace_name="Sales"
     )
+    second_context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, second_context) as session:
+        await TenantRepository(session, second_context).create_workspace(
+            second_workspace, name="Eng"
+        )
     other_org = uuid4()
     await _seed_organization_and_workspace(
-        sessions, other_org, uuid4(), workspace_name="Eng"
+        sessions, other_org, uuid4(), workspace_name="Ops"
     )
-    active_id, disabled_id = uuid4(), uuid4()
+
+    org_app = FastAPI()
+    org_app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=org_app), base_url="http://test") as client:
+        # 组织级 actor 创建 workspace（org 上下文，workspace_id 为空）
+        workspace_body = {
+            "workspace_id": str(uuid4()),
+            "name": "Sales-2",
+        }
+        response = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json=workspace_body,
+            headers={"Idempotency-Key": "create-workspace"},
+        )
+        assert response.status_code == 201
+        assert response.json()["organization_id"] == str(organization_id)
+        assert response.json()["name"] == "Sales-2"
+        replayed = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json=workspace_body,
+            headers={"Idempotency-Key": "create-workspace"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == response.json()
+
+        response = await client.get(f"/api/v1/organizations/{organization_id}/workspaces")
+        assert response.status_code == 200
+        assert {workspace["id"] for workspace in response.json()} == {
+            str(first_workspace),
+            str(second_workspace),
+            workspace_body["workspace_id"],
+        }
+
+        # 幂等冲突：同 key + 不同 payload（org 级 mutation 的键空间稳定）→ 409
+        conflicting = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json={"workspace_id": str(uuid4()), "name": "Conflicting"},
+            headers={"Idempotency-Key": "create-workspace"},
+        )
+        assert conflicting.status_code == 409
+
+        # 跨租户：写 403，读 404
+        response = await client.post(
+            f"/api/v1/organizations/{other_org}/workspaces",
+            json=workspace_body,
+            headers={"Idempotency-Key": "cross-org-workspace"},
+        )
+        assert response.status_code == 403
+        response = await client.get(f"/api/v1/organizations/{other_org}/workspaces")
+        assert response.status_code == 404
+
+    workspace_app = FastAPI()
+    workspace_app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: _org_actor(
+                organization_id, workspace_id=first_workspace
+            ),
+            sessions=sessions,
+        )
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=workspace_app), base_url="http://test"
+    ) as client:
+        # 组织级 mutation 要求组织级 actor
+        response = await client.post(
+            f"/api/v1/organizations/{organization_id}/workspaces",
+            json={"workspace_id": str(uuid4()), "name": "Blocked"},
+            headers={"Idempotency-Key": "ws-actor-workspace"},
+        )
+        assert response.status_code == 403
+
+        # workspace actor 创建 Group；名称唯一范围是 Workspace
+        first_group_id = uuid4()
+        group_body = {"group_id": str(first_group_id), "name": "Finance"}
+        response = await client.post(
+            f"/api/v1/workspaces/{first_workspace}/groups",
+            json=group_body,
+            headers={"Idempotency-Key": "create-group-1"},
+        )
+        assert response.status_code == 201
+        assert response.json() == {
+            "id": str(first_group_id),
+            "organization_id": str(organization_id),
+            "workspace_id": str(first_workspace),
+            "name": "Finance",
+        }
+        replayed = await client.post(
+            f"/api/v1/workspaces/{first_workspace}/groups",
+            json=group_body,
+            headers={"Idempotency-Key": "create-group-1"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == response.json()
+        response = await client.get(f"/api/v1/workspaces/{first_workspace}/groups")
+        assert response.status_code == 200
+        assert [group["id"] for group in response.json()] == [str(first_group_id)]
+
+        # 跨 workspace：读 404、写 403
+        response = await client.post(
+            f"/api/v1/workspaces/{second_workspace}/groups",
+            json=group_body,
+            headers={"Idempotency-Key": "cross-ws-group"},
+        )
+        assert response.status_code == 403
+        response = await client.get(f"/api/v1/workspaces/{second_workspace}/groups")
+        assert response.status_code == 404
+        # 同一 Workspace 内重名 Group 冲突（名称唯一范围是 Workspace）
+        response = await client.post(
+            f"/api/v1/workspaces/{first_workspace}/groups",
+            json={"group_id": str(uuid4()), "name": "Finance"},
+            headers={"Idempotency-Key": "create-group-2"},
+        )
+        assert response.status_code == 409
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM groups WHERE organization_id = $1", organization_id
+        ) == 1
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_api_members_endpoints_enforce_scope(
+    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+) -> None:
+    organization_id = uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, uuid4(), workspace_name="Sales"
+    )
+    active_id, disabled_id, missing_id = uuid4(), uuid4(), uuid4()
     await _seed_principal(sessions, active_id)
     await _seed_principal(sessions, disabled_id)
     async with sessions() as session, session.begin():
@@ -775,129 +1302,66 @@ async def test_api_membership_and_group_endpoints_enforce_actor_scope(
     )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
+        member_body = {"principal_id": str(active_id), "role_bindings": ["member"]}
         response = await client.post(
-            f"/organizations/{organization_id}/members",
-            json={"principal_id": str(active_id), "role_bindings": ["member"]},
+            f"/api/v1/organizations/{organization_id}/members",
+            json=member_body,
+            headers={"Idempotency-Key": "add-member-1"},
         )
         assert response.status_code == 201
         assert response.json()["principal_id"] == str(active_id)
-        response = await client.get(f"/organizations/{organization_id}/members")
+        assert response.json()["role_bindings"] == ["member"]
+        replayed = await client.post(
+            f"/api/v1/organizations/{organization_id}/members",
+            json=member_body,
+            headers={"Idempotency-Key": "add-member-1"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.json() == response.json()
+
+        response = await client.get(f"/api/v1/organizations/{organization_id}/members")
         assert response.status_code == 200
         assert [member["principal_id"] for member in response.json()] == [str(active_id)]
 
         response = await client.post(
-            f"/organizations/{other_org}/members",
-            json={"principal_id": str(active_id), "role_bindings": ["member"]},
-        )
-        assert response.status_code == 403
-
-        response = await client.post(
-            f"/organizations/{organization_id}/members",
+            f"/api/v1/organizations/{organization_id}/members",
             json={"principal_id": str(disabled_id), "role_bindings": ["member"]},
+            headers={"Idempotency-Key": "add-member-disabled"},
         )
         assert response.status_code == 409
 
-        response = await client.delete(
-            f"/organizations/{organization_id}/members/{active_id}"
-        )
-        assert response.status_code == 204
-        response = await client.get(f"/organizations/{organization_id}/members")
-        assert response.json() == []
-
         response = await client.post(
-            f"/organizations/{organization_id}/groups", json={"name": "Finance"}
+            f"/api/v1/organizations/{organization_id}/members",
+            json={"principal_id": str(missing_id), "role_bindings": ["member"]},
+            headers={"Idempotency-Key": "add-member-missing"},
         )
-        assert response.status_code == 201
-        group_id = response.json()["id"]
-        assert response.json()["organization_id"] == str(organization_id)
-
-        response = await client.post(
-            f"/groups/{group_id}/members", json={"principal_id": str(active_id)}
-        )
-        assert response.status_code == 201
-        retried = await client.post(
-            f"/groups/{group_id}/members", json={"principal_id": str(active_id)}
-        )
-        assert retried.status_code == 201
-        assert retried.json() == response.json()
-        response = await client.get(f"/groups/{group_id}/members")
-        assert response.status_code == 200
-        assert [member["principal_id"] for member in response.json()] == [str(active_id)]
-
-    workspace_app = FastAPI()
-    workspace_app.include_router(
-        create_memberships_router(
-            actor_dependency=lambda: _org_actor(
-                organization_id, workspace_id=workspace_id
-            ),
-            sessions=sessions,
-        )
-    )
-    workspace_transport = ASGITransport(app=workspace_app)
-    async with AsyncClient(
-        transport=workspace_transport, base_url="http://test"
-    ) as client:
-        response = await client.post(
-            f"/workspaces/{workspace_id}/members",
-            json={"principal_id": str(active_id), "role_bindings": ["builder"]},
-        )
-        assert response.status_code == 201
-        assert response.json()["workspace_id"] == str(workspace_id)
-        response = await client.get(f"/workspaces/{workspace_id}/members")
-        assert response.status_code == 200
-        assert [member["principal_id"] for member in response.json()] == [str(active_id)]
-
-    org_only_app = FastAPI()
-    org_only_app.include_router(
-        create_memberships_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
-        )
-    )
-    async with AsyncClient(
-        transport=ASGITransport(app=org_only_app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            f"/workspaces/{workspace_id}/members",
-            json={"principal_id": str(active_id), "role_bindings": ["builder"]},
-        )
-        assert response.status_code == 403
-        response = await client.get(f"/workspaces/{workspace_id}/members")
         assert response.status_code == 404
 
-
-@pytest.mark.asyncio
-async def test_api_workspace_creation_requires_org_only_actor(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
-) -> None:
-    organization_id = uuid4()
-    await _seed_organization_and_workspace(
-        sessions, organization_id, uuid4(), workspace_name="Sales"
-    )
-    org_app = FastAPI()
-    org_app.include_router(
-        create_workspaces_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+        response = await client.delete(
+            f"/api/v1/organizations/{organization_id}/members/{active_id}",
+            headers={"Idempotency-Key": "remove-member-1"},
         )
+        assert response.status_code == 204
+        replayed = await client.delete(
+            f"/api/v1/organizations/{organization_id}/members/{active_id}",
+            headers={"Idempotency-Key": "remove-member-1"},
+        )
+        assert replayed.status_code == 204
+        response = await client.get(f"/api/v1/organizations/{organization_id}/members")
+        assert response.json() == []
+
+    no_org_app = FastAPI()
+    no_org_app.include_router(
+        create_memberships_router(actor_dependency=_no_org_actor, sessions=sessions)
     )
     async with AsyncClient(
-        transport=ASGITransport(app=org_app), base_url="http://test"
+        transport=ASGITransport(app=no_org_app), base_url="http://test"
     ) as client:
-        response = await client.post("/workspaces", json={"name": "Eng"})
-        assert response.status_code == 201
-        assert response.json()["name"] == "Eng"
-        assert response.json()["organization_id"] == str(organization_id)
-
-    workspace_app = FastAPI()
-    workspace_app.include_router(
-        create_workspaces_router(
-            actor_dependency=lambda: _org_actor(
-                organization_id, workspace_id=uuid4()
-            ),
-            sessions=sessions,
+        response = await client.post(
+            f"/api/v1/organizations/{organization_id}/members",
+            json=member_body,
+            headers={"Idempotency-Key": "no-org-add"},
         )
-    )
-    async with AsyncClient(
-        transport=ASGITransport(app=workspace_app), base_url="http://test"
-    ) as client:
-        response = await client.post("/workspaces", json={"name": "Blocked"})
         assert response.status_code == 403
+        response = await client.get(f"/api/v1/organizations/{organization_id}/members")
+        assert response.status_code == 404

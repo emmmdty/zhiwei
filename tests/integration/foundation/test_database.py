@@ -72,11 +72,14 @@ WORKSPACE_TABLES = {
     "eval_runs",
     "eval_samples",
     "eval_suite_versions",
+    "group_members",
+    "groups",
     "runs",
     "workspace_memberships",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
-ORG_SCOPED_TABLES = {"group_members", "groups", "memberships"}
+# 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
+ORG_SCOPED_TABLES = {"memberships"}
 # Principal / ExternalIdentity 是跨 Organization 的 identity-global 记录（DATA_MODEL §2：
 # 首次 callback 时用户可能尚未创建/加入组织，同一 Principal 也可属于多个组织），
 # 不能挂 organization_id，也不能用 org GUC 做 RLS——它们不是租户表。
