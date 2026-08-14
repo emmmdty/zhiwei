@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 
 import pytest
+
 from zhiwei.config.settings import (
     DeploymentProfile,
     ReleaseMode,
@@ -250,3 +251,109 @@ def test_settings_module_import_does_not_touch_environment() -> None:
     module = importlib.import_module("zhiwei.config.settings")
     assert not hasattr(module, "settings"), "不得在模块级实例化全局 settings 单例"
     assert os.environ.get("ZHIWEI_PROFILE") in (None, os.environ.get("ZHIWEI_PROFILE"))
+
+
+# --------------------------------------------------------------------------- S1-T2 identity / OIDC / secret 配置
+
+
+def test_identity_database_url_is_a_secret_field() -> None:
+    """identity DSN 与 app DSN 同级：独立角色、独立凭据，repr 不得出现。"""
+    settings = load_settings(
+        {"ZHIWEI_IDENTITY_DATABASE_URL": f"postgresql://u:{SENTINEL_SECRET}@h/identity_db"}
+    )
+    assert settings.identity_database_url is not None
+    assert settings.identity_database_url.get_secret_value().endswith("@h/identity_db")
+    assert SENTINEL_SECRET not in repr(settings.identity_database_url)
+    assert SENTINEL_SECRET not in repr(settings)
+
+
+def test_identity_database_url_absent_by_default() -> None:
+    assert load_settings({}).identity_database_url is None
+
+
+def test_oidc_client_secret_is_a_secret_field() -> None:
+    settings = load_settings({"ZHIWEI_OIDC_CLIENT_SECRET": SENTINEL_SECRET})
+    assert settings.oidc_client_secret is not None
+    assert settings.oidc_client_secret.get_secret_value() == SENTINEL_SECRET
+    assert SENTINEL_SECRET not in repr(settings.oidc_client_secret)
+    assert SENTINEL_SECRET not in repr(settings)
+    for rendering in _all_string_renderings(settings):
+        assert SENTINEL_SECRET not in rendering
+
+
+def test_oidc_settings_parsed_from_environment_names() -> None:
+    settings = load_settings(
+        {
+            "ZHIWEI_OIDC_ISSUER": "https://idp.example.com",
+            "ZHIWEI_OIDC_CLIENT_ID": "zhiwei-bff",
+            "ZHIWEI_OIDC_REDIRECT_URI": "https://app.example.com/auth/callback",
+        }
+    )
+    assert settings.oidc_issuer == "https://idp.example.com"
+    assert settings.oidc_client_id == "zhiwei-bff"
+    assert settings.oidc_redirect_uri == "https://app.example.com/auth/callback"
+
+
+def test_oidc_settings_absent_by_default() -> None:
+    settings = load_settings({})
+    assert settings.oidc_issuer is None
+    assert settings.oidc_client_id is None
+    assert settings.oidc_client_secret is None
+    assert settings.oidc_redirect_uri is None
+
+
+def test_identity_master_key_file_is_a_path(tmp_path: Path) -> None:
+    settings = load_settings({"ZHIWEI_IDENTITY_MASTER_KEY_FILE": str(tmp_path / "master.key")})
+    assert settings.identity_master_key_file == tmp_path / "master.key"
+    assert isinstance(settings.identity_master_key_file, Path)
+    assert load_settings({}).identity_master_key_file is None
+
+
+# --------------------------------------------------------------------------- auth app 组合期拒绝（G 契约）
+
+
+def _full_auth_app_settings(tmp_path: Path) -> dict[str, str]:
+    return {
+        "ZHIWEI_PROFILE": "test",
+        "ZHIWEI_DATABASE_URL": "postgresql://zhiwei_app@db.example/zhiwei_test",
+        "ZHIWEI_IDENTITY_DATABASE_URL": "postgresql://zhiwei_identity@db.example/zhiwei_test",
+        "ZHIWEI_OIDC_ISSUER": "https://idp.example.com",
+        "ZHIWEI_OIDC_CLIENT_ID": "zhiwei-bff",
+        "ZHIWEI_OIDC_CLIENT_SECRET": SENTINEL_SECRET,
+        "ZHIWEI_OIDC_REDIRECT_URI": "https://app.example.com/auth/callback",
+        "ZHIWEI_IDENTITY_MASTER_KEY_FILE": str(tmp_path / "master.key"),
+    }
+
+
+@pytest.mark.parametrize(
+    "dropped",
+    [
+        "ZHIWEI_DATABASE_URL",
+        "ZHIWEI_IDENTITY_DATABASE_URL",
+        "ZHIWEI_OIDC_ISSUER",
+        "ZHIWEI_OIDC_CLIENT_ID",
+        "ZHIWEI_OIDC_CLIENT_SECRET",
+        "ZHIWEI_OIDC_REDIRECT_URI",
+        "ZHIWEI_IDENTITY_MASTER_KEY_FILE",
+    ],
+)
+def test_create_app_rejects_missing_composition_inputs(tmp_path: Path, dropped: str) -> None:
+    """auth app 缺 identity DSN、OIDC issuer/client、master-key file 任一项都在组合期拒绝。"""
+    from zhiwei.app import create_app
+
+    env = {key: value for key, value in _full_auth_app_settings(tmp_path).items() if key != dropped}
+    with pytest.raises(ValueError) as exc:
+        create_app(load_settings(env))
+    assert dropped in str(exc.value), "错误信息必须指名缺失的变量"
+
+
+def test_create_app_composes_with_complete_settings(tmp_path: Path) -> None:
+    """配置完整时 create_app 成功组合（engine 惰性，不触网）。"""
+    from fastapi import FastAPI
+
+    from zhiwei.app import create_app
+
+    (tmp_path / "master.key").write_text("k1=YWJjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=\n", encoding="utf-8")
+    app = create_app(load_settings(_full_auth_app_settings(tmp_path)))
+    assert isinstance(app, FastAPI)
+    assert app.state.session_service is not None or hasattr(app.state, "session_service")

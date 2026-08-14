@@ -66,6 +66,84 @@ from zhiwei.persistence.tenant import (
 )
 
 
+class IdentityStore:
+    """identity-global 数据访问（S1-T2：独立 zhiwei_identity 角色 + 独立 engine）。
+
+    principals / external_identities / auth_sessions / oidc_login_attempts /
+    secret_envelopes 不再经 zhiwei_app；本类只操作 identity 引擎的会话，
+    不触碰任何 tenant-owned 表（组织/工作区/membership 发现走 SECURITY DEFINER 函数）。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def create_principal(
+        self,
+        principal_id: UUID,
+        *,
+        kind: PrincipalKind,
+        status: PrincipalStatus = PrincipalStatus.ACTIVE,
+    ) -> Principal:
+        row = PrincipalRow(
+            id=principal_id, kind=kind.value, status=status.value, schema_version=1
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return self._to_principal(row)
+
+    async def get_principal(self, principal_id: UUID) -> Principal | None:
+        row = await self._session.get(PrincipalRow, principal_id)
+        return None if row is None else self._to_principal(row)
+
+    async def disable_principal(self, principal_id: UUID) -> Principal | None:
+        row = (
+            await self._session.execute(
+                update(PrincipalRow)
+                .where(PrincipalRow.id == principal_id)
+                .values(status=PrincipalStatus.DISABLED.value)
+                .returning(PrincipalRow)
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_principal(row)
+
+    async def bind_external_identity(
+        self, *, issuer: str, subject: str, principal_id: UUID
+    ) -> ExternalIdentity:
+        row = (
+            await self._session.execute(
+                insert(ExternalIdentityRow)
+                .values(issuer=issuer, subject=subject, principal_id=principal_id)
+                .on_conflict_do_nothing(constraint="pk_external_identities")
+                .returning(ExternalIdentityRow)
+            )
+        ).scalar_one_or_none()
+        if row is None:
+            raise ExternalIdentityConflictError(
+                "external identity is already bound to another principal"
+            )
+        return self._to_external_identity(row)
+
+    async def get_external_identity(
+        self, *, issuer: str, subject: str
+    ) -> ExternalIdentity | None:
+        row = await self._session.get(ExternalIdentityRow, {"issuer": issuer, "subject": subject})
+        return None if row is None else self._to_external_identity(row)
+
+    @staticmethod
+    def _to_principal(row: PrincipalRow) -> Principal:
+        return Principal(
+            id=row.id,
+            kind=PrincipalKind(row.kind),
+            status=PrincipalStatus(row.status),
+            schema_version=row.schema_version,
+            created_at=row.created_at,
+        )
+
+    @staticmethod
+    def _to_external_identity(row: ExternalIdentityRow) -> ExternalIdentity:
+        return ExternalIdentity(issuer=row.issuer, subject=row.subject, principal_id=row.principal_id)
+
+
 class IdentityRepository:
     """身份数据访问：identity-global 表不要求 context；tenant-owned 表必须显式作用域。"""
 

@@ -54,7 +54,7 @@ from zhiwei.identity.commands import (
     remove_org_membership,
 )
 from zhiwei.identity.domain import ActorContext, PrincipalKind, PrincipalStatus
-from zhiwei.identity.repositories import IdentityRepository
+from zhiwei.identity.repositories import IdentityRepository, IdentityStore
 from zhiwei.persistence.repositories import IdempotencyConflict, TenantRepository
 from zhiwei.persistence.tenant import (
     TenantContext,
@@ -72,6 +72,10 @@ APP_DSN = os.environ.get(
     "ZHIWEI_TEST_APP_DSN", "postgresql://zhiwei_app@127.0.0.1:55432/zhiwei_test"
 )
 APP_SQLALCHEMY_URL = APP_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+IDENTITY_DSN = os.environ.get(
+    "ZHIWEI_TEST_IDENTITY_DSN", "postgresql://zhiwei_identity@127.0.0.1:55432/zhiwei_test"
+)
+IDENTITY_SQLALCHEMY_URL = IDENTITY_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
 
 TENANT_TABLES = {"group_members", "groups", "memberships", "workspace_memberships"}
 IDENTITY_GLOBAL_TABLES = {"external_identities", "principals"}
@@ -116,6 +120,15 @@ def sessions() -> Iterator[async_sessionmaker[AsyncSession]]:
     asyncio.run(engine.dispose())
 
 
+@pytest.fixture(scope="function")
+def identity_sessions() -> Iterator[async_sessionmaker[AsyncSession]]:
+    """S1-T2：identity-global 数据（principals / external_identities / auth_sessions /
+    secret_envelopes）走独立 zhiwei_identity 角色与独立 engine，不再经 zhiwei_app。"""
+    engine = create_async_engine(IDENTITY_SQLALCHEMY_URL, poolclass=NullPool)
+    yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+    asyncio.run(engine.dispose())
+
+
 async def _seed_organization_and_workspace(
     sessions: async_sessionmaker[AsyncSession],
     organization_id: UUID,
@@ -131,10 +144,10 @@ async def _seed_organization_and_workspace(
 
 
 async def _seed_principal(
-    sessions: async_sessionmaker[AsyncSession], principal_id: UUID
+    identity_sessions: async_sessionmaker[AsyncSession], principal_id: UUID
 ) -> None:
-    async with sessions() as session, session.begin():
-        repository = IdentityRepository(session, context=None)
+    async with identity_sessions() as session, session.begin():
+        repository = IdentityStore(session)
         await repository.create_principal(
             principal_id, kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
         )
@@ -159,7 +172,9 @@ def _idempotency(key: str, digest_digit: str) -> IdempotencyRequest:
 
 @pytest.mark.asyncio
 async def test_identity_tables_exist_with_expected_rls_structure(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -198,56 +213,63 @@ async def test_identity_tables_exist_with_expected_rls_structure(
 
 @pytest.mark.asyncio
 async def test_principal_is_identity_global_but_tenant_tables_require_context(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     principal_id = uuid4()
-    async with sessions() as session:
-        repository = IdentityRepository(session, context=None)
-        principal = await repository.create_principal(
+    async with identity_sessions() as session:
+        store = IdentityStore(session)
+        principal = await store.create_principal(
             principal_id, kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
         )
         assert principal.id == principal_id
-        assert (await repository.get_principal(principal_id)) == principal
-        identity = await repository.bind_external_identity(
+        assert (await store.get_principal(principal_id)) == principal
+        identity = await store.bind_external_identity(
             issuer="https://idp.example.com", subject="alice", principal_id=principal_id
         )
         assert identity.stable_key == ("https://idp.example.com", "alice")
         assert (
-            await repository.get_external_identity(
+            await store.get_external_identity(
                 issuer="https://idp.example.com", subject="alice"
             )
         ) == identity
+    async with sessions() as session:
         with pytest.raises(TenantContextRequired):
-            await repository.add_membership(
+            await IdentityRepository(session, context=None).add_membership(
                 principal_id=principal_id, organization_id=uuid4(), role_bindings=frozenset()
             )
 
 
 @pytest.mark.asyncio
 async def test_external_identity_issuer_subject_unique_at_database_level(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     first_id, second_id = uuid4(), uuid4()
-    async with sessions() as session:
-        repository = IdentityRepository(session, context=None)
-        await repository.create_principal(
+    async with identity_sessions() as session:
+        store = IdentityStore(session)
+        await store.create_principal(
             first_id, kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
         )
-        await repository.create_principal(
+        await store.create_principal(
             second_id, kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
         )
-        await repository.bind_external_identity(
+        await store.bind_external_identity(
             issuer="https://idp.example.com", subject="alice", principal_id=first_id
         )
         with pytest.raises(ExternalIdentityConflictError):
-            await repository.bind_external_identity(
+            await store.bind_external_identity(
                 issuer="https://idp.example.com", subject="alice", principal_id=second_id
             )
 
 
 @pytest.mark.asyncio
 async def test_missing_tenant_context_denies_identity_tenant_tables(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id, principal_id, group_id = uuid4(), uuid4(), uuid4(), uuid4()
     connection = await asyncpg.connect(ADMIN_DSN)
@@ -336,7 +358,9 @@ async def test_missing_tenant_context_denies_identity_tenant_tables(
 
 @pytest.mark.asyncio
 async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     first_org, second_org = uuid4(), uuid4()
     first_workspace, second_workspace = uuid4(), uuid4()
@@ -348,8 +372,8 @@ async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
     await _seed_organization_and_workspace(
         sessions, second_org, second_workspace, workspace_name="Sales"
     )
-    await _seed_principal(sessions, first_member)
-    await _seed_principal(sessions, second_member)
+    await _seed_principal(identity_sessions, first_member)
+    await _seed_principal(identity_sessions, second_member)
 
     async with tenant_session(
         sessions, TenantContext(organization_id=first_org, workspace_id=first_workspace)
@@ -436,7 +460,9 @@ async def test_same_name_workspace_and_group_do_not_leak_across_orgs(
 
 @pytest.mark.asyncio
 async def test_cross_workspace_group_ids_return_absent_or_reject(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """同一 Organization 内，跨 Workspace 的 Group 不可见也不可写。"""
     organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
@@ -449,7 +475,7 @@ async def test_cross_workspace_group_ids_return_absent_or_reject(
         await TenantRepository(session, second_context).create_workspace(
             second_workspace, name="Eng"
         )
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
 
     async with tenant_session(
         sessions, TenantContext(organization_id=organization_id, workspace_id=first_workspace)
@@ -498,7 +524,9 @@ async def test_cross_workspace_group_ids_return_absent_or_reject(
 
 @pytest.mark.asyncio
 async def test_same_name_groups_in_different_workspaces_of_same_org_allowed(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
     first_group, second_group = uuid4(), uuid4()
@@ -551,7 +579,9 @@ async def test_same_name_groups_in_different_workspaces_of_same_org_allowed(
 
 @pytest.mark.asyncio
 async def test_guessed_cross_org_ids_return_absent_or_reject(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     first_org, second_org = uuid4(), uuid4()
     first_workspace, second_workspace = uuid4(), uuid4()
@@ -562,7 +592,7 @@ async def test_guessed_cross_org_ids_return_absent_or_reject(
     await _seed_organization_and_workspace(
         sessions, second_org, second_workspace, workspace_name="Eng"
     )
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
 
     async with tenant_session(sessions, TenantContext(organization_id=first_org)) as session:
         repository = IdentityRepository(session, TenantContext(organization_id=first_org))
@@ -627,16 +657,20 @@ async def test_guessed_cross_org_ids_return_absent_or_reject(
 
 @pytest.mark.asyncio
 async def test_membership_commands_and_scope_separation(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, workspace_id, workspace_name="Sales"
     )
-    async with sessions() as session, session.begin():
-        identity_repository = IdentityRepository(session, context=None)
+    async with identity_sessions() as session, session.begin():
+        identity_repository = IdentityStore(session)
         principal = await create_user(
-            identity_repository, issuer="https://idp.example.com", subject="alice-scopes"
+            identity_repository,  # type: ignore[arg-type]  # identity-global 子集
+            issuer="https://idp.example.com",
+            subject="alice-scopes",
         )
 
     org_context = TenantContext(organization_id=organization_id)
@@ -693,7 +727,9 @@ async def test_membership_commands_and_scope_separation(
 
 @pytest.mark.asyncio
 async def test_principal_can_belong_to_multiple_organizations(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     first_org, second_org = uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -702,10 +738,12 @@ async def test_principal_can_belong_to_multiple_organizations(
     await _seed_organization_and_workspace(
         sessions, second_org, uuid4(), workspace_name="Eng"
     )
-    async with sessions() as session, session.begin():
-        identity_repository = IdentityRepository(session, context=None)
+    async with identity_sessions() as session, session.begin():
+        identity_repository = IdentityStore(session)
         principal = await create_user(
-            identity_repository, issuer="https://idp.example.com", subject="alice-multi-org"
+            identity_repository,  # type: ignore[arg-type]  # identity-global 子集
+            issuer="https://idp.example.com",
+            subject="alice-multi-org",
         )
 
     for organization_id in (first_org, second_org):
@@ -726,7 +764,9 @@ async def test_principal_can_belong_to_multiple_organizations(
 
 @pytest.mark.asyncio
 async def test_workspace_membership_requires_matching_workspace_context(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -738,7 +778,7 @@ async def test_workspace_membership_requires_matching_workspace_context(
             second_workspace, name="Eng"
         )
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
 
     org_only_context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, org_only_context) as session:
@@ -785,7 +825,9 @@ async def test_workspace_membership_requires_matching_workspace_context(
 
 @pytest.mark.asyncio
 async def test_group_operations_require_matching_workspace_context(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -830,16 +872,20 @@ async def test_group_operations_require_matching_workspace_context(
 
 @pytest.mark.asyncio
 async def test_disabled_principal_blocked_from_new_memberships(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, workspace_id, workspace_name="Sales"
     )
-    async with sessions() as session, session.begin():
-        identity_repository = IdentityRepository(session, context=None)
+    async with identity_sessions() as session, session.begin():
+        identity_repository = IdentityStore(session)
         principal = await create_user(
-            identity_repository, issuer="https://idp.example.com", subject="alice-disabled"
+            identity_repository,  # type: ignore[arg-type]  # identity-global 子集
+            issuer="https://idp.example.com",
+            subject="alice-disabled",
         )
 
     org_context = TenantContext(organization_id=organization_id)
@@ -850,7 +896,9 @@ async def test_disabled_principal_blocked_from_new_memberships(
             principal_id=principal.id,
             organization_id=organization_id,
         )
-        await disable_principal(repository, principal.id)
+
+    async with identity_sessions() as session, session.begin():
+        await disable_principal(IdentityStore(session), principal.id)  # type: ignore[arg-type]
 
     async with tenant_session(sessions, org_context) as session:
         repository = IdentityRepository(session, org_context)
@@ -901,14 +949,16 @@ async def test_disabled_principal_blocked_from_new_memberships(
 
 @pytest.mark.asyncio
 async def test_group_member_add_is_idempotent_on_retry(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, workspace_id, workspace_name="Sales"
     )
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     context = TenantContext(
         organization_id=organization_id, workspace_id=workspace_id
     )
@@ -947,10 +997,12 @@ async def test_group_member_add_is_idempotent_on_retry(
 
 @pytest.mark.asyncio
 async def test_organization_bootstrap_creates_org_and_owner_membership_atomically(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     organization_id = uuid4()
     context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, context) as session:
@@ -1001,14 +1053,16 @@ def test_api_composition_requires_explicit_actor_dependency() -> None:
 
 @pytest.mark.asyncio
 async def test_api_requires_idempotency_key_for_mutations(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(principal_id), sessions=sessions
+            actor_dependency=lambda: _no_org_actor(principal_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     transport = ASGITransport(app=app)
@@ -1043,15 +1097,17 @@ async def test_api_requires_idempotency_key_for_mutations(
 
 @pytest.mark.asyncio
 async def test_api_organization_bootstrap_and_list(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id = uuid4()
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     actor = _no_org_actor(principal_id)
     app = FastAPI()
     app.include_router(
-        create_organizations_router(actor_dependency=lambda: actor, sessions=sessions)
+        create_organizations_router(actor_dependency=lambda: actor, sessions=sessions, identity_sessions=identity_sessions)
     )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1067,10 +1123,13 @@ async def test_api_organization_bootstrap_and_list(
         assert response.status_code == 201
         assert response.json() == {"id": str(organization_id), "status": "active"}
 
-        # 首登无组织时 list 仍为空（跨租户枚举属于 T2 identity-global 设计）
+        # S1-T2 完成 T1 阻断语义：GET /api/v1/organizations 返回已认证 principal 的
+        # 全部组织；bootstrap 已授予创建者 Owner membership，因此这里不再为空
         response = await client.get("/api/v1/organizations")
         assert response.status_code == 200
-        assert response.json() == []
+        assert response.json() == [
+            {"id": str(organization_id), "status": "active"}
+        ]
 
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -1086,7 +1145,11 @@ async def test_api_organization_bootstrap_and_list(
     with_org_app = FastAPI()
     with_org_app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: ActorContext(
+                principal_id=principal_id, organization_id=organization_id
+            ),
+            sessions=sessions,
+            identity_sessions=identity_sessions,
         )
     )
     async with AsyncClient(
@@ -1099,7 +1162,9 @@ async def test_api_organization_bootstrap_and_list(
 
 @pytest.mark.asyncio
 async def test_api_organization_read_is_scoped_to_actor_org(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     first_org, second_org = uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -1111,7 +1176,7 @@ async def test_api_organization_read_is_scoped_to_actor_org(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _org_actor(first_org), sessions=sessions
+            actor_dependency=lambda: _org_actor(first_org), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     transport = ASGITransport(app=app)
@@ -1127,7 +1192,7 @@ async def test_api_organization_read_is_scoped_to_actor_org(
 
     no_org_app = FastAPI()
     no_org_app.include_router(
-        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions)
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions)
     )
     async with AsyncClient(
         transport=ASGITransport(app=no_org_app), base_url="http://test"
@@ -1138,7 +1203,9 @@ async def test_api_organization_read_is_scoped_to_actor_org(
 
 @pytest.mark.asyncio
 async def test_api_workspaces_and_groups_endpoints_enforce_scope(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -1282,18 +1349,20 @@ async def test_api_workspaces_and_groups_endpoints_enforce_scope(
 
 @pytest.mark.asyncio
 async def test_api_members_endpoints_enforce_scope(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id = uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, uuid4(), workspace_name="Sales"
     )
     active_id, disabled_id, missing_id = uuid4(), uuid4(), uuid4()
-    await _seed_principal(sessions, active_id)
-    await _seed_principal(sessions, disabled_id)
-    async with sessions() as session, session.begin():
-        identity_repository = IdentityRepository(session, context=None)
-        await disable_principal(identity_repository, disabled_id)
+    await _seed_principal(identity_sessions, active_id)
+    await _seed_principal(identity_sessions, disabled_id)
+    async with identity_sessions() as session, session.begin():
+        identity_repository = IdentityStore(session)
+        await disable_principal(identity_repository, disabled_id)  # type: ignore[arg-type]
 
     app = FastAPI()
     app.include_router(
@@ -1373,7 +1442,9 @@ async def test_api_members_endpoints_enforce_scope(
 
 @pytest.mark.asyncio
 async def test_api_bootstrap_takeover_rejected(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """attacker（无组织 context）猜测已存在 victim org UUID：403，零写入。"""
     victim_org = uuid4()
@@ -1381,11 +1452,11 @@ async def test_api_bootstrap_takeover_rejected(
         sessions, victim_org, uuid4(), workspace_name="Victim"
     )
     attacker_id = uuid4()
-    await _seed_principal(sessions, attacker_id)
+    await _seed_principal(identity_sessions, attacker_id)
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(attacker_id), sessions=sessions
+            actor_dependency=lambda: _no_org_actor(attacker_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1410,17 +1481,19 @@ async def test_api_bootstrap_takeover_rejected(
 
 @pytest.mark.asyncio
 async def test_api_bootstrap_replay_confirms_owner(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """创建者重放 200 且响应一致；另一 principal 相同 key/body 必须 403 且零写入。"""
     creator_id, foreign_id = uuid4(), uuid4()
-    await _seed_principal(sessions, creator_id)
-    await _seed_principal(sessions, foreign_id)
+    await _seed_principal(identity_sessions, creator_id)
+    await _seed_principal(identity_sessions, foreign_id)
     organization_id = uuid4()
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     transport = ASGITransport(app=app)
@@ -1439,7 +1512,7 @@ async def test_api_bootstrap_replay_confirms_owner(
     foreign_app = FastAPI()
     foreign_app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(foreign_id), sessions=sessions
+            actor_dependency=lambda: _no_org_actor(foreign_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     async with AsyncClient(
@@ -1461,16 +1534,18 @@ async def test_api_bootstrap_replay_confirms_owner(
 
 @pytest.mark.asyncio
 async def test_api_bootstrap_concurrent_same_request(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """并发相同 actor/key/body：一个 201、一个 200；最终仅一个 Organization、Owner、幂等记录。"""
     creator_id = uuid4()
-    await _seed_principal(sessions, creator_id)
+    await _seed_principal(identity_sessions, creator_id)
     organization_id = uuid4()
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1502,7 +1577,9 @@ async def test_api_bootstrap_concurrent_same_request(
 
 @pytest.mark.asyncio
 async def test_api_existing_workspace_collision_rejected(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """已存在 workspace_id + 新幂等键：无论 payload 相同/不同均 409，原资源不变，零新记录。"""
     organization_id = uuid4()
@@ -1558,7 +1635,9 @@ async def test_api_existing_workspace_collision_rejected(
 
 @pytest.mark.asyncio
 async def test_api_existing_group_collision_rejected(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     organization_id, workspace_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
@@ -1609,7 +1688,9 @@ async def test_api_existing_group_collision_rejected(
 
 @pytest.mark.asyncio
 async def test_api_request_models_reject_unknown_fields(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """请求模型 fail closed：未知字段一律 422。"""
     organization_id, workspace_id = uuid4(), uuid4()
@@ -1617,11 +1698,11 @@ async def test_api_request_models_reject_unknown_fields(
         sessions, organization_id, workspace_id, workspace_name="Sales"
     )
     principal_id = uuid4()
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     org_app = FastAPI()
     org_app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions, identity_sessions=identity_sessions
         )
     )
     workspaces_app = FastAPI()
@@ -1679,12 +1760,14 @@ async def test_api_request_models_reject_unknown_fields(
 
 @pytest.mark.asyncio
 async def test_api_idempotency_key_rejects_missing_empty_whitespace(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """缺失、空字符串、纯空白 Idempotency-Key 一律 422。"""
     app = FastAPI()
     app.include_router(
-        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions)
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions)
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         for headers in (
@@ -1705,14 +1788,16 @@ async def test_api_idempotency_key_rejects_missing_empty_whitespace(
 
 @pytest.mark.asyncio
 async def test_api_stale_add_replay_does_not_resurrect_membership(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """ADD 后 DELETE，重放旧 ADD：返回原结果，membership 保持不存在，幂等记录不新增。"""
     organization_id, principal_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, uuid4(), workspace_name="Sales"
     )
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, context) as session:
         repository = IdentityRepository(session, context)
@@ -1761,14 +1846,16 @@ async def test_api_stale_add_replay_does_not_resurrect_membership(
 
 @pytest.mark.asyncio
 async def test_api_stale_delete_replay_does_not_remove_replacement(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """DELETE 后用新 key 重新 ADD，重放旧 DELETE：替代 membership 及其角色保持不变。"""
     organization_id, principal_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, uuid4(), workspace_name="Sales"
     )
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, context) as session:
         repository = IdentityRepository(session, context)
@@ -1823,14 +1910,16 @@ async def test_api_stale_delete_replay_does_not_remove_replacement(
 
 @pytest.mark.asyncio
 async def test_api_conflicting_member_replay_is_side_effect_free(
-    migrated_database: None, sessions: async_sessionmaker[AsyncSession]
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> None:
     """同 key 不同 digest 的 ADD/DELETE 重放：409 前零写入，membership 逐字段不变。"""
     organization_id, principal_id = uuid4(), uuid4()
     await _seed_organization_and_workspace(
         sessions, organization_id, uuid4(), workspace_name="Sales"
     )
-    await _seed_principal(sessions, principal_id)
+    await _seed_principal(identity_sessions, principal_id)
     context = TenantContext(organization_id=organization_id)
     async with tenant_session(sessions, context) as session:
         repository = IdentityRepository(session, context)

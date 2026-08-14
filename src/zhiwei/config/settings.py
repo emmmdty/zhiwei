@@ -24,6 +24,14 @@ _OBJECT_STORE_ROOT_ENV = "ZHIWEI_OBJECT_STORE_ROOT"
 _MODEL_API_KEY_ENV = "OPENAI_API_KEY"
 _MODEL_BASE_URL_ENV = "OPENAI_BASE_URL"
 _MODEL_NAME_ENV = "OPENAI_MODEL"
+# S1-T2：identity-global 独立角色/引擎与 OIDC BFF 配置。DSN 与 client secret 是 SecretStr；
+# master key 只从 Docker secret/显式挂载文件加载，这里只放文件路径，绝不放 key 内容。
+_IDENTITY_DATABASE_URL_ENV = "ZHIWEI_IDENTITY_DATABASE_URL"
+_OIDC_ISSUER_ENV = "ZHIWEI_OIDC_ISSUER"
+_OIDC_CLIENT_ID_ENV = "ZHIWEI_OIDC_CLIENT_ID"
+_OIDC_CLIENT_SECRET_ENV = "ZHIWEI_OIDC_CLIENT_SECRET"
+_OIDC_REDIRECT_URI_ENV = "ZHIWEI_OIDC_REDIRECT_URI"
+_IDENTITY_MASTER_KEY_FILE_ENV = "ZHIWEI_IDENTITY_MASTER_KEY_FILE"
 
 
 class DeploymentProfile(StrEnum):
@@ -61,6 +69,12 @@ class Settings(BaseModel):
     model_api_key: SecretStr | None = None
     model_base_url: str | None = None
     model_name: str | None = None
+    identity_database_url: SecretStr | None = None
+    oidc_issuer: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: SecretStr | None = None
+    oidc_redirect_uri: str | None = None
+    identity_master_key_file: Path | None = None
 
     @model_validator(mode="after")
     def _deny_live_below_production(self) -> Self:
@@ -135,4 +149,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         model_api_key=_optional_secret(source.get(_MODEL_API_KEY_ENV)),
         model_base_url=source.get(_MODEL_BASE_URL_ENV),
         model_name=source.get(_MODEL_NAME_ENV),
+        identity_database_url=_optional_secret(source.get(_IDENTITY_DATABASE_URL_ENV)),
+        oidc_issuer=source.get(_OIDC_ISSUER_ENV),
+        oidc_client_id=source.get(_OIDC_CLIENT_ID_ENV),
+        oidc_client_secret=_optional_secret(source.get(_OIDC_CLIENT_SECRET_ENV)),
+        oidc_redirect_uri=source.get(_OIDC_REDIRECT_URI_ENV),
+        identity_master_key_file=_optional_path(source.get(_IDENTITY_MASTER_KEY_FILE_ENV)),
     )

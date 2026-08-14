@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
@@ -13,6 +14,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from zhiwei.contracts.canonical import canonical_json
 from zhiwei.contracts.time import ensure_utc
 
 
@@ -188,3 +190,178 @@ class ActorContext(_FrozenModel):
         if self.workspace_id is not None and self.organization_id is None:
             raise ValueError("workspace_id requires organization_id")
         return self
+
+
+# --------------------------------------------------------------------------- S1-T2 session / secret 领域契约
+#
+# 事实源：DATA_MODEL §2（AuthSession 为 principal/session 级、AAD 绑定
+# session/issuer/subject/version、不绑定 Organization）、S1-T2 冻结交接。
+
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+class AuthSession(_FrozenModel):
+    """principal/session 级交互会话；**不含** organization_id/workspace_id（DATA_MODEL §2）。
+
+    - cookie 只保存 SHA-256 hash，不保存可直接重放的 cookie 值；
+    - 所有 session 更新使用 expected_version CAS（version 单调递增）；
+    - refresh 竞争 ownership 用有界 lease；revoke 后不得保留 lease。
+    """
+
+    id: UUID
+    cookie_token_hash: str = Field(min_length=64, max_length=64)
+    principal_id: UUID
+    issuer: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    encrypted_token_ref: str = Field(min_length=1)
+    csrf_hash: str = Field(min_length=64, max_length=64)
+    expires_at: datetime
+    idle_expires_at: datetime
+    revoked_at: datetime | None = None
+    version: int
+    refresh_state: str = "idle"
+    refresh_lease_expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    schema_version: int = 1
+
+    @field_validator("cookie_token_hash", "csrf_hash")
+    @classmethod
+    def _hash_is_sha256_hex(cls, value: str) -> str:
+        if not _SHA256_HEX_RE.fullmatch(value):
+            raise ValueError("must be a lowercase sha256 hex digest")
+        return value
+
+    @field_validator("version", "schema_version")
+    @classmethod
+    def _version_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("version must be positive")
+        return value
+
+    @field_validator("refresh_state")
+    @classmethod
+    def _refresh_state_limited(cls, value: str) -> str:
+        if value not in {"idle", "refreshing"}:
+            raise ValueError("refresh_state must be idle or refreshing")
+        return value
+
+    @model_validator(mode="after")
+    def _revoke_clears_lease(self) -> AuthSession:
+        if (
+            self.revoked_at is not None
+            and (self.refresh_state != "idle" or self.refresh_lease_expires_at is not None)
+        ):
+            raise ValueError("revoked sessions must not hold a refresh lease")
+        return self
+
+    @model_validator(mode="after")
+    def _absolute_expiry_not_before_idle(self) -> AuthSession:
+        if self.expires_at < self.idle_expires_at:
+            raise ValueError("absolute expiry must not precede idle expiry")
+        return self
+
+
+class LoginAttempt(_FrozenModel):
+    """短期 server-side OIDC login attempt（Authorization Code + PKCE S256）。
+
+    state / nonce 只存 SHA-256 hash；code_verifier 必须保留原文——回调只带回 state，
+    token exchange 需要 verifier，无法从请求参数恢复。
+    """
+
+    id: UUID
+    state_hash: str = Field(min_length=64, max_length=64)
+    nonce_hash: str = Field(min_length=64, max_length=64)
+    code_verifier: str = Field(min_length=1)
+    issuer: str = Field(min_length=1)
+    redirect_uri: str = Field(min_length=1)
+    created_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+    schema_version: int = 1
+
+    @field_validator("state_hash", "nonce_hash")
+    @classmethod
+    def _hash_is_sha256_hex(cls, value: str) -> str:
+        if not _SHA256_HEX_RE.fullmatch(value):
+            raise ValueError("must be a lowercase sha256 hex digest")
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_version_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("schema_version must be positive")
+        return value
+
+    @model_validator(mode="after")
+    def _time_ordering(self) -> LoginAttempt:
+        if self.expires_at < self.created_at:
+            raise ValueError("expires_at must not precede created_at")
+        if self.consumed_at is not None and self.consumed_at < self.created_at:
+            raise ValueError("consumed_at must not precede created_at")
+        return self
+
+
+class TokenEnvelopePayload(_FrozenModel):
+    """加密保存的 OIDC token payload（明文只存在于受控解密返回值）。
+
+    token kind 与版本绑定在 payload 内，防止密文混淆；repr 永不暴露 token 明文。
+    """
+
+    purpose: str = "oidc_session"
+    token_kind: str = "access_refresh"
+    access_token: str = Field(min_length=1, repr=False)
+    refresh_token: str | None = Field(default=None, repr=False)
+    expires_at: datetime | None = None
+    schema_version: int = 1
+
+    @field_validator("token_kind")
+    @classmethod
+    def _token_kind_limited(cls, value: str) -> str:
+        if value != "access_refresh":
+            raise ValueError("token_kind must be access_refresh")
+        return value
+
+    @field_validator("schema_version")
+    @classmethod
+    def _schema_version_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("schema_version must be positive")
+        return value
+
+
+class TokenAAD(_FrozenModel):
+    """token envelope 的 AAD 结构（S1-T2 冻结契约）。
+
+    必须包含 purpose/session_id/issuer/subject/session_version/schema_version；
+    明确**不得**包含 organization_id/workspace_id——首次登录无组织、同一 principal 可属
+    多个组织，AAD 一旦绑定组织就无法在组织间移动会话。
+    """
+
+    purpose: str
+    session_id: UUID
+    issuer: str = Field(min_length=1)
+    subject: str = Field(min_length=1)
+    session_version: int
+    schema_version: int = 1
+
+    @field_validator("session_version", "schema_version")
+    @classmethod
+    def _version_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("version must be positive")
+        return value
+
+    def encode(self) -> bytes:
+        """RFC 8785 canonical JSON 字节；同内容两次编码字节一致。"""
+        return canonical_json(
+            {
+                "purpose": self.purpose,
+                "session_id": str(self.session_id),
+                "issuer": self.issuer,
+                "subject": self.subject,
+                "session_version": self.session_version,
+                "schema_version": self.schema_version,
+            }
+        )

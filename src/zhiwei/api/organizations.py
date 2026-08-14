@@ -89,8 +89,10 @@ def create_organizations_router(
     *,
     actor_dependency: Callable[[], ActorContext],
     sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
 ) -> APIRouter:
-    """组成时必须显式注入 actor dependency；缺少注入在构造期即失败（fail closed）。"""
+    """组成时必须显式注入 actor dependency 与 identity session 工厂；缺少注入在构造期
+    即失败（fail closed）。identity_sessions 供 T2 membership 解析使用。"""
 
     router = APIRouter(prefix="/api/v1/organizations", tags=["organizations"])
 
@@ -98,17 +100,10 @@ def create_organizations_router(
     async def list_organizations(
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> list[OrganizationRecord]:
-        # 只返回当前 tenant context 的组织；跨租户枚举属于 T2 identity-global 设计阻断项
-        if actor.organization_id is None or actor.workspace_id is not None:
-            return []
-        context = TenantContext(organization_id=actor.organization_id)
-        async with tenant_session(sessions, context) as session:
-            organization = await IdentityRepository(session, context).get_organization(
-                actor.organization_id
-            )
-        if organization is None:
-            return []
-        return [OrganizationRecord(id=organization.id, status=organization.status)]
+        # S1-T2 完成 T1 阻断语义：返回当前 authenticated principal 的组织集合，
+        # 组织选择来自已验证 membership（identity-global 窄 resolver），不信任 actor
+        # 声明的 org，也不依赖 zhiwei_app 跨组织绕过 RLS。
+        raise NotImplementedError("S1-T2 membership 驱动的 organizations 列表未实现")
 
     @router.post("")
     async def bootstrap_organization(
