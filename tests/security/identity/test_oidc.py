@@ -343,13 +343,30 @@ async def _seed_principal(
         )
         await connection.execute(
             "INSERT INTO external_identities (issuer, subject, principal_id) "
-            "VALUES ($1, $2, $3)",
+            "VALUES ($1, $2, $3) ON CONFLICT (issuer, subject) DO NOTHING",
             ISSUER,
             subject,
             principal_id,
         )
+        existing = await connection.fetchval(
+            "SELECT principal_id FROM external_identities WHERE issuer = $1 AND subject = $2",
+            ISSUER,
+            subject,
+        )
     finally:
         await connection.close()
+    if existing != principal_id:
+        # 同一模块多次运行/同 subject 复用：清理本次孤儿 principal，返回既有主键
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            await connection.execute(
+                "DELETE FROM principals WHERE id = $1 AND NOT EXISTS "
+                "(SELECT 1 FROM external_identities WHERE principal_id = $1)",
+                principal_id,
+            )
+        finally:
+            await connection.close()
+        return existing
     return principal_id
 
 
@@ -416,8 +433,22 @@ async def _seed_workspace_membership(
 
 
 async def _seed_alice_flow() -> tuple[UUID, UUID, UUID, UUID]:
-    """alice 属于 org A（+ workspace），同时属于 org B。"""
+    """alice 属于 org A（+ workspace），同时属于 org B；subject 固定为 alice-oidc。
+
+    同模块多次运行先清空该 principal 的既有 memberships，保证每次测试看到的
+    组织集合恰好是本测试 seed 的两个（不跨测试累积）。
+    """
     principal = await _seed_principal("alice-oidc")
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "DELETE FROM memberships WHERE principal_id = $1", principal
+        )
+        await connection.execute(
+            "DELETE FROM workspace_memberships WHERE principal_id = $1", principal
+        )
+    finally:
+        await connection.close()
     org_a = await _seed_org()
     org_b = await _seed_org()
     workspace = await _seed_workspace(org_a)
@@ -504,8 +535,8 @@ async def test_login_redirects_with_state_nonce_and_pkce(
 async def test_callback_issues_fresh_opaque_session_with_safe_cookie(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None
@@ -546,19 +577,25 @@ async def test_callback_issues_fresh_opaque_session_with_safe_cookie(
 async def test_callback_replay_fails(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     login = await client.get("/auth/login")
     idp.record_authorization(login.headers["location"])
     state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
     code = idp.issue_code(state)
     first = await client.get(f"/auth/callback?code={code}&state={state}")
     assert first.status_code == 302
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        before = await connection.fetchval("SELECT count(*) FROM auth_sessions")
+    finally:
+        await connection.close()
     replay = await client.get(f"/auth/callback?code={code}&state={state}")
     assert replay.status_code == 403
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
-        assert await connection.fetchval("SELECT count(*) FROM auth_sessions") == 1
+        after = await connection.fetchval("SELECT count(*) FROM auth_sessions")
+        assert after == before, "replay 不得新增 session"
     finally:
         await connection.close()
 
@@ -581,19 +618,25 @@ async def test_callback_rejects_invalid_id_tokens(
     overrides: dict[str, Any],
     label: str,
 ) -> None:
-    await _seed_alice_flow()
-    _, client, idp = app_and_client
-    login = await client.get("/auth/login")
-    idp.record_authorization(login.headers["location"])
-    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
-    code = idp.issue_code(state, id_token_overrides=overrides)
-    callback = await client.get(f"/auth/callback?code={code}&state={state}")
-    assert callback.status_code == 403, label
-    connection = await asyncpg.connect(ADMIN_DSN)
-    try:
-        assert await connection.fetchval("SELECT count(*) FROM auth_sessions") == 0
-    finally:
-        await connection.close()
+        _, client, idp = app_and_client
+        await _seed_alice_flow()
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            before = await connection.fetchval("SELECT count(*) FROM auth_sessions")
+        finally:
+            await connection.close()
+        login = await client.get("/auth/login")
+        idp.record_authorization(login.headers["location"])
+        state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+        code = idp.issue_code(state, id_token_overrides=overrides)
+        callback = await client.get(f"/auth/callback?code={code}&state={state}")
+        assert callback.status_code == 403, label
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            after = await connection.fetchval("SELECT count(*) FROM auth_sessions")
+            assert after == before, "被拒绝的 callback 不得新增 session"
+        finally:
+            await connection.close()
 
 
 @pytest.mark.asyncio
@@ -601,8 +644,8 @@ async def test_callback_rejects_token_signed_by_other_key(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     other_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     login = await client.get("/auth/login")
     idp.record_authorization(login.headers["location"])
@@ -647,17 +690,21 @@ async def test_callback_rejects_unknown_disabled_and_non_user_principals(
 async def test_callback_never_reuses_preexisting_cookie(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
-    client.cookies.set(COOKIE, "attacker-planted-cookie")
+    await _seed_alice_flow()
     login = await client.get("/auth/login")
     idp.record_authorization(login.headers["location"])
     state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
     code = idp.issue_code(state)
-    callback = await client.get(f"/auth/callback?code={code}&state={state}")
+    # 预置攻击者 cookie：以请求头携带（等价浏览器已带 cookie），绕过 httpx jar
+    # 的 domain 键歧义；回调后只认服务端 Set-Cookie 的新值
+    callback = await client.get(
+        f"/auth/callback?code={code}&state={state}",
+        headers={"Cookie": f"{COOKIE}=attacker-planted-cookie"},
+    )
     assert callback.status_code == 302
-    new_cookie = client.cookies.get(COOKIE)
-    assert new_cookie is not None
+    set_cookie = callback.headers.get("set-cookie", "")
+    new_cookie = set_cookie.split(";")[0].split("=", 1)[1]
     assert new_cookie != "attacker-planted-cookie"
     row = await _session_row(new_cookie)
     assert row is not None
@@ -688,13 +735,20 @@ async def test_me_requires_valid_session(
 async def test_csrf_and_origin_gate_cookie_authenticated_mutations(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     await _perform_login(client, idp)
 
     org_id = uuid4()
     body = {"organization_id": str(org_id)}
     headers = {"Idempotency-Key": "csrf-org"}
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        before_orgs = await connection.fetchval("SELECT count(*) FROM organizations")
+        before_idem = await connection.fetchval("SELECT count(*) FROM idempotency_records")
+    finally:
+        await connection.close()
 
     # 无 CSRF → 403
     response = await client.post("/api/v1/organizations", json=body, headers=headers)
@@ -723,8 +777,11 @@ async def test_csrf_and_origin_gate_cookie_authenticated_mutations(
 
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
-        assert await connection.fetchval("SELECT count(*) FROM organizations") == 2
-        assert await connection.fetchval("SELECT count(*) FROM idempotency_records") == 0
+        assert await connection.fetchval("SELECT count(*) FROM organizations") == before_orgs
+        assert (
+            await connection.fetchval("SELECT count(*) FROM idempotency_records")
+            == before_idem
+        )
     finally:
         await connection.close()
 
@@ -749,8 +806,8 @@ async def test_csrf_and_origin_gate_cookie_authenticated_mutations(
 async def test_logout_revokes_locally_clears_cookie_and_replay_fails(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     me = await client.get("/api/v1/me")
     csrf_token = me.json()["csrf_token"]
@@ -776,10 +833,14 @@ async def test_logout_revokes_locally_clears_cookie_and_replay_fails(
 
 @pytest.mark.asyncio
 async def test_disabled_principal_invalidates_existing_session(
-    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
+    migrated_database: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    idp: FakeIdP,
 ) -> None:
-    principal, _, _, _ = await _seed_alice_flow()
-    _, client, idp = app_and_client
+    # 独立 subject：禁用只影响本测试，不污染同模块其他用例的 alice-oidc
+    idp.subject = "alice-disable-me"
+    principal = await _seed_principal("alice-disable-me")
+    _, client, _ = app_and_client
     await _perform_login(client, idp)
     assert (await client.get("/api/v1/me")).status_code == 200
 
@@ -800,8 +861,8 @@ async def test_disabled_principal_invalidates_existing_session(
 async def test_idle_and_absolute_expiry_fail_closed(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None
@@ -820,8 +881,10 @@ async def test_idle_and_absolute_expiry_fail_closed(
 
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
+        # 绝对过期状态必须满足不变量 idle <= expires（ck_auth_sessions_expiry_ordering）：
+        # 到达绝对 deadline 时 idle 必然也已过期，401 由过期触发
         await connection.execute(
-            "UPDATE auth_sessions SET idle_expires_at = now() + interval '1 hour', "
+            "UPDATE auth_sessions SET idle_expires_at = now() - interval '2 minutes', "
             "expires_at = now() - interval '1 minute' WHERE id = $1",
             session_id,
         )
@@ -835,8 +898,8 @@ async def test_idle_and_absolute_expiry_fail_closed(
 async def test_me_context_comes_from_verified_membership(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    principal, org_a, org_b, workspace = await _seed_alice_flow()
     _, client, idp = app_and_client
+    principal, org_a, org_b, workspace = await _seed_alice_flow()
     await _perform_login(client, idp)
 
     me = await client.get("/api/v1/me")
@@ -869,10 +932,10 @@ async def test_me_context_comes_from_verified_membership(
 async def test_declared_context_without_membership_fails_closed(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
+    _, client, idp = app_and_client
     await _seed_alice_flow()
     other_org = await _seed_org()
     other_workspace = await _seed_workspace(other_org)
-    _, client, idp = app_and_client
     await _perform_login(client, idp)
 
     response = await client.get(
@@ -908,9 +971,9 @@ async def test_declared_context_without_membership_fails_closed(
 async def test_organizations_list_returns_all_and_only_member_orgs(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
+    _, client, idp = app_and_client
     _, org_a, org_b, _ = await _seed_alice_flow()
     non_member_org = await _seed_org()
-    _, client, idp = app_and_client
     await _perform_login(client, idp)
 
     response = await client.get("/api/v1/organizations")
@@ -927,8 +990,8 @@ async def test_organizations_list_returns_all_and_only_member_orgs(
 async def test_me_never_leaks_tokens_or_issuer_subject(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     _, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     response = await client.get("/api/v1/me")
     assert response.status_code == 200
@@ -986,8 +1049,8 @@ async def test_concurrent_refresh_makes_single_idp_call(
 async def test_refresh_invalid_grant_revokes_session_locally(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     app, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None
@@ -1006,8 +1069,8 @@ async def test_refresh_invalid_grant_revokes_session_locally(
 async def test_refresh_with_stale_expected_version_fails_closed(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     app, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None
@@ -1026,8 +1089,8 @@ async def test_refresh_with_stale_expected_version_fails_closed(
 async def test_revoke_during_refresh_race_fails_closed(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     app, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None
@@ -1057,8 +1120,8 @@ async def test_revoke_during_refresh_race_fails_closed(
 async def test_stale_logout_replay_does_not_overwrite_refreshed_session(
     migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP]
 ) -> None:
-    await _seed_alice_flow()
     app, client, idp = app_and_client
+    await _seed_alice_flow()
     cookie = await _perform_login(client, idp)
     row = await _session_row(cookie)
     assert row is not None

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
 
 runner = CliRunner()

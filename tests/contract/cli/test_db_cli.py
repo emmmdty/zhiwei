@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
 
 runner = CliRunner()

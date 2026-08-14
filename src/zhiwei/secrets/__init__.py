@@ -1,30 +1,35 @@
-"""S1-T2 RED skeleton：SecretBackend port（S4 复用，非 OIDC 专用）。
-
-业务层只持 opaque SecretRef，不接触数据库 ciphertext 结构；GREEN 提供
-PostgreSQL-backed AES-GCM envelope 实现。
-"""
+"""SecretBackend port 与本地 AES-GCM envelope 实现（S1-T2；S4 复用）。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from zhiwei.secrets.base import (
     SecretBackend,
+    SecretEnvelopeMeta,
     SecretIntegrityError,
     SecretRef,
     SecretRevokedError,
     SecretVersionConflictError,
 )
+from zhiwei.secrets.local import (
+    EnvelopeCiphertext,
+    Keyring,
+    KeyringEntry,
+    LocalEnvelopeCipher,
+    LocalSecretBackend,
+    load_keyring,
+)
 
 __all__ = [
+    "EnvelopeCiphertext",
+    "Keyring",
+    "KeyringEntry",
+    "LocalEnvelopeCipher",
+    "LocalSecretBackend",
     "SecretBackend",
+    "SecretEnvelopeMeta",
     "SecretIntegrityError",
     "SecretRef",
     "SecretRevokedError",
     "SecretVersionConflictError",
+    "load_keyring",
 ]
-
-
-@dataclass(frozen=True)
-class _BackendMarker:
-    """占位，避免 RED 阶段出现空模块。"""

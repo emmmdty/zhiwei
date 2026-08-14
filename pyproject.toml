@@ -37,6 +37,10 @@ dependencies = [
     "openpyxl>=3.1.0",
     "pandas>=2.2.0",
     "pdfplumber>=0.11.0",
+    # S1-T2：OIDC Authorization Code + PKCE（state/nonce/verifier 由我方生成，authlib
+    # 只承担 token exchange 与 JWT/JWKS 验证），以及 AES-GCM envelope 密码学。
+    "authlib>=1.3.0,<2.0.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.optional-dependencies]

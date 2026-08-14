@@ -18,5 +18,31 @@ services:
       - ./postgres/init-test-roles.sql:/docker-entrypoint-initdb.d/00-zhiwei-roles.sql:ro
       - zhiwei_s0_postgres:/var/lib/postgresql/data
 
+  # S1-T2 identity profile：local-product OIDC IdP。测试只做 `config --quiet` 校验与
+  # 本地开发；CI/测试进程不连接它（OIDC 契约测试用 MockTransport）。
+  keycloak:
+    profiles: ["identity"]
+    image: quay.io/keycloak/keycloak:26.1@sha256:dc23dd938a5dc5dfaabc71e44d014928284fafff9122e0395659f1cdcf534da8
+    entrypoint: ["/opt/keycloak/entrypoint.sh"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN_USERNAME:-zhiwei-admin}"
+      # 以下默认值只服务本地开发；任何真实部署必须由 operator 通过环境变量或
+      # docker secret 覆盖，仓库不提交真实 key/client secret。
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-zhiwei-dev-admin-only}"
+      KEYCLOAK_TEST_CLIENT_SECRET: "${KEYCLOAK_TEST_CLIENT_SECRET:-s1-dev-client-secret-only}"
+      KEYCLOAK_TEST_USER_PASSWORD: "${KEYCLOAK_TEST_USER_PASSWORD:-s1-dev-user-password-only}"
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./keycloak/entrypoint.sh:/opt/keycloak/entrypoint.sh:ro
+      - ./keycloak/realm-template.json:/opt/keycloak/realm-template.json:ro
+      - zhiwei_s0_keycloak:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+
 volumes:
   zhiwei_s0_postgres:
+  zhiwei_s0_keycloak:

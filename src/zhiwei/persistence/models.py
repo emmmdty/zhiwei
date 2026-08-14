@@ -10,6 +10,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy import (
+    CHAR,
     JSON,
     BigInteger,
     CheckConstraint,
@@ -17,6 +18,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Text,
@@ -97,6 +99,118 @@ class ExternalIdentity(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AuthSession(Base):
+    """principal/session 级交互会话（S1-T2）；不含 organization_id/workspace_id。
+
+    cookie 只存 SHA-256 hash；所有更新走 expected_version CAS；refresh 用有界 lease。
+    """
+
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        CheckConstraint("version > 0", name="version"),
+        CheckConstraint(
+            "refresh_state IN ('idle', 'refreshing')", name="refresh_state"
+        ),
+        CheckConstraint("expires_at >= idle_expires_at", name="expiry_ordering"),
+        CheckConstraint(
+            "NOT (revoked_at IS NOT NULL AND "
+            "(refresh_state <> 'idle' OR refresh_lease_expires_at IS NOT NULL))",
+            name="revoked_no_lease",
+        ),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_auth_sessions_principal",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("cookie_token_hash", name="uq_auth_sessions_cookie_token_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    cookie_token_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    principal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    issuer: Mapped[str] = mapped_column(String(2048), nullable=False)
+    subject: Mapped[str] = mapped_column(String(1024), nullable=False)
+    encrypted_token_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    csrf_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    idle_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    refresh_state: Mapped[str] = mapped_column(
+        String(16), nullable=False, server_default="idle"
+    )
+    refresh_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class OidcLoginAttempt(Base):
+    """短期 server-side OIDC login attempt；state/nonce 存 hash，verifier 短期保留。"""
+
+    __tablename__ = "oidc_login_attempts"
+    __table_args__ = (
+        CheckConstraint("expires_at >= created_at", name="expiry"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        UniqueConstraint("state_hash", name="uq_oidc_login_attempts_state_hash"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    state_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    nonce_hash: Mapped[str] = mapped_column(CHAR(64), nullable=False)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    issuer: Mapped[str] = mapped_column(String(2048), nullable=False)
+    redirect_uri: Mapped[str] = mapped_column(String(2048), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class SecretEnvelope(Base):
+    """AES-GCM envelope 行（S1-T2）；业务层只持 opaque ref，不接触 ciphertext 结构。
+
+    version 是 expected_version CAS 计数器；key_version 是 KEK 版本；envelope_version
+    是信封格式版本。PG 中绝无 token 明文。
+    """
+
+    __tablename__ = "secret_envelopes"
+    __table_args__ = (
+        CheckConstraint("version > 0", name="version"),
+        CheckConstraint("envelope_version > 0", name="envelope_version"),
+        CheckConstraint("key_version > 0", name="key_version"),
+        CheckConstraint("octet_length(data_nonce) = 12", name="data_nonce_len"),
+        CheckConstraint("octet_length(wrap_nonce) = 12", name="wrap_nonce_len"),
+        CheckConstraint("octet_length(wrapped_dek) = 48", name="wrapped_dek_len"),
+        CheckConstraint("purpose IN ('oidc_session')", name="purpose"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+    )
+
+    ref: Mapped[str] = mapped_column(String(255), primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    envelope_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    key_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    key_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    data_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    wrap_nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
 
 class Membership(Base):

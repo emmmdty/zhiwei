@@ -1,16 +1,15 @@
-"""S1-T2 RED skeleton：通用 SecretBackend port。
+"""通用 SecretBackend port（S1-T2；S4 复用保存 Connection credentials）。
 
-契约（冻结）：
-- put/get/revoke/rewrap/rotate + expected_version CAS；S4 复用同一 port 保存
-  Connection credentials（per-org AAD）；
-- tampered ciphertext / wrapped DEK / nonce / AAD 一律抛统一 SecretIntegrityError；
-- revoke 后拒绝解密；rewrap 用 CAS 增加版本，旧 version CAS 失败；
-- SecretRef 是 opaque handle，repr 不得暴露任何材料。
+业务层只持 opaque SecretRef，不接触数据库 ciphertext 结构。所有篡改/密钥缺失/AAD
+不匹配统一抛 SecretIntegrityError，不泄露任何明文；revoke 后拒绝解密。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict
 
 
 class SecretIntegrityError(Exception):
@@ -18,7 +17,7 @@ class SecretIntegrityError(Exception):
 
 
 class SecretRevokedError(Exception):
-    """目标 secret 已 revoke，拒绝解密。"""
+    """目标 secret 已 revoke（或不存在），拒绝解密。"""
 
 
 class SecretVersionConflictError(Exception):
@@ -27,16 +26,43 @@ class SecretVersionConflictError(Exception):
 
 @dataclass(frozen=True)
 class SecretRef:
-    """不透明 secret handle；repr/str 就是句柄本身。"""
+    """不透明 secret handle；repr/str 就是句柄本身，不含任何材料。"""
 
     value: str
 
     def __str__(self) -> str:
         return self.value
 
+    def __repr__(self) -> str:
+        return self.value
+
+
+class SecretEnvelopeMeta(BaseModel):
+    """envelope 元数据（不含明文/密文/密钥材料，repr 安全）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    ref: str
+    purpose: str
+    version: int
+    envelope_version: int
+    key_id: str
+    key_version: int
+    created_at: datetime
+    revoked_at: datetime | None = None
+
 
 class SecretBackend:
-    """S4 可复用的 secret port；GREEN 提供本地 AES-GCM envelope 实现。"""
+    """S4 可复用的 secret port。
+
+    - put(ref, plaintext, aad, purpose, expected_version=None)：
+      expected_version 为 None 时创建或替换（版本递增）；给定值时严格 CAS，
+      版本不匹配抛 SecretVersionConflictError；
+    - get(ref, aad)：revoked/不存在抛 SecretRevokedError；篡改抛 SecretIntegrityError；
+    - revoke(ref)：置 revoked_at，之后拒绝解密；
+    - rewrap(ref, aad, expected_version)：仅重包 DEK（不动 ciphertext），CAS 增加版本；
+    - rotate()：向 keyring 追加新活动 key（内存态；落盘由 operator 管理）。
+    """
 
     async def put(
         self,
@@ -45,17 +71,17 @@ class SecretBackend:
         aad: bytes,
         purpose: str,
         expected_version: int | None = None,
-    ) -> object:
-        raise NotImplementedError("S1-T2 secret backend put 未实现")
+    ) -> SecretEnvelopeMeta:
+        raise NotImplementedError
 
     async def get(self, ref: SecretRef, aad: bytes) -> bytes:
-        raise NotImplementedError("S1-T2 secret backend get 未实现")
+        raise NotImplementedError
 
     async def revoke(self, ref: SecretRef) -> None:
-        raise NotImplementedError("S1-T2 secret backend revoke 未实现")
+        raise NotImplementedError
 
-    async def rewrap(self, ref: SecretRef, aad: bytes, expected_version: int) -> object:
-        raise NotImplementedError("S1-T2 secret backend rewrap 未实现")
+    async def rewrap(self, ref: SecretRef, aad: bytes, expected_version: int) -> SecretEnvelopeMeta:
+        raise NotImplementedError
 
     def rotate(self, *, key_id: str | None = None, key_material: bytes | None = None) -> str:
-        raise NotImplementedError("S1-T2 secret backend rotate 未实现")
+        raise NotImplementedError

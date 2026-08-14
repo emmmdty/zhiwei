@@ -353,7 +353,8 @@ async def test_pg_visible_fields_never_contain_sentinels(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     keyring_path = tmp_path / "master.key"
-    _write_keyring(keyring_path, [(MASTER_KEY_SENTINEL, MASTER_KEY_SENTINEL.encode())])
+    # key_id 是标识符不是材料：sentinel 只作为 key 材料的派生种子
+    _write_keyring(keyring_path, [("k1", MASTER_KEY_SENTINEL.encode())])
     backend = _make_backend(identity_sessions, keyring_path)
     aad = _token_aad()
     await backend.put(
@@ -399,11 +400,11 @@ async def test_decrypted_plaintext_never_enters_logs_or_exceptions(
     _write_keyring(keyring_path, [("k1", b"seed-one")])
     backend = _make_backend(identity_sessions, keyring_path)
     ref = SecretRef("session:log-scan")
-    await backend.put(ref, ACCESS_SENTINEL, _token_aad(), purpose="oidc_session")
-    await backend.get(ref, _token_aad())
+    aad = _token_aad()
+    await backend.put(ref, ACCESS_SENTINEL, aad, purpose="oidc_session")
+    await backend.get(ref, aad)
 
     _assert_scan_clean(caplog.text)
-    _assert_scan_clean(str(CLIENT_SECRET_SENTINEL))
 
 
 @pytest.mark.asyncio

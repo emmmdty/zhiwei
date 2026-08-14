@@ -14,6 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.identity.commands import (
@@ -101,9 +102,22 @@ def create_organizations_router(
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> list[OrganizationRecord]:
         # S1-T2 完成 T1 阻断语义：返回当前 authenticated principal 的组织集合，
-        # 组织选择来自已验证 membership（identity-global 窄 resolver），不信任 actor
-        # 声明的 org，也不依赖 zhiwei_app 跨组织绕过 RLS。
-        raise NotImplementedError("S1-T2 membership 驱动的 organizations 列表未实现")
+        # 组织选择来自已验证 membership（identity-global 窄 SECURITY DEFINER
+        # resolver），不信任 actor 声明的 org，也不依赖 zhiwei_app 跨组织绕过 RLS。
+        async with identity_sessions() as session:
+            result = await session.execute(
+                text(
+                    "SELECT organization_id, organization_status "
+                    "FROM public.zhiwei_principal_memberships(:pid) "
+                    "WHERE scope = 'organization' ORDER BY organization_id"
+                ),
+                {"pid": actor.principal_id},
+            )
+            rows = result.mappings().all()
+        return [
+            OrganizationRecord(id=row["organization_id"], status=row["organization_status"])
+            for row in rows
+        ]
 
     @router.post("")
     async def bootstrap_organization(

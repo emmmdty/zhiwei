@@ -109,8 +109,11 @@ def test_keyring_malformed_content_fails_closed(tmp_path: Path, content: str) ->
 
 
 def test_keyring_file_contains_derived_material_not_literal_secret(tmp_path: Path) -> None:
-    """key 文件是测试输入，但 sentinel 不应以字面量出现在文件内容里。"""
-    path = _keyring_file(tmp_path, [(MASTER_KEY_SENTINEL, MASTER_KEY_SENTINEL.encode())])
+    """key 文件是测试输入，但 sentinel 不应以字面量出现在文件内容里。
+
+    key_id 用标识符（不是 sentinel）：文件只承载派生材料 base64(sha256(sentinel))。
+    """
+    path = _keyring_file(tmp_path, [("k1", MASTER_KEY_SENTINEL.encode())])
     raw = path.read_text(encoding="utf-8")
     assert MASTER_KEY_SENTINEL not in raw
 

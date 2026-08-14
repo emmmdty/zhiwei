@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -145,14 +145,46 @@ class IdentityStore:
 
 
 class IdentityRepository:
-    """身份数据访问：identity-global 表不要求 context；tenant-owned 表必须显式作用域。"""
+    """tenant-owned 身份数据访问（zhiwei_app 引擎）。
+
+    S1-T2 角色分离后，principals / external_identities 的直接访问已撤销：
+    principal 最小字段只能通过窄 SECURITY DEFINER 函数 zhiwei_principal_snapshot
+    查询（支撑 T1 disabled 双保险）；identity-global 写入走 IdentityStore
+    （zhiwei_identity 引擎）。
+    """
 
     def __init__(self, session: AsyncSession, context: TenantContext | None) -> None:
         self._session = session
         self._context = context
         self._tenant = TenantRepository(session, context)
 
-    # ------------------------------------------------------------------ identity-global
+    # ------------------------------------------------------------------ principal 最小字段（窄函数）
+
+    async def get_principal(self, principal_id: UUID) -> Principal | None:
+        """经 SECURITY DEFINER 窄函数读取 kind/status 等最小字段，不直接访问表。"""
+        result = await self._session.execute(
+            text(
+                "SELECT id, kind, status, schema_version, created_at "
+                "FROM public.zhiwei_principal_snapshot(:pid)"
+            ),
+            {"pid": principal_id},
+        )
+        row = result.mappings().first()
+        if row is None:
+            return None
+        return Principal(
+            id=row["id"],
+            kind=PrincipalKind(row["kind"]),
+            status=PrincipalStatus(row["status"]),
+            schema_version=row["schema_version"],
+            created_at=row["created_at"],
+        )
+
+    # ------------------------------------------------------------------ 显式拒绝的 identity-global 写入
+    #
+    # 命令层协议是 identity-global + tenant 的并集；zhiwei_app 角色已撤销这些表的
+    # 直接权限，这些方法在此显式失败（fail closed），identity-global 写入走
+    # IdentityStore（zhiwei_identity 引擎）。
 
     async def create_principal(
         self,
@@ -161,50 +193,28 @@ class IdentityRepository:
         kind: PrincipalKind,
         status: PrincipalStatus = PrincipalStatus.ACTIVE,
     ) -> Principal:
-        row = PrincipalRow(
-            id=principal_id, kind=kind.value, status=status.value, schema_version=1
+        raise NotImplementedError(
+            "zhiwei_app cannot create principals; use IdentityStore on the identity engine"
         )
-        self._session.add(row)
-        await self._session.flush()
-        return self._to_principal(row)
-
-    async def get_principal(self, principal_id: UUID) -> Principal | None:
-        row = await self._session.get(PrincipalRow, principal_id)
-        return None if row is None else self._to_principal(row)
 
     async def disable_principal(self, principal_id: UUID) -> Principal | None:
-        row = (
-            await self._session.execute(
-                update(PrincipalRow)
-                .where(PrincipalRow.id == principal_id)
-                .values(status=PrincipalStatus.DISABLED.value)
-                .returning(PrincipalRow)
-            )
-        ).scalar_one_or_none()
-        return None if row is None else self._to_principal(row)
+        raise NotImplementedError(
+            "zhiwei_app cannot disable principals; use IdentityStore on the identity engine"
+        )
 
     async def bind_external_identity(
         self, *, issuer: str, subject: str, principal_id: UUID
     ) -> ExternalIdentity:
-        row = (
-            await self._session.execute(
-                insert(ExternalIdentityRow)
-                .values(issuer=issuer, subject=subject, principal_id=principal_id)
-                .on_conflict_do_nothing(constraint="pk_external_identities")
-                .returning(ExternalIdentityRow)
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            raise ExternalIdentityConflictError(
-                "external identity is already bound to another principal"
-            )
-        return self._to_external_identity(row)
+        raise NotImplementedError(
+            "zhiwei_app cannot bind external identities; use IdentityStore on the identity engine"
+        )
 
     async def get_external_identity(
         self, *, issuer: str, subject: str
     ) -> ExternalIdentity | None:
-        row = await self._session.get(ExternalIdentityRow, {"issuer": issuer, "subject": subject})
-        return None if row is None else self._to_external_identity(row)
+        raise NotImplementedError(
+            "zhiwei_app cannot read external identities; use IdentityStore on the identity engine"
+        )
 
     # ------------------------------------------------------------------ organization / workspace
 

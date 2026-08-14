@@ -17,7 +17,9 @@ from alembic.config import Config
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
+from zhiwei.contracts.canonical import canonical_json, digest_bytes
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.runs import (
     CreateEvalRunCommand,
@@ -26,8 +28,6 @@ from zhiwei.evals.runs import (
     SealEmptyCommand,
 )
 from zhiwei.evals.sealing import EvalSealRefused, verify_sealed_artifact
-
-from zhiwei.contracts.canonical import canonical_json, digest_bytes
 from zhiwei.object_store.manifests import ArtifactVerificationError
 from zhiwei.object_store.ports import ObjectNamespace
 from zhiwei.object_store.posix import PosixObjectStore

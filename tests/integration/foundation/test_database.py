@@ -50,8 +50,11 @@ REQUIRED_TABLES = {
     "eval_runs",
     "eval_samples",
     "eval_suite_versions",
+    "auth_sessions",
     "external_identities",
     "group_members",
+    "oidc_login_attempts",
+    "secret_envelopes",
     "groups",
     "idempotency_records",
     "memberships",
@@ -83,7 +86,15 @@ ORG_SCOPED_TABLES = {"memberships"}
 # Principal / ExternalIdentity 是跨 Organization 的 identity-global 记录（DATA_MODEL §2：
 # 首次 callback 时用户可能尚未创建/加入组织，同一 Principal 也可属于多个组织），
 # 不能挂 organization_id，也不能用 org GUC 做 RLS——它们不是租户表。
-IDENTITY_GLOBAL_TABLES = {"external_identities", "principals"}
+IDENTITY_GLOBAL_TABLES = {
+    "auth_sessions",
+    "external_identities",
+    "oidc_login_attempts",
+    "principals",
+    "secret_envelopes",
+}
+# S1-T2：zhiwei_app 对这些表无任何直接 SELECT/INSERT（权限在 0003 撤销/从不授予）
+APP_DENIED_TABLES = IDENTITY_GLOBAL_TABLES
 TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
 DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships"}
 MUTABLE_COLUMNS = {
@@ -238,6 +249,20 @@ async def test_application_role_is_unprivileged_and_owns_no_tenant_tables(
                 assert row["relforcerowsecurity"] is False
 
         for table in REQUIRED_TABLES:
+            if table in APP_DENIED_TABLES:
+                assert not await connection.fetchval(
+                    "SELECT has_table_privilege('zhiwei_app', $1, 'SELECT')", table
+                )
+                assert not await connection.fetchval(
+                    "SELECT has_table_privilege('zhiwei_app', $1, 'INSERT')", table
+                )
+                assert not await connection.fetchval(
+                    "SELECT has_table_privilege('zhiwei_app', $1, 'UPDATE')", table
+                )
+                assert not await connection.fetchval(
+                    "SELECT has_table_privilege('zhiwei_app', $1, 'DELETE')", table
+                )
+                continue
             assert await connection.fetchval(
                 "SELECT has_table_privilege('zhiwei_app', $1, 'SELECT')", table
             )

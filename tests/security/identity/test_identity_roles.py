@@ -107,8 +107,9 @@ async def _seed_identity_rows(principal_id: object) -> tuple[UUID, UUID, UUID]:
         )
         await connection.execute(
             "INSERT INTO external_identities (issuer, subject, principal_id) "
-            "VALUES ('https://idp.example.com', 'alice', $1)",
+            "VALUES ('https://idp.example.com', $2, $1)",
             principal_id,
+            f"alice-{uuid4().hex[:8]}",
         )
         await connection.execute(
             "INSERT INTO memberships (principal_id, organization_id, role_bindings) "
@@ -141,11 +142,49 @@ async def test_zhiwei_app_has_no_direct_access_to_identity_global_tables(
         for table in IDENTITY_GLOBAL_TABLES:
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await connection.fetchval(f'SELECT count(*) FROM "{table}"')
-            with pytest.raises(asyncpg.InsufficientPrivilegeError):
-                await connection.execute(
-                    f'INSERT INTO "{table}" (id) VALUES ($1)',
-                    uuid4(),
-                )
+        # 每个表的 INSERT 探测列不同（external_identities 主键是 issuer+subject）
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute(
+                "INSERT INTO principals (id, kind, status, schema_version) "
+                "VALUES ($1, 'user', 'active', 1)",
+                uuid4(),
+            )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute(
+                "INSERT INTO external_identities (issuer, subject, principal_id) "
+                "VALUES ('https://idp.example.com', 'blocked', $1)",
+                uuid4(),
+            )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute(
+                "INSERT INTO auth_sessions (id, cookie_token_hash, principal_id, "
+                "issuer, subject, encrypted_token_ref, csrf_hash, expires_at, "
+                "idle_expires_at, version, refresh_state, schema_version) "
+                "VALUES ($1, 'a' || repeat('0', 63), $2, 'https://idp.example.com', "
+                "'blocked', 'ref', 'b' || repeat('0', 63), now(), now(), 1, 'idle', 1)",
+                uuid4(),
+                uuid4(),
+            )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute(
+                "INSERT INTO oidc_login_attempts "
+                "(id, state_hash, nonce_hash, code_verifier, issuer, redirect_uri, "
+                "expires_at, schema_version) "
+                "VALUES ($1, 'c' || repeat('0', 63), 'd' || repeat('0', 63), 'v', "
+                "'https://idp.example.com', 'https://app.example.com/auth/callback', "
+                "now() + interval '10 minutes', 1)",
+                uuid4(),
+            )
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await connection.execute(
+                "INSERT INTO secret_envelopes "
+                "(ref, purpose, version, envelope_version, key_id, key_version, "
+                " data_nonce, wrapped_dek, wrap_nonce, ciphertext, schema_version) "
+                "VALUES ('blocked', 'oidc_session', 1, 1, 'k1', 1, "
+                "        '\\x000000000000000000000000'::bytea, "
+                "        ('\\x' || repeat('00', 48))::bytea, "
+                "        '\\x000000000000000000000001'::bytea, '\\x02'::bytea, 1)"
+            )
     finally:
         await connection.close()
 
@@ -193,7 +232,10 @@ async def test_zhiwei_identity_can_do_identity_global_operations(
             "(ref, purpose, version, envelope_version, key_id, key_version, "
             " data_nonce, wrapped_dek, wrap_nonce, ciphertext, schema_version) "
             "VALUES ('session:ref', 'oidc_session', 1, 1, 'k1', 1, "
-            "        '\\x01'::bytea, '\\x02'::bytea, '\\x03'::bytea, '\\x04'::bytea, 1)"
+            "        '\\x000000000000000000000000'::bytea, "
+            "        ('\\x' || repeat('00', 48))::bytea, "
+            "        '\\x000000000000000000000001'::bytea, "
+            "        '\\x02'::bytea, 1)"
         )
         assert await connection.fetchval(
             "SELECT purpose FROM secret_envelopes WHERE ref = 'session:ref'"
@@ -291,12 +333,16 @@ async def test_execute_grants_are_per_role(migrated_database: None) -> None:
         assert await connection.fetchval(
             "SELECT has_function_privilege('zhiwei_app', 'public.zhiwei_principal_memberships(uuid)', 'EXECUTE')"
         ) is False
-        assert await connection.fetchval(
-            "SELECT has_function_privilege('PUBLIC', 'public.zhiwei_principal_snapshot(uuid)', 'EXECUTE')"
-        ) is False
-        assert await connection.fetchval(
-            "SELECT has_function_privilege('PUBLIC', 'public.zhiwei_principal_memberships(uuid)', 'EXECUTE')"
-        ) is False
+        # PUBLIC 无 execute：proacl 里不存在 grantee=0（PUBLIC）的 EXECUTE 项
+        for function_name in (SNAPSHOT_FUNCTION, MEMBERSHIP_FUNCTION):
+            public_execute = await connection.fetchval(
+                "SELECT count(*) FROM pg_catalog.pg_proc AS p, "
+                "aclexplode(p.proacl) AS a "
+                "WHERE p.proname = $1 AND a.grantee = 0 "
+                "AND a.privilege_type = 'EXECUTE'",
+                function_name,
+            )
+            assert public_execute == 0, f"PUBLIC 不得对 {function_name} 有 EXECUTE"
     finally:
         await connection.close()
 

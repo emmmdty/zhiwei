@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typer.testing import CliRunner
+
 from zhiwei.cli.main import app
 
 runner = CliRunner()
