@@ -1,11 +1,15 @@
 """AuthSession 存储与会话服务（S1-T2）。
 
-契约（冻结）：
-- AuthSession 为 principal/session 级，不含组织字段；所有更新用 expected_version CAS
-  （防 ABA 重放）；
+契约（冻结，含验收修订）：
+- AuthSession 为 principal/session 级，不含组织字段；refresh 用 expected_version CAS
+  （防 ABA 重放）；revoke 单调安全：session id 永不重用，撤销按 id 生效，同一 session
+  的 refresh 不得使撤销失效，版本门禁不得阻断旧 logout 重放；
 - cookie 只按 SHA-256 hash 查找，每次请求不解密 provider token；
 - refresh：数据库 CAS + 有界 lease 竞争 ownership，多 replica 恰好一次 IdP refresh，
-  输家轮询读取 winner 的新版本，绝不复用旧 refresh token；
+  输家轮询读取 winner 的新版本，绝不复用旧 refresh token；attempt/lease 时间全部使用
+  数据库时钟（应用/DB 偏差不得改变并发判定）；输家等待上界 = lease 剩余；废弃 lease
+  （过期仍停在 refreshing）由下一位调用方接管完成，不得永久卡死；envelope 改写与
+  session 完成处于同一原子边界（进程在两者之间失败不留下 AAD/session version 不一致）；
   invalid_grant / provider revoke / 绝对过期 / 任何不可恢复错误 → 本地 revoke，
   fail closed；
 - logout 先可靠本地 revoke 并清 cookie；IdP revoke 不可用不能恢复本地 session；
@@ -44,7 +48,6 @@ from zhiwei.secrets.base import SecretRef
 SESSION_ABSOLUTE_TTL = timedelta(hours=8)
 SESSION_IDLE_TTL = timedelta(minutes=30)
 REFRESH_LEASE = timedelta(seconds=30)
-REFRESH_WAIT_POLLS = 40
 REFRESH_WAIT_INTERVAL = 0.05
 
 _ENVELOPE_PURPOSE = "oidc_session"
@@ -182,31 +185,47 @@ class AuthSessionStore:
         return None if row is None else _to_auth_session(row)
 
     async def revoke_session(self, session_id: UUID, expected_version: int) -> bool:
-        """CAS revoke：同时清空 refresh lease；stale version 返回 False（防 ABA）。"""
+        """单调撤销：按 session id 生效，不依赖调用方版本快照。
+
+        session id 永不重用（uuid4），按 id 撤销无 ABA 风险；版本门禁反而会让
+        刷新后到达的旧 logout 失效（验收阻断 1）。撤销仍递增版本并清空 lease，
+        打断在途 refresh 的 CAS。
+        """
         async with self._session_factory() as session, session.begin():
             result = await session.execute(
                 text(
                     "UPDATE auth_sessions SET revoked_at = now(), "
                     "refresh_state = 'idle', refresh_lease_expires_at = NULL, "
                     "version = version + 1, updated_at = now() "
-                    "WHERE id = :session_id AND version = :expected "
-                    "AND revoked_at IS NULL RETURNING id"
+                    "WHERE id = :session_id AND revoked_at IS NULL RETURNING id"
                 ),
-                {"session_id": session_id, "expected": expected_version},
+                {"session_id": session_id},
             )
             return result.scalar_one_or_none() is not None
 
+    async def db_now(self) -> datetime:
+        """数据库时钟（唯一时间源）：attempt/lease 判定不得混用应用时钟。"""
+        async with self._session_factory() as session:
+            return (await session.execute(text("SELECT now()"))).scalar_one()
+
     async def acquire_refresh_lease(
         self, session_id: UUID, expected_version: int, lease: timedelta
-    ) -> bool:
+    ) -> tuple[bool, datetime]:
+        """数据库侧 attempt/lease ownership：返回 (是否取得, DB 时钟的 attempt 时间)。
+
+        - attempt 时间与 updated_at 同源（数据库时钟），应用/DB 时钟偏差不影响判定；
+        - lease 已过期（winner 崩溃遗留）时允许接管 ownership，行不得永久卡死。
+        """
         async with self._session_factory() as session, session.begin():
+            attempted_at = (await session.execute(text("SELECT now()"))).scalar_one()
             result = await session.execute(
                 text(
                     "UPDATE auth_sessions SET refresh_state = 'refreshing', "
                     "refresh_lease_expires_at = now() + :lease, updated_at = now() "
                     "WHERE id = :session_id AND version = :expected "
-                    "AND revoked_at IS NULL AND refresh_state = 'idle' "
-                    "AND refresh_lease_expires_at IS NULL RETURNING id"
+                    "AND revoked_at IS NULL "
+                    "AND (refresh_state = 'idle' OR refresh_lease_expires_at <= now()) "
+                    "RETURNING id"
                 ),
                 {
                     "session_id": session_id,
@@ -214,7 +233,7 @@ class AuthSessionStore:
                     "lease": lease,
                 },
             )
-            return result.scalar_one_or_none() is not None
+            return result.scalar_one_or_none() is not None, attempted_at
 
     async def complete_refresh(
         self,
@@ -223,24 +242,47 @@ class AuthSessionStore:
         *,
         encrypted_token_ref: str,
         idle_expires_at: datetime,
+        session: Any | None = None,
     ) -> bool:
-        async with self._session_factory() as session, session.begin():
-            result = await session.execute(
-                text(
-                    "UPDATE auth_sessions SET refresh_state = 'idle', "
-                    "refresh_lease_expires_at = NULL, encrypted_token_ref = :ref, "
-                    "idle_expires_at = :idle, version = version + 1, updated_at = now() "
-                    "WHERE id = :session_id AND version = :expected "
-                    "AND revoked_at IS NULL RETURNING id"
-                ),
-                {
-                    "session_id": session_id,
-                    "expected": expected_version,
-                    "ref": encrypted_token_ref,
-                    "idle": idle_expires_at,
-                },
-            )
-            return result.scalar_one_or_none() is not None
+        """session 完成 CAS；可复用外部事务连接（与 envelope 写入同原子边界）。"""
+        if session is None:
+            async with self._session_factory() as conn, conn.begin():
+                return await self._complete_refresh_in(
+                    conn, session_id, expected_version,
+                    encrypted_token_ref=encrypted_token_ref,
+                    idle_expires_at=idle_expires_at,
+                )
+        return await self._complete_refresh_in(
+            session, session_id, expected_version,
+            encrypted_token_ref=encrypted_token_ref,
+            idle_expires_at=idle_expires_at,
+        )
+
+    @staticmethod
+    async def _complete_refresh_in(
+        session: Any,
+        session_id: UUID,
+        expected_version: int,
+        *,
+        encrypted_token_ref: str,
+        idle_expires_at: datetime,
+    ) -> bool:
+        result = await session.execute(
+            text(
+                "UPDATE auth_sessions SET refresh_state = 'idle', "
+                "refresh_lease_expires_at = NULL, encrypted_token_ref = :ref, "
+                "idle_expires_at = :idle, version = version + 1, updated_at = now() "
+                "WHERE id = :session_id AND version = :expected "
+                "AND revoked_at IS NULL RETURNING id"
+            ),
+            {
+                "session_id": session_id,
+                "expected": expected_version,
+                "ref": encrypted_token_ref,
+                "idle": idle_expires_at,
+            },
+        )
+        return result.scalar_one_or_none() is not None
 
     async def release_refresh_lease(self, session_id: UUID, expected_version: int) -> bool:
         async with self._session_factory() as session, session.begin():
@@ -396,24 +438,25 @@ class SessionService:
 
         输家轮询读取 winner 的新版本（绝不复用旧 refresh token）；任何 refresh 失败
         （invalid_grant / provider revoke / 绝对过期 / 网络等不可恢复错误）→ 本地
-        revoke，fail closed。
+        revoke，fail closed。attempt/lease 时间全部使用数据库时钟，应用时钟偏差
+        不得改变并发判定；输家等待上界 = lease 剩余（不是固定轮询预算）。
         """
         session = await self._session_store.get_session(session_id)
         if session is None or session.revoked_at is not None:
             raise SessionRevokedError("session is revoked or missing")
-        now = utc_now()
+        now = await self._session_store.db_now()
         if session.expires_at <= now:
             await self._session_store.revoke_session(session_id, expected_version)
             raise SessionRevokedError("session has absolutely expired")
         if session.idle_expires_at <= now:
             raise SessionRevokedError("session is idle-expired")
 
-        # attempted_at 必须取在任何 I/O 之前：并发 loser 的连接建立可能被延迟到
-        # winner 完成之后，若取晚了会把「刚完成的并发赢家」误判成 stale
-        attempted_at = utc_now()
-        if not await self._session_store.acquire_refresh_lease(
+        # 数据库侧 attempt：acquire 事务内取 DB now() 作为 attempt 时间，
+        # 与 updated_at 同源（验收阻断 2：应用/DB 时钟偏差不得误判并发 winner）
+        acquired, attempted_at = await self._session_store.acquire_refresh_lease(
             session_id, expected_version, REFRESH_LEASE
-        ):
+        )
+        if not acquired:
             return await self._wait_for_winner(
                 session_id, expected_version, attempted_at=attempted_at
             )
@@ -448,22 +491,29 @@ class SessionService:
             schema_version=1,
         )
         new_aad = _session_aad(session.id, session.issuer, session.subject, new_version)
-        await self._secret_backend.put(
-            SecretRef(str(session.id)),
-            canonical_json(new_payload.model_dump(mode="json")),
-            new_aad,
-            purpose=_ENVELOPE_PURPOSE,
-        )
-        idle_expires_at = min(utc_now() + SESSION_IDLE_TTL, session.expires_at)
-        completed = await self._session_store.complete_refresh(
-            session.id,
-            expected_version,
-            encrypted_token_ref=str(session.id),
-            idle_expires_at=idle_expires_at,
-        )
-        if not completed:
-            # revoke/refresh 竞争：winner 被并发 revoke，fail closed
-            raise SessionRevokedError("session was revoked during refresh")
+        # envelope 改写与 session 完成处于同一原子边界（验收阻断 2）：
+        # 同一数据库事务提交，进程在两者之间失败时整体回滚，不会留下
+        # AAD/session version 不一致（旧 envelope 保持可用）。
+        async with self._identity_session_factory() as conn, conn.begin():
+            await self._secret_backend.put(
+                SecretRef(str(session.id)),
+                canonical_json(new_payload.model_dump(mode="json")),
+                new_aad,
+                purpose=_ENVELOPE_PURPOSE,
+                external_session=conn,
+            )
+            now = await self._session_store.db_now()
+            idle_expires_at = min(now + SESSION_IDLE_TTL, session.expires_at)
+            completed = await self._session_store.complete_refresh(
+                session.id,
+                expected_version,
+                encrypted_token_ref=str(session.id),
+                idle_expires_at=idle_expires_at,
+                session=conn,
+            )
+            if not completed:
+                # revoke/refresh 竞争：winner 被并发 revoke，fail closed（回滚 envelope）
+                raise SessionRevokedError("session was revoked during refresh")
         refreshed = await self._session_store.get_session(session.id)
         if refreshed is None:
             raise SessionRevokedError("session disappeared during refresh")
@@ -476,10 +526,11 @@ class SessionService:
 
         acquire 失败后立刻重读行，按状态区分三种情形：
         - version != expected_version：expected_version 已过期。若行版本恰好是
-          expected+1 且 updated_at 晚于本调用发起时刻（attempted_at），说明是
-          并发赢家在我们 acquire 与读之间完成了刷新 → 返回 winner 的新版本
+          expected+1 且 updated_at 晚于本调用 attempt 的数据库时刻（attempted_at），
+          说明是并发赢家在我们 acquire 与读之间完成了刷新 → 返回 winner 的新版本
           （绝不复用旧 refresh token）；否则是纯 stale 调用 → SessionConflictError；
-        - version == expected_version 且 refreshing：并发 refresh 在途 → 轮询 winner；
+        - version == expected_version 且 refreshing：并发 refresh 在途 → 轮询 winner，
+          等待上界 = lease 剩余（数据库时钟），不是固定 2 秒；
         - revoked → SessionRevokedError。
         """
         current = await self._session_store.get_session(session_id)
@@ -492,21 +543,16 @@ class SessionService:
             ):
                 return current
             raise SessionConflictError("stale expected_version for refresh")
-        for _ in range(REFRESH_WAIT_POLLS):
-            if current.refresh_state == "refreshing":
-                await asyncio.sleep(REFRESH_WAIT_INTERVAL)
-                current = await self._session_store.get_session(session_id)
-                if current is None or current.revoked_at is not None:
-                    raise SessionRevokedError("session revoked by another replica")
-                if current.version > expected_version:
-                    return current
-                if (
-                    current.refresh_lease_expires_at is not None
-                    and current.refresh_lease_expires_at <= utc_now()
-                ):
-                    break
-            else:
+        while current.refresh_state == "refreshing":
+            lease_expires = current.refresh_lease_expires_at
+            if lease_expires is None or lease_expires <= await self._session_store.db_now():
                 break
+            await asyncio.sleep(REFRESH_WAIT_INTERVAL)
+            current = await self._session_store.get_session(session_id)
+            if current is None or current.revoked_at is not None:
+                raise SessionRevokedError("session revoked by another replica")
+            if current.version > expected_version:
+                return current
         raise SessionConflictError("refresh lease contention without a winner result")
 
     async def revoke_session(self, session_id: UUID, expected_version: int) -> bool:

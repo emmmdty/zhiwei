@@ -241,7 +241,10 @@ class LocalSecretBackend(SecretBackend):
         aad: bytes,
         purpose: str,
         expected_version: int | None = None,
+        *,
+        external_session: Any | None = None,
     ) -> SecretEnvelopeMeta:
+        """写入 envelope；可复用外部事务连接（与 session 完成同原子边界）。"""
         envelope = LocalEnvelopeCipher.encrypt(
             plaintext=plaintext,
             aad=aad,
@@ -259,47 +262,55 @@ class LocalSecretBackend(SecretBackend):
             "wn": envelope.wrap_nonce,
             "ct": envelope.ciphertext,
         }
-        async with self._session_factory() as session, session.begin():
-            if expected_version is None:
-                # 创建或替换（版本递增）：单语句 ON CONFLICT，revoked 行拒绝替换。
-                # 不用「INSERT 失败后 rollback 再 UPDATE」——那会在 begin() 上下文里
-                # 关闭事务，SQLAlchemy 抛 InvalidRequestError。
-                result = await session.execute(
-                    text(
-                        "INSERT INTO secret_envelopes "
-                        "(ref, purpose, version, envelope_version, key_id, key_version, "
-                        " data_nonce, wrapped_dek, wrap_nonce, ciphertext, schema_version) "
-                        "VALUES (:ref, :purpose, 1, :ev, :kid, :kver, :dn, :wd, :wn, :ct, 1) "
-                        "ON CONFLICT (ref) DO UPDATE SET "
-                        " purpose = EXCLUDED.purpose, "
-                        " envelope_version = EXCLUDED.envelope_version, "
-                        " key_id = EXCLUDED.key_id, key_version = EXCLUDED.key_version, "
-                        " data_nonce = EXCLUDED.data_nonce, wrapped_dek = EXCLUDED.wrapped_dek, "
-                        " wrap_nonce = EXCLUDED.wrap_nonce, ciphertext = EXCLUDED.ciphertext, "
-                        " version = secret_envelopes.version + 1 "
-                        "WHERE secret_envelopes.revoked_at IS NULL "
-                        "RETURNING ref, purpose, version, envelope_version, key_id, "
-                        "key_version, created_at, revoked_at"
-                    ),
-                    params,
-                )
-            else:
-                result = await session.execute(
-                    text(
-                        "UPDATE secret_envelopes SET "
-                        " purpose = :purpose, envelope_version = :ev, key_id = :kid, "
-                        " key_version = :kver, data_nonce = :dn, wrapped_dek = :wd, "
-                        " wrap_nonce = :wn, ciphertext = :ct, version = version + 1 "
-                        "WHERE ref = :ref AND version = :expected AND revoked_at IS NULL "
-                        "RETURNING ref, purpose, version, envelope_version, key_id, "
-                        "key_version, created_at, revoked_at"
-                    ),
-                    {**params, "expected": expected_version},
-                )
-            meta = result.mappings().first()
-            if meta is None:
-                raise SecretVersionConflictError("expected_version CAS failed") from None
-            return _meta_from_mapping(meta)
+        if external_session is None:
+            async with self._session_factory() as session, session.begin():
+                return await self._put_in_session(session, params, expected_version)
+        return await self._put_in_session(external_session, params, expected_version)
+
+    @staticmethod
+    async def _put_in_session(
+        session: Any, params: dict[str, Any], expected_version: int | None
+    ) -> SecretEnvelopeMeta:
+        if expected_version is None:
+            # 创建或替换（版本递增）：单语句 ON CONFLICT，revoked 行拒绝替换。
+            # 不用「INSERT 失败后 rollback 再 UPDATE」——那会在 begin() 上下文里
+            # 关闭事务，SQLAlchemy 抛 InvalidRequestError。
+            result = await session.execute(
+                text(
+                    "INSERT INTO secret_envelopes "
+                    "(ref, purpose, version, envelope_version, key_id, key_version, "
+                    " data_nonce, wrapped_dek, wrap_nonce, ciphertext, schema_version) "
+                    "VALUES (:ref, :purpose, 1, :ev, :kid, :kver, :dn, :wd, :wn, :ct, 1) "
+                    "ON CONFLICT (ref) DO UPDATE SET "
+                    " purpose = EXCLUDED.purpose, "
+                    " envelope_version = EXCLUDED.envelope_version, "
+                    " key_id = EXCLUDED.key_id, key_version = EXCLUDED.key_version, "
+                    " data_nonce = EXCLUDED.data_nonce, wrapped_dek = EXCLUDED.wrapped_dek, "
+                    " wrap_nonce = EXCLUDED.wrap_nonce, ciphertext = EXCLUDED.ciphertext, "
+                    " version = secret_envelopes.version + 1 "
+                    "WHERE secret_envelopes.revoked_at IS NULL "
+                    "RETURNING ref, purpose, version, envelope_version, key_id, "
+                    "key_version, created_at, revoked_at"
+                ),
+                params,
+            )
+        else:
+            result = await session.execute(
+                text(
+                    "UPDATE secret_envelopes SET "
+                    " purpose = :purpose, envelope_version = :ev, key_id = :kid, "
+                    " key_version = :kver, data_nonce = :dn, wrapped_dek = :wd, "
+                    " wrap_nonce = :wn, ciphertext = :ct, version = version + 1 "
+                    "WHERE ref = :ref AND version = :expected AND revoked_at IS NULL "
+                    "RETURNING ref, purpose, version, envelope_version, key_id, "
+                    "key_version, created_at, revoked_at"
+                ),
+                {**params, "expected": expected_version},
+            )
+        meta = result.mappings().first()
+        if meta is None:
+            raise SecretVersionConflictError("expected_version CAS failed") from None
+        return _meta_from_mapping(meta)
 
     async def get(self, ref: SecretRef, aad: bytes) -> bytes:
         async with self._session_factory() as session, session.begin():

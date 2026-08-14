@@ -8,6 +8,8 @@
 - 所有 cookie-authenticated mutation 验证 server-side CSRF（X-CSRF-Token 与 session
   csrf hash 比对）+ 可信 Origin/Host，缺失或不匹配一律 403 且零 mutation；
 - revoked / idle / absolute expired / disabled → 401 并清 cookie；
+- logout 单调安全：本地撤销失败时 fail closed（不返回 204），服务端 session 必须
+  确实撤销；IdP revoke 是 best-effort，不可用不影响本地撤销结果；
 - 组织/工作区 context 必须来自已验证 membership；客户端声明只是请求，不是授权事实。
 """
 
@@ -162,8 +164,16 @@ def create_auth_router(
         request: Request, actor: Annotated[ActorContext, Depends(session_actor)]
     ) -> Response:
         session = request.state.session
-        # 先可靠本地 revoke（CAS），再 best-effort IdP revoke；IdP 不可用不影响结果
-        await session_service.revoke_session(session.id, expected_version=session.version)
+        # 先可靠本地 revoke（单调：刷新不得使撤销失效），再 best-effort IdP revoke；
+        # 本地撤销未确认时 fail closed，不得假装成功（验收阻断 1）
+        revoked = await session_service.revoke_session(
+            session.id, expected_version=session.version
+        )
+        if not revoked:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="local session revocation failed",
+            )
         try:
             payload = await session_service.decrypt_tokens(session)
             await session_service.revoke_tokens_at_idp(payload)
