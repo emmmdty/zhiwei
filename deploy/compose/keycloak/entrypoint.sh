@@ -4,21 +4,56 @@
 #
 # 模板里绝不出现真实凭据；operator 必须通过环境变量或 docker secret 覆盖默认值。
 # 固定镜像没有 gettext 工具，模板替换用镜像内置 sed 完成（验收阻断 3）。
+#
+# realm 注入字符契约（验收阻断 4，fail closed）：
+# - 注入值只允许 [A-Za-z0-9-_.:@/&+%]：双引号 / 反斜杠 / 控制字符 / 空值会破坏
+#   JSON 结构或 sed 替换，必须在写文件前拒绝（容器退出，不写 realm.json）；
+# - `/` 与 `&` 是 JSON 合法字符，通过非 `/` 分隔符与 sed 替换串转义正确处理；
+# - 校验失败的消息只报变量名，绝不回显注入值（日志不泄露 secret）。
+#
+# 路径可用 ZHIWEI_KC_* 环境变量覆盖（本地渲染测试用；容器内使用默认值）。
 set -eu
 
-import_dir=/opt/keycloak/data/import
-mkdir -p "$import_dir"
+import_dir=${ZHIWEI_KC_IMPORT_DIR:-/opt/keycloak/data/import}
+realm_template=${ZHIWEI_KC_REALM_TEMPLATE:-/opt/keycloak/realm-template.json}
+realm_output=${ZHIWEI_KC_REALM_OUTPUT:-"$import_dir/realm.json"}
+kc_launcher=${ZHIWEI_KC_LAUNCHER:-/opt/keycloak/bin/kc.sh}
+render_only=${ZHIWEI_KC_RENDER_ONLY:-0}
 
-# sed 替换值转义：\ 与 & 在替换串里有特殊含义，先转义避免注入
+# 拒绝注入值中的 JSON/sed 危险字符；只报变量名，不回显值
+reject_dangerous() {
+    name=$1
+    value=$2
+    if [ -z "$value" ]; then
+        echo "entrypoint: $name is empty (fail closed; allowed characters are [A-Za-z0-9-_.:@/&+%])" >&2
+        exit 1
+    fi
+    invalid=$(printf '%s' "$value" | sed -n 's|[^A-Za-z0-9_.:@/&+%-]|&|p')
+    if [ -n "$invalid" ]; then
+        echo "entrypoint: $name contains characters outside the allowed set (fail closed; allowed characters are [A-Za-z0-9-_.:@/&+%])" >&2
+        exit 1
+    fi
+}
+
+# sed 替换串转义：\ 与 & 在替换串里有特殊含义（分隔符用 |，/ 不需要转义）
 escape_sed() {
     printf '%s' "$1" | sed -e 's/[\\&]/\\&/g'
 }
 
-client_secret=$(escape_sed "${KEYCLOAK_TEST_CLIENT_SECRET:-}")
-user_password=$(escape_sed "${KEYCLOAK_TEST_USER_PASSWORD:-}")
+mkdir -p "$import_dir"
+for name in KEYCLOAK_TEST_CLIENT_SECRET KEYCLOAK_TEST_USER_PASSWORD; do
+    eval "value=\${$name:-}"
+    reject_dangerous "$name" "$value"
+done
 
-sed -e "s/\${KEYCLOAK_TEST_CLIENT_SECRET}/${client_secret}/g" \
-    -e "s/\${KEYCLOAK_TEST_USER_PASSWORD}/${user_password}/g" \
-    /opt/keycloak/realm-template.json > "$import_dir/realm.json"
+client_secret=$(escape_sed "${KEYCLOAK_TEST_CLIENT_SECRET}")
+user_password=$(escape_sed "${KEYCLOAK_TEST_USER_PASSWORD}")
 
-exec /opt/keycloak/bin/kc.sh start-dev --import-realm
+sed -e "s|\${KEYCLOAK_TEST_CLIENT_SECRET}|${client_secret}|g" \
+    -e "s|\${KEYCLOAK_TEST_USER_PASSWORD}|${user_password}|g" \
+    "$realm_template" > "$realm_output"
+
+if [ "$render_only" = "1" ]; then
+    exit 0
+fi
+exec "$kc_launcher" start-dev --import-realm

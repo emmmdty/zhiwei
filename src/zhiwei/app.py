@@ -27,7 +27,11 @@ from zhiwei.api.organizations import create_organizations_router
 from zhiwei.api.workspaces import create_workspaces_router
 from zhiwei.config.settings import Settings
 from zhiwei.identity.oidc import OIDCService
-from zhiwei.identity.sessions import AuthSessionStore, SessionService
+from zhiwei.identity.sessions import (
+    AuthSessionStore,
+    LocalSessionRefreshUnitOfWork,
+    SessionService,
+)
 from zhiwei.persistence.database import create_database_engine, create_session_factory
 from zhiwei.secrets.local import LocalSecretBackend, load_keyring
 
@@ -77,6 +81,13 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
     keyring = load_keyring(master_key_file)
     secret_backend = LocalSecretBackend(identity_sessions, keyring)
     session_store = AuthSessionStore(identity_sessions)
+    # 类型化 UoW adapter：envelope 改写与 session 完成同事务（验收阻断 3/4，
+    # SecretBackend port 不含数据库/session 参数）
+    refresh_uow = LocalSessionRefreshUnitOfWork(
+        session_factory=identity_sessions,
+        secret_backend=secret_backend,
+        session_store=session_store,
+    )
     oidc_service = OIDCService(
         issuer=oidc_issuer,
         client_id=oidc_client_id,
@@ -87,6 +98,7 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
     session_service = SessionService(
         session_store=session_store,
         secret_backend=secret_backend,
+        refresh_uow=refresh_uow,
         oidc_service=oidc_service,
         identity_session_factory=identity_sessions,
     )

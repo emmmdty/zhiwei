@@ -121,7 +121,7 @@ class AuthSession(Base):
             name="revoked_no_lease",
         ),
         CheckConstraint(
-            "(refresh_state = 'idle') = (refresh_owner_token_hash IS NULL)",
+            "NOT (refresh_state <> 'idle' AND refresh_owner_token_hash IS NULL)",
             name="owner_token_consistency",
         ),
         CheckConstraint("schema_version > 0", name="schema_version"),

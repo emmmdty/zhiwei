@@ -2,12 +2,16 @@
 
 业务层只持 opaque SecretRef，不接触数据库 ciphertext 结构。所有篡改/密钥缺失/AAD
 不匹配统一抛 SecretIntegrityError，不泄露任何明文；revoke 后拒绝解密。
+
+port 是结构契约（Protocol）：LocalSecretBackend 与未来 Vault/KMS adapter 都以
+方法面匹配，业务层（SessionService）不依赖任何 concrete-only 签名（验收阻断 3）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -52,8 +56,8 @@ class SecretEnvelopeMeta(BaseModel):
     revoked_at: datetime | None = None
 
 
-class SecretBackend:
-    """S4 可复用的 secret port。
+class SecretBackend(Protocol):
+    """S4 可复用的 secret port（结构契约，业务层依赖的唯一 secret 接口）。
 
     - put(ref, plaintext, aad, purpose, expected_version=None)：
       expected_version 为 None 时创建或替换（版本递增）；给定值时严格 CAS，

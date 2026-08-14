@@ -25,6 +25,7 @@ from typing import Any
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.contracts.canonical import canonical_json
 from zhiwei.secrets.base import (
@@ -224,9 +225,15 @@ class LocalEnvelopeCipher:
 
 
 class LocalSecretBackend(SecretBackend):
-    """PostgreSQL-backed envelope store（zhiwei_identity 引擎），持 keyring。"""
+    """PostgreSQL-backed envelope store（zhiwei_identity 引擎），持 keyring。
 
-    def __init__(self, session_factory: Any, keyring: Keyring) -> None:
+    业务层只通过 SecretBackend port 使用本类；需要与外部数据库事务原子提交的
+    写入（refresh 的 envelope 改写 + auth_sessions 完成）走 put_in_session，
+    由 persistence/UoW adapter（LocalSessionRefreshUnitOfWork）组合——port 本身
+    不暴露任何数据库/session 参数（验收阻断 3，S4 Vault/KMS adapter 可替换）。
+    """
+
+    def __init__(self, session_factory: async_sessionmaker[AsyncSession], keyring: Keyring) -> None:
         self._session_factory = session_factory
         self._keyring = keyring
 
@@ -241,17 +248,40 @@ class LocalSecretBackend(SecretBackend):
         aad: bytes,
         purpose: str,
         expected_version: int | None = None,
-        *,
-        external_session: Any | None = None,
     ) -> SecretEnvelopeMeta:
-        """写入 envelope；可复用外部事务连接（与 session 完成同原子边界）。"""
+        """创建或替换 envelope（自有事务）；port 契约不含 external_session 等参数。"""
+        params = self._encrypt_params(ref, plaintext, aad, purpose)
+        async with self._session_factory() as session, session.begin():
+            return await self._put_in_session(session, params, expected_version)
+
+    async def put_in_session(
+        self,
+        session: AsyncSession,
+        ref: SecretRef,
+        plaintext: bytes,
+        aad: bytes,
+        purpose: str,
+        expected_version: int | None = None,
+    ) -> SecretEnvelopeMeta:
+        """在调用方事务内写 envelope（与 session 完成同原子边界，UoW adapter 专用）。
+
+        类型化 SQLAlchemy session 只出现在本 local 实现与 persistence adapter 边界；
+        SecretBackend port 不包含该参数（验收阻断 3）。
+        """
+        params = self._encrypt_params(ref, plaintext, aad, purpose)
+        return await self._put_in_session(session, params, expected_version)
+
+    def _encrypt_params(
+        self, ref: SecretRef, plaintext: bytes, aad: bytes, purpose: str
+    ) -> dict[str, Any]:
+        """纯加密：用活动 KEK 包 DEK 并加密 plaintext，产出 INSERT 参数。"""
         envelope = LocalEnvelopeCipher.encrypt(
             plaintext=plaintext,
             aad=aad,
             keyring=self._keyring,
             wrap_aad=_wrap_aad(purpose, ref),
         )
-        params = {
+        return {
             "ref": ref.value,
             "purpose": purpose,
             "ev": envelope.envelope_version,
@@ -262,10 +292,6 @@ class LocalSecretBackend(SecretBackend):
             "wn": envelope.wrap_nonce,
             "ct": envelope.ciphertext,
         }
-        if external_session is None:
-            async with self._session_factory() as session, session.begin():
-                return await self._put_in_session(session, params, expected_version)
-        return await self._put_in_session(external_session, params, expected_version)
 
     @staticmethod
     async def _put_in_session(

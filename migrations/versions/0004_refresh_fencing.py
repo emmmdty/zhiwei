@@ -54,7 +54,7 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_auth_sessions_owner_token_consistency"),
         "auth_sessions",
-        "(refresh_state = 'idle') = (refresh_owner_token_hash IS NULL)",
+        "NOT (refresh_state <> 'idle' AND refresh_owner_token_hash IS NULL)",
     )
 
 

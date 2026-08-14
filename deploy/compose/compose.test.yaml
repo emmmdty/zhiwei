@@ -35,12 +35,9 @@ services:
       KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-zhiwei-dev-admin-only}"
       KEYCLOAK_TEST_CLIENT_SECRET: "${KEYCLOAK_TEST_CLIENT_SECRET:-s1-dev-client-secret-only}"
       KEYCLOAK_TEST_USER_PASSWORD: "${KEYCLOAK_TEST_USER_PASSWORD:-s1-dev-user-password-only}"
-    secrets:
-      # 计划要求的 Docker-secret master-key 挂载：keyring 文件只从显式挂载路径加载，
-      # 应用以 ZHIWEI_IDENTITY_MASTER_KEY_FILE=/run/secrets/zhiwei_identity_master_key
-      # 消费。仓库里的文件是本地开发占位，真实部署必须由 operator 覆盖。
-      - source: zhiwei_identity_master_key
-        target: /run/secrets/zhiwei_identity_master_key
+    # 注意：Keycloak 绝不挂载 master key（验收阻断 4）。master key 只属于 ZhiWei
+    # 应用进程；当前 compose 没有应用服务，应用容器挂载在 S11 实现，不为挂载制造
+    # dummy service。entrypoint 只消费上面的测试凭据，与 /run/secrets 无关。
     ports:
       - "127.0.0.1:8080:8080"
     volumes:
@@ -54,8 +51,9 @@ services:
       retries: 60
 
 secrets:
-  # 本地开发占位 keyring（key_id=base64 32 字节）；真实部署由 operator 以外部
-  # secret 覆盖或轮换，仓库不提交真实 master key。
+  # 顶层 Docker-secret master-key 声明（key_id=base64 32 字节）；仓库里的文件是
+  # 本地开发占位，真实部署必须由 operator 覆盖。当前 compose 没有任何服务挂载它：
+  # master key 只应挂载给 ZhiWei 应用容器（S11 计划实现），绝不挂载给 Keycloak。
   zhiwei_identity_master_key:
     file: ./secrets/zhiwei_identity_master_key
 
