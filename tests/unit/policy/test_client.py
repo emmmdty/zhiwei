@@ -610,3 +610,84 @@ class TestConcurrentRevisionFencing:
         assert client.current_revision == "rev-1"
         assert d_old.decision_id == "d-old", "同 revision 在途响应不是 stale，应被采纳"
         await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_inflight_deny_not_suppressed_by_cached_allow(self) -> None:
+        """同 key 并发（独立复核反例）：在途请求携带更新 bundle 的 deny 时，
+        锁内重新检查不得用已缓存的旧 allow 顶替——rev-2 deny 必须被采纳并
+        清空缓存，rev-1 allow 不得继续服务（有界缓存契约：不能使用缓存 allow
+        覆盖更新策略的 deny）。
+        """
+        x_started = asyncio.Event()
+        release_x = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                x_started.set()
+                await release_x.wait()
+                return httpx.Response(
+                    200, json=ok_response(allow=False, decision_id="d-x-deny", revision="rev-2"),
+                    request=request,
+                )
+            return httpx.Response(
+                200, json=ok_response(allow=True, decision_id="d-y-allow", revision="rev-1"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        x_task = asyncio.create_task(client.evaluate(INPUT_A))
+        await x_started.wait()
+        d_y = await client.evaluate(INPUT_A)  # 同 key：Y 先完成，rev-1 allow 入缓存
+        assert d_y.allow is True and d_y.revision == "rev-1"
+        assert client.current_revision == "rev-1"
+        release_x.set()
+        d_x = await x_task
+        assert d_x.decision_id == "d-x-deny", "在途 rev-2 deny 不得被缓存的 rev-1 allow 顶替"
+        assert d_x.allow is False and d_x.revision == "rev-2"
+        assert client.current_revision == "rev-2", "current_revision 必须迁移到 rev-2"
+        d_again = await client.evaluate(INPUT_A)
+        assert calls["n"] == 2, "rev-1 allow 必须已清出缓存，不得重新求值"
+        assert d_again.decision_id == "d-x-deny", "旧 allow 不得继续服务"
+        assert d_again.allow is False
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_failure_does_not_fall_back_to_cached_allow(self) -> None:
+        """同 key 并发（独立复核反例）：在途请求 transport 失败时，即使等待
+        期间其他请求已填充同 key 的 allow 缓存，也必须 fail closed——不得回
+        落到缓存 allow（有界缓存契约：需要求值的请求，OPA 不可用时直接拒绝）。
+        """
+        x_started = asyncio.Event()
+        release_x = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                x_started.set()
+                await release_x.wait()
+                raise httpx.ConnectError("refused")
+            return httpx.Response(
+                200, json=ok_response(allow=True, decision_id="d-y-allow", revision="rev-1"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        x_task = asyncio.create_task(client.evaluate(INPUT_A))
+        await x_started.wait()
+        d_y = await client.evaluate(INPUT_A)  # 同 key：Y 先完成，rev-1 allow 入缓存
+        assert d_y.allow is True
+        release_x.set()
+        d_x = await x_task
+        assert d_x.allow is False, "transport 失败不得回落到缓存的 allow"
+        assert d_x.reason == "opa_unavailable"
+        assert d_x.decision_id is None
+        await client.aclose()
