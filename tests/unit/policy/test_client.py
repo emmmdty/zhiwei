@@ -8,6 +8,7 @@ OPA 不可用时不得回落到缓存 allow；fail-closed 决策不得伪造 dec
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 
@@ -16,33 +17,38 @@ import pytest
 
 from zhiwei.contracts.canonical import digest
 from zhiwei.policy.client import OPAClient
+from zhiwei.policy.input import PolicyInput
 
 NOW = datetime(2026, 8, 15, 0, 0, 0, tzinfo=UTC)
 BASE = "http://opa.test:8181"
 
-INPUT_A = {
-    "organization_id": "00000000-0000-0000-0000-000000000001",
-    "workspace_id": None,
-    "actor": {"principal_id": "u1", "kind": "user", "roles": [
-        {"name": "org_owner", "scope": "org",
-         "organization_id": "00000000-0000-0000-0000-000000000001", "workspace_id": None},
-    ]},
-    "effective_identity": None,
-    "resource": {"type": "org", "id": "r1", "version": "v1"},
-    "action": "manage",
-    "purpose": "general",
-    "classification": None,
-    "risk": None,
-    "delegation": [],
-    "resource_context": {"owner_principal_id": "u1", "requester_principal_id": None,
-                         "modifier_principal_ids": [], "agent_identity_principal_id": None,
-                         "last_content_author_principal_id": None,
-                         "publisher_principal_id": None, "publisher_roles": []},
-    "context": {"now": "2026-08-15T00:00:00Z", "classification_ceiling": None,
-                "requires_delegation": False},
-}
 
-INPUT_B = {**INPUT_A, "purpose": "compliance"}  # 仅 purpose 不同 → 不同缓存 key
+def make_input_doc(**overrides) -> dict:
+    """合法 UUID fixture，经 PolicyInput 规范化后的文档（client 以规范化文档为准）。"""
+    doc = {
+        "organization_id": "00000000-0000-0000-0000-000000000001",
+        "workspace_id": None,
+        "actor": {"principal_id": "00000000-0000-0000-0000-0000000000a1", "kind": "user", "roles": [
+            {"name": "org_owner", "scope": "org",
+             "organization_id": "00000000-0000-0000-0000-000000000001", "workspace_id": None},
+        ]},
+        "effective_identity": None,
+        "resource": {"type": "org", "id": "00000000-0000-0000-0000-0000000000b1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": None,
+        "risk": None,
+        "delegation": [],
+        "resource_context": {},
+        "context": {"now": "2026-08-15T00:00:00Z", "classification_ceiling": None,
+                    "requires_delegation": False},
+    }
+    doc.update(overrides)
+    return PolicyInput.model_validate(doc).model_dump(mode="json")
+
+
+INPUT_A = make_input_doc()
+INPUT_B = make_input_doc(purpose="compliance")  # 仅 purpose 不同 → 不同缓存 key
 
 
 def ok_response(allow: bool = True, reason: str | None = None, decision_id: str = "d1",
@@ -359,3 +365,183 @@ class TestBoundedCache:
         await client.evaluate(input_c)  # 驱逐 A
         await client.evaluate(INPUT_A)  # A 已驱逐 → 重新求值
         assert call["n"] == 4, "缓存容量必须有界（LRU）"
+
+
+class TestFullSchemaValidation:
+    @pytest.mark.asyncio
+    async def test_nested_extra_rejected_before_send(self) -> None:
+        """client 必须校验完整 PolicyInput schema（不只顶层键）：嵌套 extra
+        （secret 形状）在发送前拒绝；sentinel 不得进入 request body、
+        input_digest、reason 或任何决策字段。
+        """
+        sentinel = "s3cr3t-nested"
+        cases = [
+            {"actor": {"access_token": sentinel}},
+            {"resource": {"credential": {"password": sentinel}}},
+            {"context": {"password": sentinel}},
+            {"actor": {"roles": [{"api_key": sentinel}]}},
+            {"delegation": [{"granted_by_principal_id": "00000000-0000-0000-0000-0000000000c1",
+                             "scope": "org.manage", "expires_at": "2026-08-15T01:00:00Z",
+                             "token": sentinel}]},
+        ]
+        for patch in cases:
+            client, requests, _ = client_with(ok_response())
+            doc = {**INPUT_A}
+            for key, value in patch.items():
+                if key == "actor" and "roles" in value:
+                    doc["actor"]["roles"] = [{**doc["actor"]["roles"][0], **value["roles"][0]}]
+                else:
+                    doc[key] = {**doc[key], **value}
+            d = await client.evaluate(doc)
+            assert d.allow is False
+            assert d.reason == "opa_input_invalid"
+            assert d.input_digest is None, "被拒文档不得进入 digest"
+            assert d.decision_id is None and d.revision is None
+            assert sentinel not in d.reason
+            assert sentinel not in repr(d)
+            assert len(requests) == 0, "嵌套 extra 必须在发送前拒绝"
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_schema_invalid_but_recoverable_after_fix(self) -> None:
+        # 拒绝后 client 仍可继续服务合法请求（校验失败不污染内部状态）
+        client, requests, _ = client_with(ok_response())
+        bad = {**INPUT_A, "context": {**INPUT_A["context"], "password": "s3cr3t"}}
+        d1 = await client.evaluate(bad)
+        assert d1.allow is False
+        d2 = await client.evaluate(INPUT_A)
+        assert d2.allow is True and len(requests) == 1
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_resource_binding_required_before_send(self) -> None:
+        client, requests, _ = client_with(ok_response())
+        missing_id = {**INPUT_A, "resource": {"type": "org", "version": "v1"}}
+        d1 = await client.evaluate(missing_id)
+        assert d1.allow is False and d1.reason == "opa_input_invalid"
+        empty_version = {**INPUT_A, "resource": {"type": "org",
+                                                 "id": "00000000-0000-0000-0000-0000000000b1",
+                                                 "version": ""}}
+        d2 = await client.evaluate(empty_version)
+        assert d2.allow is False and d2.reason == "opa_input_invalid"
+        assert len(requests) == 0, "resource 绑定缺失必须在发送前拒绝"
+        await client.aclose()
+
+
+class TestConcurrentRevisionFencing:
+    @pytest.mark.asyncio
+    async def test_old_inflight_allow_cannot_regress_revision(self) -> None:
+        """并发 revision fencing（独立验收反例）：
+
+        old 请求在途挂起；new 请求先返回 rev-new deny；释放 old 后其
+        rev-old allow 必须被丢弃（fail closed）——current_revision 不得回退
+        到 rev-old，old allow 不得进入缓存，后续相同 old input 不得获得旧
+        allow（必须重新求值）。
+        """
+        old_started = asyncio.Event()
+        release_old = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                old_started.set()
+                await release_old.wait()
+                return httpx.Response(
+                    200, json=ok_response(allow=True, decision_id="d-old", revision="rev-old"),
+                    request=request,
+                )
+            return httpx.Response(
+                200, json=ok_response(allow=False, decision_id="d-new", revision="rev-new"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        old_task = asyncio.create_task(client.evaluate(INPUT_A))
+        await old_started.wait()
+        d_new = await client.evaluate(INPUT_B)
+        assert d_new.allow is False and d_new.revision == "rev-new"
+        assert client.current_revision == "rev-new"
+        release_old.set()
+        d_old = await old_task
+        assert d_old.allow is False, "旧在途 rev-old allow 必须被丢弃（fail closed）"
+        assert d_old.decision_id is None and d_old.revision is None
+        assert d_old.reason == "opa_stale_response"
+        assert client.current_revision == "rev-new", "current_revision 不得回退到 rev-old"
+        d_again = await client.evaluate(INPUT_A)
+        assert d_again.allow is False and d_again.revision == "rev-new"
+        assert calls["n"] == 3, "旧 allow 不得进入缓存：相同 old input 必须重新求值"
+        d_hit = await client.evaluate(INPUT_A)
+        assert calls["n"] == 3, "重求值结果进入缓存后可复用"
+        assert d_hit.allow is False
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_newer_response_applied_after_old_still_wins(self) -> None:
+        """自然顺序：old 响应先采纳，new 响应后到仍要覆盖为 rev-new。"""
+        first_release = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            body = json.loads(request.content)["input"]
+            if body["purpose"] == "general":
+                first_release.set()
+                return httpx.Response(
+                    200, json=ok_response(allow=True, decision_id="d-old", revision="rev-old"),
+                    request=request,
+                )
+            return httpx.Response(
+                200, json=ok_response(allow=False, decision_id="d-new", revision="rev-new"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        d_old = await client.evaluate(INPUT_A)
+        assert d_old.allow is True and d_old.revision == "rev-old"
+        d_new = await client.evaluate(INPUT_B)
+        assert d_new.allow is False and d_new.revision == "rev-new"
+        assert client.current_revision == "rev-new"
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_same_revision_concurrent_responses_both_cached(self) -> None:
+        # 同一 revision 的两个并发响应：不得误判为 stale（缓存同 revision 决策）
+        started = asyncio.Event()
+        release = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                started.set()
+                await release.wait()
+                return httpx.Response(
+                    200, json=ok_response(allow=True, decision_id="d-old", revision="rev-1"),
+                    request=request,
+                )
+            return httpx.Response(
+                200, json=ok_response(allow=False, decision_id="d-new", revision="rev-1"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        old_task = asyncio.create_task(client.evaluate(INPUT_A))
+        await started.wait()
+        d_new = await client.evaluate(INPUT_B)
+        release.set()
+        d_old = await old_task
+        assert d_old.allow is True and d_old.revision == "rev-1"
+        assert d_new.allow is False and d_new.revision == "rev-1"
+        assert client.current_revision == "rev-1"
+        assert d_old.decision_id == "d-old", "同 revision 在途响应不是 stale，应被采纳"
+        await client.aclose()

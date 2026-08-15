@@ -6,7 +6,7 @@ SoD 证据缺失、secrets 形状字段一律拒绝；角色→权限映射不�
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import UUID
 
 import pytest
@@ -243,6 +243,83 @@ class TestDelegation:
             expires_at=NOW,
         )
         assert d.scope == "org.manage"
+
+
+class TestResourceBinding:
+    def test_resource_id_required(self) -> None:
+        # resource.id 缺失必须在边界拒绝（独立验收反例：缺失 id 的请求不得
+        # 到达 OPA transport）
+        with pytest.raises(ValidationError):
+            ResourceRef(type=ResourceType.ORG, version="v1")
+        doc = base_input().model_dump(mode="python")
+        del doc["resource"]["id"]
+        with pytest.raises(ValidationError):
+            PolicyInput.model_validate(doc)
+
+    def test_resource_id_must_be_uuid(self) -> None:
+        with pytest.raises(ValidationError):
+            ResourceRef(type=ResourceType.ORG, id="r1", version="v1")
+
+    @pytest.mark.parametrize("version", [None, ""])
+    def test_resource_version_required_non_empty(self, version: str | None) -> None:
+        with pytest.raises(ValidationError):
+            ResourceRef(type=ResourceType.ORG, id=RES, version=version)
+        doc = base_input().model_dump(mode="python")
+        doc["resource"]["version"] = version
+        with pytest.raises(ValidationError):
+            PolicyInput.model_validate(doc)
+
+
+class TestTimeAwareBoundary:
+    def test_delegation_expires_at_must_be_timezone_aware(self) -> None:
+        # naive datetime 在 Python 输入边界拒绝：Rego 按真实时刻比较，
+        # naive 值无法表达时区语义
+        with pytest.raises(ValidationError):
+            Delegation(
+                granted_by_principal_id=UUID("00000000-0000-0000-0000-00000000000e"),
+                scope="org.manage",
+                expires_at=datetime(2026, 8, 15, 1, 0, 0),
+            )
+
+    def test_request_context_now_must_be_timezone_aware(self) -> None:
+        with pytest.raises(ValidationError):
+            base_input(context=RequestContext(now=datetime(2026, 8, 15)))
+
+    def test_naive_datetime_via_dict_validation_rejected(self) -> None:
+        # 经 dict 边界（enforcer/client 的真实输入路径）同样拒绝 naive
+        doc = base_input().model_dump(mode="python")
+        doc["context"]["now"] = datetime(2026, 8, 15)
+        with pytest.raises(ValidationError):
+            PolicyInput.model_validate(doc)
+
+    def test_offset_datetime_accepted_and_preserved(self) -> None:
+        # aware datetime 允许（Rego 端负责按真实时刻比较）
+        d = Delegation(
+            granted_by_principal_id=UUID("00000000-0000-0000-0000-00000000000e"),
+            scope="org.manage",
+            expires_at=datetime(2026, 8, 15, 1, 0, 0, tzinfo=timezone(timedelta(hours=2))),
+        )
+        assert d.expires_at.utcoffset() == timedelta(hours=2)
+
+
+class TestNestedExtraForbidden:
+    def test_nested_secret_shaped_extras_rejected(self) -> None:
+        # extra="forbid" 必须递归生效：actor/access_token、resource/credential、
+        # context/password 及更深层嵌套的 secret 形状在边界拒绝
+        sentinel = "s3cr3t"
+        actor = base_input().model_dump(mode="python")["actor"]
+        cases: list[dict] = [
+            {"actor": {**actor, "access_token": sentinel}},
+            {"resource": {"type": "org", "id": str(RES), "version": "v1", "credential": {"password": sentinel}}},
+            {"context": {"now": NOW, "password": sentinel}},
+            {"actor": {**actor, "roles": [{**actor["roles"][0], "api_key": sentinel}]}},
+        ]
+        for patch in cases:
+            doc = base_input().model_dump(mode="python")
+            for key, value in patch.items():
+                doc[key] = value
+            with pytest.raises(ValidationError):
+                PolicyInput.model_validate(doc)
 
 
 class TestEffectiveIdentity:

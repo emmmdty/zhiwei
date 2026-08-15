@@ -1183,6 +1183,161 @@ test_delegation_valid_allowed if {
     }
 }
 
+# ---------- delegation 链交集（独立验收最小反例）----------
+# 链上每一跳都必须精确覆盖当前 (resource, action)：两跳 [org.manage,
+# org.delegate] 请求 org.manage 必须 deny——不能用 any/some 一跳代表整条链有效。
+test_delegation_chain_partial_scope_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u2", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": later},
+            {"granted_by_principal_id": "u1", "scope": "org.delegate", "expires_at": later},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 互补正例：两跳都精确覆盖 org.manage 才 allow（链交集语义的允许侧）
+test_delegation_chain_all_hops_cover_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u2", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": later},
+            {"granted_by_principal_id": "u1", "scope": "org.manage", "expires_at": later},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 链上任意一跳过期 -> 整链 deny
+test_delegation_chain_any_hop_expired_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u2", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": later},
+            {"granted_by_principal_id": "u1", "scope": "org.manage", "expires_at": "2026-08-14T00:00:00Z"},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 时间必须按真实时刻比较：expires_at = 01:00+02:00 实际是 08-14T23:00Z，
+# 已过期必须 deny（字符串比较会把带正偏移的字符串判成晚于 now）
+test_delegation_offset_expiry_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u2", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": "2026-08-15T01:00:00+02:00"},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 互补正例：带偏移但确实未过期 -> allow（03:00+02:00 = 01:00Z > now）
+test_delegation_offset_future_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u2", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": "2026-08-15T03:00:00+02:00"},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 有效身份自授：agent 背后的用户是 grantor -> deny（不能只比较 actor principal）
+test_delegation_self_grant_via_effective_identity_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "p-agent-1", "kind": "agent_identity",
+                  "roles": [binding("org_owner", "org")]},
+        "effective_identity": {"principal_id": "u2", "kind": "user"},
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u2", "scope": "org.manage", "expires_at": later},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
+# 互补正例：agent 的有效身份与 grantor 不同 -> allow
+test_delegation_effective_identity_not_grantor_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "p-agent-1", "kind": "agent_identity",
+                  "roles": [binding("org_owner", "org")]},
+        "effective_identity": {"principal_id": "u3", "kind": "user"},
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [
+            {"granted_by_principal_id": "u9", "scope": "org.manage", "expires_at": later},
+        ],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": true},
+    }
+}
+
 # ---------- 默认拒绝与 reason ----------
 # 空 input -> 默认拒绝
 test_empty_input_denied if {

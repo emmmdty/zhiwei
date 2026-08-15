@@ -202,6 +202,50 @@ class TestFreshnessContract:
         assert d.evaluated_at == NOW
 
 
+class TestResourceBindingBoundary:
+    @pytest.mark.asyncio
+    async def test_resource_without_id_denied_at_boundary_without_opa_call(self) -> None:
+        enforcer, call = enforcer_with(ok_response())
+        doc = valid_input_doc()
+        del doc["resource"]["id"]
+        d = await enforcer.authorize(doc)
+        assert d.allow is False and d.reason == "policy_input_invalid"
+        assert call["n"] == 0, "resource.id 缺失必须在边界拒绝，不进入 OPA"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", [None, ""])
+    async def test_resource_version_missing_or_empty_denied_at_boundary(self, version) -> None:
+        enforcer, call = enforcer_with(ok_response())
+        doc = valid_input_doc()
+        doc["resource"]["version"] = version
+        d = await enforcer.authorize(doc)
+        assert d.allow is False and d.reason == "policy_input_invalid"
+        assert call["n"] == 0, "resource.version 缺失/空必须在边界拒绝，不进入 OPA"
+
+
+class TestNestedSecretBoundary:
+    @pytest.mark.asyncio
+    async def test_nested_secrets_denied_at_boundary_without_opa_call(self) -> None:
+        # 嵌套 extra（secret 形状）在发送前拒绝；sentinel 不得出现在决策、
+        # digest 或任何发送内容中
+        sentinel = "s3cr3t-boundary"
+        cases = [
+            {"actor": {"access_token": sentinel}},
+            {"resource": {"credential": {"password": sentinel}}},
+            {"context": {"password": sentinel}},
+        ]
+        for patch in cases:
+            enforcer, call = enforcer_with(ok_response())
+            doc = valid_input_doc()
+            for key, value in patch.items():
+                doc[key] = {**doc[key], **value}
+            d = await enforcer.authorize(doc)
+            assert d.allow is False and d.reason == "policy_input_invalid"
+            assert d.input_digest is None, "被拒文档不得进入 digest"
+            assert sentinel not in d.reason
+            assert call["n"] == 0, "嵌套 secret 必须在发送前拒绝"
+
+
 class TestDenyHelper:
     def test_deny_helper_is_fail_closed(self) -> None:
         enforcer, _ = enforcer_with(ok_response())
