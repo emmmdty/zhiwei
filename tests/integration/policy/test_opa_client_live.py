@@ -8,6 +8,8 @@ policy-update）在 test_opa_sidecar_slow.py（@slow，真实 docker 编排）�
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import httpx
 import pytest
 
@@ -33,16 +35,21 @@ def _require_opa_healthy() -> None:
     assert resp.status_code == 200, f"/health?bundles 必须 200，实际 {resp.status_code}"
 
 
+U1 = "00000000-0000-0000-0000-0000000000a1"
+U9 = "00000000-0000-0000-0000-0000000000a9"
+R1 = "00000000-0000-0000-0000-0000000000b1"
+
+
 def _input_doc(*, role: str, resource: str, action: str, purpose: str = "general",
                classification=None, ceiling=None, resource_context=None,
-               risk=None, actor_id: str = "u1") -> dict:
+               risk=None, actor_id: str = U1) -> dict:
     return {
         "organization_id": ORG,
         "workspace_id": None,
         "actor": {"principal_id": actor_id, "kind": "user", "roles": [
             {"name": role, "scope": "org", "organization_id": ORG, "workspace_id": None},
         ]},
-        "resource": {"type": resource, "id": "r1", "version": "v1"},
+        "resource": {"type": resource, "id": R1, "version": "v1"},
         "action": action,
         "purpose": purpose,
         "classification": classification,
@@ -54,8 +61,9 @@ def _input_doc(*, role: str, resource: str, action: str, purpose: str = "general
     }
 
 
-@pytest.fixture(scope="module")
-def enforcer() -> PolicyEnforcer:
+@pytest.fixture()
+def enforcer() -> Iterator[PolicyEnforcer]:
+    # function 作用域：每个测试一个 enforcer/httpx 客户端，绑定该测试自己的事件循环
     _require_opa_healthy()
     client = OPAClient(OPA_URL, cache_maxsize=64, cache_ttl_seconds=10.0)
     yield PolicyEnforcer(client)
@@ -101,7 +109,7 @@ class TestLiveDecisions:
             role="workspace_admin",
             resource="agent_publish",
             action="review_publish",
-            resource_context={"last_content_author_principal_id": "u1"},
+            resource_context={"last_content_author_principal_id": U1},
         ))
         assert d.allow is False
         assert "sod_deny" in d.reason or "self_review" in d.reason

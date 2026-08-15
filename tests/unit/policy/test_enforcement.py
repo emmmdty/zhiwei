@@ -9,7 +9,6 @@ Decision 携带 T4 audit 所需的 decision id/revision/reason/input_digest。
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from uuid import UUID
 
 import httpx
 import pytest
@@ -32,7 +31,7 @@ def ok_response(allow: bool = True, decision_id: str = "d1", revision: str = "re
     }
 
 
-def enforcer_with(response: dict | None = None, *, fail: Exception | None = None,
+def enforcer_with(*responses: dict, fail: Exception | None = None,
                   status: int = 200, fail_opaque: bool = False) -> tuple[PolicyEnforcer, dict]:
     """构造 enforcer；call 记录实际发给 OPA 的请求数。"""
     call = {"n": 0}
@@ -43,7 +42,10 @@ def enforcer_with(response: dict | None = None, *, fail: Exception | None = None
             raise fail
         if fail_opaque:
             raise RuntimeError("unexpected")
-        return httpx.Response(status, json=response, request=request)
+        if not responses:
+            return httpx.Response(status, json={}, request=request)
+        return httpx.Response(status, json=responses[min(call["n"] - 1, len(responses) - 1)],
+                              request=request)
 
     client = OPAClient(
         "http://opa.test:8181",
@@ -53,14 +55,18 @@ def enforcer_with(response: dict | None = None, *, fail: Exception | None = None
     return PolicyEnforcer(client), call
 
 
+U1 = "00000000-0000-0000-0000-0000000000a1"
+R1 = "00000000-0000-0000-0000-0000000000b1"
+
+
 def valid_input_doc(**overrides) -> dict:
     doc = {
         "organization_id": ORG,
         "workspace_id": None,
-        "actor": {"principal_id": "u1", "kind": "user", "roles": [
+        "actor": {"principal_id": U1, "kind": "user", "roles": [
             {"name": "org_owner", "scope": "org", "organization_id": ORG, "workspace_id": None},
         ]},
-        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "resource": {"type": "org", "id": R1, "version": "v1"},
         "action": "manage",
         "purpose": "general",
         "classification": None,

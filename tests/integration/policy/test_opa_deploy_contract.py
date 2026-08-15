@@ -17,7 +17,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
@@ -92,10 +91,16 @@ class TestOpaEntrypoint:
         assert build_index < run_index, "bundle 构建必须先于 server 启动"
 
     def test_entrypoint_does_not_depend_on_absent_tools(self) -> None:
-        # 固定镜像（1.19.0-debug，busybox）没有 wget/curl/curl/envsubst
-        script = OPA_ENTRYPOINT.read_text(encoding="utf-8")
-        for tool in ("wget", "curl", "envsubst", "nc "):
-            assert tool not in script, f"entrypoint 不得依赖镜像内不存在的工具: {tool}"
+        # 固定镜像（1.19.0-debug，busybox）没有 wget/curl/envsubst；只检查可执行
+        # 行（注释里可以解释为什么不能用这些工具）
+        script_lines = [
+            line
+            for line in OPA_ENTRYPOINT.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        script = "\n".join(script_lines)
+        for tool in ("wget", "curl", "envsubst"):
+            assert tool not in script, f"entrypoint 不得调用镜像内不存在的工具: {tool}"
 
     def test_entrypoint_uses_posix_sh_only(self) -> None:
         first_line = OPA_ENTRYPOINT.read_text(encoding="utf-8").splitlines()[0]

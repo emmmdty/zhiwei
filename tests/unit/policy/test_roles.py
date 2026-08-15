@@ -19,7 +19,6 @@ from zhiwei.policy.roles import (
     Action,
     Classification,
     Purpose,
-    ResourceType,
     Risk,
     Role,
     RoleScope,
@@ -48,14 +47,14 @@ class TestFrozenRoleVocabulary:
 
     def test_workspace_scoped_roles_are_only_workspace_roles(self) -> None:
         # 矩阵中只有 Workspace Admin 与 Agent Builder 是 workspace 作用域角色
-        assert WORKSPACE_SCOPED_ROLES == frozenset({Role.WORKSPACE_ADMIN, Role.AGENT_BUILDER})
+        assert frozenset({Role.WORKSPACE_ADMIN, Role.AGENT_BUILDER}) == WORKSPACE_SCOPED_ROLES
 
     def test_org_scoped_roles_are_the_rest(self) -> None:
-        assert ORG_SCOPED_ROLES == frozenset(set(Role) - set(WORKSPACE_SCOPED_ROLES))
+        assert frozenset(set(Role) - set(WORKSPACE_SCOPED_ROLES)) == ORG_SCOPED_ROLES
 
     def test_scope_partition_is_exhaustive(self) -> None:
-        assert ORG_SCOPED_ROLES | WORKSPACE_SCOPED_ROLES == frozenset(set(Role))
-        assert ORG_SCOPED_ROLES & WORKSPACE_SCOPED_ROLES == frozenset()
+        assert frozenset(set(Role)) == ORG_SCOPED_ROLES | WORKSPACE_SCOPED_ROLES
+        assert frozenset() == ORG_SCOPED_ROLES & WORKSPACE_SCOPED_ROLES
 
 
 class TestContextVocabulary:

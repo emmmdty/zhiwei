@@ -18,12 +18,12 @@ from zhiwei.policy.input import (
     Delegation,
     EffectiveIdentity,
     PolicyInput,
+    RequestContext,
     ResourceContext,
     ResourceRef,
     RoleBinding,
-    RequestContext,
 )
-from zhiwei.policy.roles import Action, Classification, Purpose, ResourceType, Risk, Role, RoleScope
+from zhiwei.policy.roles import Action, Purpose, ResourceType, Risk, Role, RoleScope
 
 ORG = UUID("00000000-0000-0000-0000-000000000001")
 WS = UUID("00000000-0000-0000-0000-000000000002")
@@ -63,33 +63,30 @@ def base_input(**overrides) -> PolicyInput:
 
 class TestBoundaryRejection:
     def test_unknown_role_rejected(self) -> None:
-        # 未知 role 在边界拒绝（MC-2），不能透传给 OPA
+        # 未知 role 在边界拒绝（MC-2），不能透传给 OPA。未知值经 dict 走真实边界路径
+        # （构造器签名会先于 pydantic 校验被类型系统/运行时拒绝，测不到边界行为）
+        doc = base_input().model_dump(mode="python")
+        doc["actor"]["roles"][0]["name"] = "superuser"
         with pytest.raises(ValidationError):
-            base_input(actor=Actor(
-                principal_id=RES,
-                kind=PrincipalKind.USER,
-                roles=(RoleBinding(
-                    name="superuser", scope=RoleScope.ORG, organization_id=ORG, workspace_id=None
-                ),),
-            ))
+            PolicyInput.model_validate(doc)
 
     def test_unknown_resource_type_rejected(self) -> None:
+        doc = base_input().model_dump(mode="python")
+        doc["resource"]["type"] = "wat"
         with pytest.raises(ValidationError):
-            base_input(resource=ResourceRef(type="wat", id=RES, version="v1"))
+            PolicyInput.model_validate(doc)
 
     def test_unknown_action_rejected(self) -> None:
+        doc = base_input().model_dump(mode="python")
+        doc["action"] = "publsh"
         with pytest.raises(ValidationError):
-            base_input(action="publsh")
+            PolicyInput.model_validate(doc)
 
     def test_unknown_scope_rejected(self) -> None:
+        doc = base_input().model_dump(mode="python")
+        doc["actor"]["roles"][0]["scope"] = "team"
         with pytest.raises(ValidationError):
-            base_input(actor=Actor(
-                principal_id=RES,
-                kind=PrincipalKind.USER,
-                roles=(RoleBinding(
-                    name=Role.ORG_OWNER, scope="team", organization_id=ORG, workspace_id=None
-                ),),
-            ))
+            PolicyInput.model_validate(doc)
 
     def test_unknown_classification_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -126,7 +123,7 @@ class TestBoundaryRejection:
 
     def test_policy_input_has_no_secret_shaped_fields(self) -> None:
         # input schema 本身不含任何 secret/token/password 形状字段（decision log 回显 input）
-        names = {f for f in PolicyInput.model_fields}
+        names = set(PolicyInput.model_fields)
         assert names & {"secret", "token", "password", "credential"} == set()
         nested = {
             f for model in (Actor, ResourceRef, ResourceContext, Delegation, RequestContext)
@@ -234,10 +231,10 @@ class TestDelegation:
     def test_delegation_requires_expiry(self) -> None:
         # 无过期时间的委托不允许进入 input（time 维度由 context.now 判定）
         with pytest.raises(ValidationError):
-            Delegation(
-                granted_by_principal_id=UUID("00000000-0000-0000-0000-00000000000e"),
-                scope="org.manage",
-            )
+            Delegation.model_validate({
+                "granted_by_principal_id": "00000000-0000-0000-0000-00000000000e",
+                "scope": "org.manage",
+            })
 
     def test_valid_delegation_accepted(self) -> None:
         d = Delegation(

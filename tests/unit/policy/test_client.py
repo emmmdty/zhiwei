@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from zhiwei.contracts.canonical import canonical_json, digest
-from zhiwei.policy.client import OPAClient, PolicyDecision
+from zhiwei.contracts.canonical import digest
+from zhiwei.policy.client import OPAClient
 
 NOW = datetime(2026, 8, 15, 0, 0, 0, tzinfo=UTC)
 BASE = "http://opa.test:8181"
@@ -65,6 +65,8 @@ def make_transport(*responses: dict, status: int = 200, fail: Exception | None =
         call["n"] += 1
         if fail is not None:
             raise fail
+        if not responses:
+            return httpx.Response(status, json={}, request=request)
         idx = min(call["n"] - 1, len(responses) - 1)
         return httpx.Response(status, json=responses[idx], request=request)
 
@@ -95,7 +97,7 @@ class TestSuccessPath:
         assert d.revision == "rev-1"
         assert d.reason == "allowed:matrix"
         assert d.evaluated_at == NOW
-        assert d.input_digest == digest(canonical_json(INPUT_A))
+        assert d.input_digest == digest(INPUT_A)
 
     @pytest.mark.asyncio
     async def test_deny_decision_preserves_metadata(self) -> None:
@@ -161,11 +163,11 @@ class TestMalformedResponseFailsClosed:
 
     @pytest.mark.asyncio
     async def test_invalid_json_rejected(self) -> None:
-        transport, _, _ = make_transport()
-        calls = {"n": 0}
+        _transport, _, _ = make_transport()
+        _calls = {"n": 0}
 
         def handler(request: httpx.Request) -> httpx.Response:
-            calls["n"] += 1
+            _calls["n"] += 1
             return httpx.Response(200, content=b"{not json", request=request)
 
         client = OPAClient(
@@ -175,7 +177,7 @@ class TestMalformedResponseFailsClosed:
         d = await client.evaluate(INPUT_A)
         assert d.allow is False and d.decision_id is None
         assert d.reason.startswith("opa_malformed_response")
-        assert calls["n"] == 1
+        assert _calls["n"] == 1
 
 
 class TestTransportFailsClosed:
@@ -270,8 +272,8 @@ class TestBoundedCache:
 
     @pytest.mark.asyncio
     async def test_opa_down_never_falls_back_to_cached_allow(self) -> None:
-        fail = [None]
-        transport, _, _ = make_transport()
+        fail: list[httpx.ConnectError | None] = [None]
+        _transport, _, _ = make_transport()
 
         def handler(request: httpx.Request) -> httpx.Response:
             if fail[0] is not None:

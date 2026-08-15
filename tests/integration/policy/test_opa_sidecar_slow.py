@@ -12,12 +12,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -54,14 +54,18 @@ def _run(*args: str, env: dict | None = None) -> subprocess.CompletedProcess:
     )
 
 
+U1 = "00000000-0000-0000-0000-0000000000a1"
+R1 = "00000000-0000-0000-0000-0000000000b1"
+
+
 def _input_doc(*, purpose: str = "general") -> dict:
     return {
         "organization_id": ORG,
         "workspace_id": None,
-        "actor": {"principal_id": "u1", "kind": "user", "roles": [
+        "actor": {"principal_id": U1, "kind": "user", "roles": [
             {"name": "org_owner", "scope": "org", "organization_id": ORG, "workspace_id": None},
         ]},
-        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "resource": {"type": "org", "id": R1, "version": "v1"},
         "action": "manage",
         "purpose": purpose,
         "classification": None,
@@ -78,9 +82,10 @@ def _new_enforcer(cache_ttl: float) -> PolicyEnforcer:
 
 
 @pytest.mark.slow
+@pytest.mark.asyncio
 class TestOpaLifecycle:
     @pytest.fixture()
-    def opa_service(self) -> None:
+    def opa_service(self) -> Iterator[None]:
         """确保 opa 服务处于 compose 定义的正常状态（还原任何测试残留）。"""
         if shutil.which("docker") is None:
             pytest.skip("环境守卫：无 docker 无法执行真实容器生命周期场景（slow 显式运行）")
@@ -94,11 +99,13 @@ class TestOpaLifecycle:
         assert up.returncode == 0, f"opa 还原失败:\n{up.stdout}\n{up.stderr}"
         _wait_healthy()
 
-    def test_opa_unavailable_fails_closed_without_cache_fallback(self, opa_service: None) -> None:
+    async def test_opa_unavailable_fails_closed_without_cache_fallback(
+        self, opa_service: None
+    ) -> None:
         enforcer = _new_enforcer(cache_ttl=3600)  # 长 TTL：证明不是 TTL 而是不可用性在拒绝
 
         # 预热缓存：allow 决策入缓存
-        d = asyncio.run(enforcer.authorize(_input_doc()))
+        d = await enforcer.authorize(_input_doc())
         assert d.allow is True and d.revision
 
         # 停止真实 OPA 容器
@@ -107,7 +114,7 @@ class TestOpaLifecycle:
 
         try:
             # 需要求值的请求（不同 purpose → 不同缓存 key）：必须 deny，不得回落缓存 allow
-            d2 = asyncio.run(enforcer.authorize(_input_doc(purpose="compliance")))
+            d2 = await enforcer.authorize(_input_doc(purpose="compliance"))
             assert d2.allow is False
             assert d2.reason == "opa_unavailable"
             assert d2.decision_id is None and d2.revision is None, (
@@ -117,7 +124,7 @@ class TestOpaLifecycle:
             _run("start", "opa")
             _wait_healthy()
 
-    def test_stale_bundle_invalidates_cached_allow(self, opa_service: None) -> None:
+    async def test_stale_bundle_invalidates_cached_allow(self, opa_service: None) -> None:
         # revision R1：缓存 allow
         _run("rm", "-sf", "opa")
         up = _run("up", "-d", "--force-recreate", "--wait", "opa",
@@ -126,7 +133,7 @@ class TestOpaLifecycle:
         _wait_healthy()
 
         enforcer = _new_enforcer(cache_ttl=3600)
-        d1 = asyncio.run(enforcer.authorize(_input_doc()))
+        d1 = await enforcer.authorize(_input_doc())
         assert d1.allow is True and d1.revision == "rev-stale-1"
 
         # bundle 更新到 R2（同一策略，revision 变更）
@@ -137,13 +144,13 @@ class TestOpaLifecycle:
         _wait_healthy()
 
         # 新请求感知 R2 → 旧 R1 缓存条目失效
-        d2 = asyncio.run(enforcer.authorize(_input_doc(purpose="compliance")))
+        d2 = await enforcer.authorize(_input_doc(purpose="compliance"))
         assert d2.revision == "rev-stale-2", "新请求必须看到新 revision"
-        d3 = asyncio.run(enforcer.authorize(_input_doc()))
+        d3 = await enforcer.authorize(_input_doc())
         assert d3.revision == "rev-stale-2", "R1 的缓存 allow 不得在 R2 继续服务"
         assert d3.allow is True
 
-    def test_policy_update_during_request_denies_under_new_policy(
+    async def test_policy_update_during_request_denies_under_new_policy(
         self, opa_service: None
     ) -> None:
         # 阶段 1：真实 bundle（R1），org_owner/manage 被允许
@@ -154,7 +161,7 @@ class TestOpaLifecycle:
         _wait_healthy()
 
         enforcer = _new_enforcer(cache_ttl=3600)
-        d1 = asyncio.run(enforcer.authorize(_input_doc()))
+        d1 = await enforcer.authorize(_input_doc())
         assert d1.allow is True and d1.revision == "rev-update-1"
 
         # 阶段 2：收紧策略（临时 rego 副本 + 硬拒绝规则）+ 新 revision，重建容器
@@ -191,13 +198,13 @@ class TestOpaLifecycle:
             _wait_healthy()
 
             # 收紧策略生效：新请求看到 R2，org_owner/manage 被拒
-            d2 = asyncio.run(enforcer.authorize(_input_doc(purpose="compliance")))
+            d2 = await enforcer.authorize(_input_doc(purpose="compliance"))
             assert d2.revision == "rev-update-2"
             assert d2.allow is False, "收紧后的策略必须拒绝 org/manage"
             assert "sod_deny" in d2.reason or "slow_test_tightened" in d2.reason
 
             # 旧缓存中的 R1 allow 不得再被服务：同一 input 必须按新策略判定
-            d3 = asyncio.run(enforcer.authorize(_input_doc()))
+            d3 = await enforcer.authorize(_input_doc())
             assert d3.revision == "rev-update-2" and d3.allow is False, (
                 "policy update during request: 缓存中的旧 allow 不得越过 bundle 更新"
             )
