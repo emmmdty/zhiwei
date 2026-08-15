@@ -691,3 +691,166 @@ class TestConcurrentRevisionFencing:
         assert d_x.reason == "opa_unavailable"
         assert d_x.decision_id is None
         await client.aclose()
+
+
+class TestRevisionABAFencing:
+    """S1-T3 修复反例：无法证明新旧的 deny 迁移 revision 的 ABA（A→B→A）。
+
+    三个请求全部在 current_revision=None 时发出并全部在途：old-era 响应声称
+    rev-old，new-era 响应声称 rev-new。任何完成顺序下，rev-old allow 都不得
+    重新获得提交资格——不得因 claim == current_revision 被接受（revision ABA
+    后同 revision 绕过 stale 判断），也不得留在缓存里服务 INPUT_A。
+    """
+
+    @pytest.mark.asyncio
+    async def test_revision_aba_cannot_reenable_pre_fence_allow(self) -> None:
+        """独立验收反例（ABA）：new-deny-a → old-deny-b → old-allow-a 完成。
+
+        old-deny-b 声称 rev-old，无法证明新旧：可以作为 deny 原样返回，但
+        不得迁移 current_revision——迁移会让 rev-old allow 因 claim == current
+        重新获得缓存资格。随后 rev-old allow 必须 fail closed
+        （opa_stale_response，decision_id/revision 均为 None）；再请求 INPUT_A
+        必须重新访问 OPA（第四次 transport 返回 rev-new deny），不得命中缓存。
+        """
+        started = [asyncio.Event() for _ in range(3)]
+        gates = [asyncio.Event() for _ in range(3)]
+        calls = {"n": 0}
+        responses = [
+            ok_response(allow=False, decision_id="d-old-b", revision="rev-old"),
+            ok_response(allow=True, decision_id="d-old-a", revision="rev-old"),
+            ok_response(allow=False, decision_id="d-new-a", revision="rev-new"),
+            ok_response(allow=False, decision_id="d-4", revision="rev-new"),
+        ]
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            i = calls["n"]
+            calls["n"] += 1
+            if i < 3:
+                started[i].set()
+                await gates[i].wait()
+            return httpx.Response(200, json=responses[min(i, 3)], request=request)
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        old_deny = asyncio.create_task(client.evaluate(INPUT_B))  # 1. old-deny-b
+        await started[0].wait()
+        old_allow = asyncio.create_task(client.evaluate(INPUT_A))  # 2. old-allow-a
+        await started[1].wait()
+        new_deny = asyncio.create_task(client.evaluate(INPUT_A))  # 3. new-deny-a
+        await started[2].wait()
+        assert client.current_revision is None, "三个请求都必须在 revision 未知时发出"
+
+        gates[2].set()  # 完成 1：new-deny-a 正常采纳
+        d_new = await new_deny
+        assert d_new.allow is False and d_new.decision_id == "d-new-a"
+        assert d_new.revision == "rev-new"
+        assert client.current_revision == "rev-new"
+
+        gates[0].set()  # 完成 2：old-deny-b
+        d_old_b = await old_deny
+        assert d_old_b.allow is False, "old deny 可以作为 deny 原样返回（fail closed）"
+        assert d_old_b.decision_id == "d-old-b"
+        assert client.current_revision == "rev-new", \
+            "old deny 不得迁移 current_revision（否则 rev-old allow 会绕过 stale 判断）"
+
+        gates[1].set()  # 完成 3：old-allow-a
+        d_old_a = await old_allow
+        assert d_old_a.allow is False
+        assert d_old_a.reason == "opa_stale_response"
+        assert d_old_a.decision_id is None and d_old_a.revision is None
+        assert client.current_revision == "rev-new"
+
+        d_rerun = await client.evaluate(INPUT_A)
+        assert calls["n"] == 4, "INPUT_A 必须重新访问 OPA，不能命中旧 allow 缓存"
+        assert d_rerun.allow is False
+        assert d_rerun.decision_id == "d-4" and d_rerun.revision == "rev-new"
+        assert client.current_revision == "rev-new"
+        d_hit = await client.evaluate(INPUT_A)
+        assert calls["n"] == 4, "重求值结果进入缓存后可复用"
+        assert d_hit.decision_id == "d-4"
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "release_order, old_allow_a_stale, current_after_three, rerun_calls, rerun_decision_id",
+        [
+            ((2, 1, 0), True, "rev-new", 4, "d-4"),      # new-deny-a → old-allow-a → old-deny-b
+            ((0, 2, 1), True, "rev-old", 4, "d-4"),      # old-deny-b → new-deny-a → old-allow-a
+            ((0, 1, 2), False, "rev-new", 3, "d-new-a"),  # old-deny-b → old-allow-a → new-deny-a
+            ((1, 0, 2), False, "rev-new", 3, "d-new-a"),  # old-allow-a → old-deny-b → new-deny-a
+            ((1, 2, 0), False, "rev-new", 4, "d-4"),      # old-allow-a → new-deny-a → old-deny-b
+        ],
+        ids=["n-a-b", "b-n-a", "b-a-n", "a-b-n", "a-n-b"],
+    )
+    async def test_revision_aba_completion_orders(
+        self, release_order: tuple[int, int, int], old_allow_a_stale: bool,
+        current_after_three: str, rerun_calls: int, rerun_decision_id: str,
+    ) -> None:
+        """ABA 反例的关键完成顺序（主反例之外的 5 种）。
+
+        共同不变量：rev-old allow 不得服务任何 INPUT_A 请求（重新请求要么
+        重新访问 OPA 命中 rev-new deny，要么命中已入缓存的 rev-new deny）；
+        old deny 一律作为 deny 返回；current_revision 最终收敛到 rev-new。
+        old-allow-a 先于 rev-new deny 完成时可能被短暂采纳，但随后必须被
+        清出缓存（先完成者即「首个证据」采纳，与冻结的顺序迁移契约一致）。
+        b-n-a 顺序中 new-deny-a 无法证明新旧且缓存无需清出 allow，按不变量
+        原样返回而不迁移——current_revision 停留在 rev-old，由下一次请求
+        重新求值收敛到 rev-new。
+        """
+        started = [asyncio.Event() for _ in range(3)]
+        gates = [asyncio.Event() for _ in range(3)]
+        calls = {"n": 0}
+        responses = [
+            ok_response(allow=False, decision_id="d-old-b", revision="rev-old"),
+            ok_response(allow=True, decision_id="d-old-a", revision="rev-old"),
+            ok_response(allow=False, decision_id="d-new-a", revision="rev-new"),
+            ok_response(allow=False, decision_id="d-4", revision="rev-new"),
+        ]
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            i = calls["n"]
+            calls["n"] += 1
+            if i < 3:
+                started[i].set()
+                await gates[i].wait()
+            return httpx.Response(200, json=responses[min(i, 3)], request=request)
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        tasks = [
+            asyncio.create_task(client.evaluate(INPUT_B)),  # 0: old-deny-b
+            asyncio.create_task(client.evaluate(INPUT_A)),  # 1: old-allow-a
+            asyncio.create_task(client.evaluate(INPUT_A)),  # 2: new-deny-a
+        ]
+        for i in range(3):
+            await started[i].wait()
+        for idx in release_order:  # 完成顺序由 gate 释放顺序强制
+            gates[idx].set()
+            await tasks[idx]
+
+        d_old_b = tasks[0].result()
+        d_old_a = tasks[1].result()
+        d_new = tasks[2].result()
+        assert d_new.allow is False and d_new.decision_id == "d-new-a"
+        assert d_new.revision == "rev-new"
+        assert d_old_b.allow is False and d_old_b.decision_id == "d-old-b"
+        if old_allow_a_stale:
+            assert d_old_a.allow is False
+            assert d_old_a.reason == "opa_stale_response"
+            assert d_old_a.decision_id is None and d_old_a.revision is None
+        else:
+            assert d_old_a.allow is True and d_old_a.decision_id == "d-old-a", \
+                "先完成的 rev-old allow 可被短暂采纳，但随后必须被清出缓存"
+        assert client.current_revision == current_after_three
+
+        d_rerun = await client.evaluate(INPUT_A)
+        assert d_rerun.allow is False, "旧 allow 不得被任何 INPUT_A 请求命中"
+        assert d_rerun.decision_id == rerun_decision_id
+        assert d_rerun.revision == "rev-new"
+        assert calls["n"] == rerun_calls
+        assert client.current_revision == "rev-new", "current_revision 必须收敛到 rev-new"
+        await client.aclose()
