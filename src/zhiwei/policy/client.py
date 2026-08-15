@@ -16,13 +16,17 @@
   （PERMISSIONS.md:13 secret 不进入 decision log）；
 - 并发 revision fencing：revision/cache 的关联提交在 per-client 锁的临界区内
   串行化（远程求值仍在锁外并发——等待中的请求必须能完成，锁不能跨 HTTP）。
-  revision 是 opaque 值，绝不按值比较新旧；响应声称的 revision 与当前不一致
-  时只有三种情况允许采纳：发送时刻的 revision 未被他人迁移（本请求是在途期间
-  第一个迁移者，或顺序迁移）；声称的正是当前 revision；或无法证明新旧的
-  拒绝类决策——deny 采纳不会产生假 allow，且清空旧缓存并迁移 revision，因此
-  任何并发完成顺序下，旧 allow 都无法覆盖、阻止或缓存于更新策略的 deny。
-  其余情况（无法证明新鲜的 allow，或声称的正是已被取代 bundle 的 revision）
-  一律按 stale 丢弃（fail closed，reason opa_stale_response），决策不进入缓存；
+  revision 是 opaque 值，绝不按值比较新旧。fence generation 是单调序号，
+  发送时捕获：无法证明时序的冲突响应会推进它并清空缓存；任何在旧 generation
+  发出的响应此后都不能修改 revision/cache 或复用缓存（fail closed：allow
+  一律 stale，deny/传输失败原样返回）——因此 revision 不可能因旧响应回退
+  （ABA），旧 allow 也无法以 claim == current 绕过 stale 判断重新入缓存。
+  采纳只发生在：声称的正是当前 revision；发送时刻的 revision 未被他人迁移
+  （本请求是在途期间第一个迁移者，或顺序迁移，响应是新的首条证据）；或
+  无法证明新旧的 deny 且缓存中存在将被该迁移清出的 allow（清出失效 allow
+  是采纳迁移的唯一必要场景）。其余情况——无法证明新鲜的 allow、声称的正是
+  已被取代 bundle 的 revision、或无需清出缓存的无法证明新旧的 deny——一律
+  fail closed（opa_stale_response 或原样 deny），决策不进入缓存；
 - 本层不实现授权语义（Rego 唯一事实）：只做传输与决策对象构造。
 """
 
@@ -121,6 +125,11 @@ class OPAClient:
         self._cache_maxsize = max(1, cache_maxsize)
         self._ttl = timedelta(seconds=max(0.0, cache_ttl_seconds))
         self._revision: str | None = None
+        # fence generation：单调递增的并发防线。revision 迁移后仍可能有旧
+        # generation 的在途响应到达——它们不能再修改 revision/cache。只有
+        # 无法证明时序的冲突响应会推进它（并清空缓存）；成功响应采纳迁移时
+        # revision 总是立即失效全部旧缓存，因此不需要退役 revision 集合。
+        self._fence = 0
         # 提交临界区锁：revision/cache 的关联读写（含 LRU）都在这把锁内完成。
         # 锁不覆盖远程求值——冻结并发测试要求一个在途请求等待时其他请求能
         # 完整完成，锁跨 HTTP 会互相阻塞；串行化的是「重新检查缓存 → 提交」。
@@ -172,15 +181,30 @@ class OPAClient:
             if revision == self._revision and evaluated_at + self._ttl > now:
                 return decision
 
-        # 并发 fencing。sent_at 是发送时刻的快照：读取与 POST 发起之间没有
-        # await 点，asyncio 单线程下不会有其他 task 插队，因此快照即发送时的
-        # current_revision。revision 是 opaque 值，不能按字符串/字典序比较
-        # 新旧——新旧只能由「迁移发生在我发送之后」来推断。提交（revision 与
-        # cache 的关联更新）在 per-client 锁内串行化，任何完成顺序下只有一个
-        # 请求能移动 revision，且移动时清空全部旧缓存。
+        # 并发 fencing。sent_at / sent_fence 是发送时刻的快照：读取与 POST 发起
+        # 之间没有 await 点，asyncio 单线程下不会有其他 task 插队，因此快照即
+        # 发送时的状态。revision 是 opaque 值，不能按字符串/字典序比较新旧——
+        # 新旧只能由「迁移发生在我发送之后」来推断；fence generation 是单调
+        # 序号，用来区分迁移前发送的旧响应。
         sent_at = self._revision
+        sent_fence = self._fence
         decision = await self._evaluate_remote(normalized, now, input_digest)
         async with self._lock:
+            # generation 检查先于锁内 cache recheck：旧 generation 的响应即使
+            # 在 revision ABA 后与 current_revision 相同，也不得复用或写入缓存。
+            # 它本身就是「无法证明时序的冲突响应」：清空缓存并推进 generation，
+            # 使其余旧 generation 响应一并失效；allow 一律 stale，deny/传输
+            # 失败可以原样 fail closed 返回（不允许假 allow，故返回 deny 安全）。
+            if sent_fence < self._fence:
+                self._cache.clear()
+                self._fence += 1
+                if decision.allow:
+                    return _fail_closed(
+                        "opa_stale_response",
+                        evaluated_at=now,
+                        input_digest=input_digest,
+                    )
+                return decision
             # 锁内重新检查缓存：在途期间其他请求可能已填充同 key 条目。只有本
             # 请求的响应与缓存条目属于同一 revision 时才可复用该条目——否则
             # 复用会让缓存里的旧 allow 顶替本请求携带的更新策略 deny（deny 被
@@ -197,25 +221,37 @@ class OPAClient:
             if decision.revision is not None:
                 claim = decision.revision
                 if claim != self._revision:
-                    # 声称的 revision 与当前不一致。采纳只发生在三种情况：
-                    # - 当前与发送时刻一致（本请求是在途期间第一个移动
-                    #   revision 的人，或顺序迁移）→ 响应必然新鲜；
-                    # - 声称的正是当前 revision → 前面的分支已处理；
-                    # - 在途期间已有其他响应迁移了 revision（无法证明新旧），
-                    #   且本响应是 deny → 采纳。deny 采纳不会产生假 allow，
-                    #   且清空旧缓存、迁移 revision——旧 allow 永远无法覆盖、
-                    #   阻止或缓存于更新策略的 deny。
-                    # 无法证明新鲜度的 allow，或声称的正是发送时刻已知的
-                    # revision（已被取代 bundle 的陈旧响应），一律 stale 丢弃：
-                    # fail closed，不回退 current_revision、决策不进缓存。
-                    if self._revision != sent_at and (claim == sent_at or decision.allow):
-                        return _fail_closed(
-                            "opa_stale_response",
-                            evaluated_at=now,
-                            input_digest=input_digest,
-                        )
-                    self._cache.clear()
-                    self._revision = claim
+                    if self._revision != sent_at:
+                        # 在途期间已有其他响应迁移了 revision，本响应无法证明
+                        # 新旧：
+                        # - 声称的正是发送时刻已知的 revision（被取代 bundle 的
+                        #   陈旧响应）或 allow → stale，fail closed，不回退
+                        #   current_revision、决策不进入缓存；
+                        # - deny 可以原样返回，但不得迁移 revision 或写缓存——
+                        #   迁移会让其后声称同 revision 的旧 allow 因
+                        #   claim == current 重新获得缓存资格（revision ABA）。
+                        #   仅当缓存中存在 allow 条目（该迁移是清出失效 allow
+                        #   所必需）时才采纳迁移；否则推进 fence generation 并
+                        #   清空缓存，使后续旧 generation 响应全部失效。
+                        if claim == sent_at or decision.allow:
+                            return _fail_closed(
+                                "opa_stale_response",
+                                evaluated_at=now,
+                                input_digest=input_digest,
+                            )
+                        if not any(entry[0].allow for entry in self._cache.values()):
+                            self._cache.clear()
+                            self._fence += 1
+                            return decision
+                        self._cache.clear()
+                        self._fence += 1
+                        self._revision = claim
+                    else:
+                        # 发送时刻与当前一致：本请求是在途期间第一个移动
+                        # revision 的人（或顺序迁移），响应是新的首条证据，
+                        # 迁移 revision 并清空全部旧缓存。
+                        self._cache.clear()
+                        self._revision = claim
                 self._cache[cache_key] = (decision, claim, decision.evaluated_at)
                 self._cache.move_to_end(cache_key)
                 while len(self._cache) > self._cache_maxsize:
