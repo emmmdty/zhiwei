@@ -436,6 +436,65 @@ class TestFullSchemaValidation:
 
 class TestConcurrentRevisionFencing:
     @pytest.mark.asyncio
+    async def test_new_deny_adopted_when_old_allow_completes_first(self) -> None:
+        """反向并发时序（独立验收反例）：old-first → new-second。
+
+        old/new 两个请求都在 current_revision=None 时启动；先释放 old 的
+        rev-old allow，再释放 new 的 rev-new deny。rev-new deny 必须被正常
+        采纳（不得返回 opa_stale_response）——最终 current_revision 收敛到
+        rev-new，rev-old allow 不得留在缓存里继续服务（相同 old input 必须
+        重新求值）。
+        """
+        old_started = asyncio.Event()
+        release_old = asyncio.Event()
+        release_new = asyncio.Event()
+        calls = {"n": 0}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                old_started.set()
+                await release_old.wait()
+                return httpx.Response(
+                    200, json=ok_response(allow=True, decision_id="d-old", revision="rev-old"),
+                    request=request,
+                )
+            if calls["n"] == 2:
+                await release_new.wait()
+                return httpx.Response(
+                    200, json=ok_response(allow=False, decision_id="d-new", revision="rev-new"),
+                    request=request,
+                )
+            return httpx.Response(
+                200, json=ok_response(allow=False, decision_id="d-again", revision="rev-new"),
+                request=request,
+            )
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=10.0),
+        )
+        old_task = asyncio.create_task(client.evaluate(INPUT_A))
+        await old_started.wait()
+        new_task = asyncio.create_task(client.evaluate(INPUT_B))
+        release_old.set()
+        await old_task
+        release_new.set()
+        d_new = await new_task
+        assert d_new.allow is False
+        assert d_new.decision_id == "d-new", \
+            "rev-new deny 必须被正常采纳，不得返回 opa_stale_response"
+        assert d_new.revision == "rev-new"
+        assert client.current_revision == "rev-new", "current_revision 必须收敛到 rev-new"
+        d_again = await client.evaluate(INPUT_A)
+        assert calls["n"] == 3, "rev-old allow 不得留在缓存：相同 old input 必须重新求值"
+        assert d_again.decision_id == "d-again" and d_again.revision == "rev-new"
+        d_hit = await client.evaluate(INPUT_A)
+        assert calls["n"] == 3, "重求值结果进入缓存后可复用"
+        assert d_hit.decision_id == "d-again"
+        await client.aclose()
+
+    @pytest.mark.asyncio
     async def test_old_inflight_allow_cannot_regress_revision(self) -> None:
         """并发 revision fencing（独立验收反例）：
 
