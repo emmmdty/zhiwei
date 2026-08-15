@@ -50,6 +50,31 @@ services:
       timeout: 3s
       retries: 60
 
+  # S1-T3 policy sidecar：授权判定走真实 OPA（RBAC/SoD 规则唯一事实实现）。
+  # 固定镜像 1.19.0-debug（busybox sh，无 wget/curl）：entrypoint 只依赖 sh + opa
+  # 自身；容器内无健康检查工具，就绪由集成测试轮询 /health?bundles 完成。
+  # bundle 由 entrypoint 在启动前从 ./policies 构建并带固定 revision（构建失败
+  # 容器即退出，fail closed）；revision 可经 OPA_BUNDLE_REVISION 覆盖（测试模拟
+  # bundle 更新/policy update）。绝不挂载 master key。
+  opa:
+    profiles: ["identity"]
+    # tag + manifest digest 双重 pin；digest 必须通过 registry manifest 校验
+    image: openpolicyagent/opa:1.19.0-debug@sha256:ec3c7a29a21ce96d71231cb4befa2561205fe84e5a2dc3cc46ac7bc8bd21b3a4
+    entrypoint: ["/bin/sh", "/opa-entrypoint/entrypoint.sh"]
+    environment:
+      # 默认值只服务本地开发/测试；真实部署由 operator 覆盖
+      OPA_BUNDLE_REVISION: "${OPA_BUNDLE_REVISION-s1-t3-local}"  # 未设置才用默认；空值保留给 entrypoint fail closed
+    ports:
+      - "127.0.0.1:8181:8181"
+    volumes:
+      - ./opa/entrypoint.sh:/opa-entrypoint/entrypoint.sh:ro
+      - ../../policies:/policies:ro
+    tmpfs:
+      - /tmp
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
 secrets:
   # 顶层 Docker-secret master-key 声明（key_id=base64 32 字节）；仓库里的文件是
   # 本地开发占位，真实部署必须由 operator 覆盖。当前 compose 没有任何服务挂载它：
