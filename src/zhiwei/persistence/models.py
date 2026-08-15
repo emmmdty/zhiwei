@@ -769,6 +769,14 @@ class AuditEvent(Base):
             "AND result IS NOT NULL AND request_id IS NOT NULL AND trace_id IS NOT NULL)",
             name="v2_complete",
         ),
+        CheckConstraint(
+            "audit_schema_version = 2 OR ("
+            "effective_identity_ref IS NULL AND resource_version IS NULL "
+            "AND decision_id IS NULL AND policy_revision IS NULL "
+            "AND decision_reason IS NULL AND result IS NULL "
+            "AND request_id IS NULL AND trace_id IS NULL)",
+            name="v1_shape",
+        ),
         ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],

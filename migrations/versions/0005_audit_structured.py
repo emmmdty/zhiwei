@@ -64,9 +64,22 @@ def upgrade() -> None:
         "effective_identity_ref IS NOT NULL AND resource_version IS NOT NULL "
         "AND result IS NOT NULL AND request_id IS NOT NULL AND trace_id IS NOT NULL)",
     )
+    # v1 行必须保持 v1 形状（独立审查 O1）：新列全部 NULL，杜绝在 v1 行上伪造 v2 样式字段
+    op.create_check_constraint(
+        op.f("ck_audit_events_v1_shape"),
+        "audit_events",
+        "audit_schema_version = 2 OR ("
+        "effective_identity_ref IS NULL AND resource_version IS NULL "
+        "AND decision_id IS NULL AND policy_revision IS NULL "
+        "AND decision_reason IS NULL AND result IS NULL "
+        "AND request_id IS NULL AND trace_id IS NULL)",
+    )
 
 
 def downgrade() -> None:
+    op.drop_constraint(
+        op.f("ck_audit_events_v1_shape"), "audit_events", type_="check"
+    )
     op.drop_constraint(
         op.f("ck_audit_events_v2_complete"), "audit_events", type_="check"
     )

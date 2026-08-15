@@ -558,7 +558,6 @@ async def test_tampering_any_semantic_field_breaks_chain(
             ("actor_ref", "user:mallory"),
             ("payload_digest", "f" * 71),
             ("previous_event_digest", "e" * 71),
-            ("audit_schema_version", 1),
         ]
         for column, tampered_value in tamper_cases:
             await connection.execute(
@@ -566,10 +565,33 @@ async def test_tampering_any_semantic_field_breaks_chain(
                 tampered_value,
                 target_id,
             )
-            refreshed = await connection.fetch("SELECT * FROM audit_events WHERE organization_id = $1 AND workspace_id = $2 ORDER BY id", ORG_A, WS_A)
+            refreshed = await connection.fetch(
+                "SELECT * FROM audit_events WHERE organization_id = $1 AND workspace_id = $2 "
+                "ORDER BY id",
+                ORG_A,
+                WS_A,
+            )
             with pytest.raises(EventChainError):
                 verify_audit_chain(_event_data(row) for row in refreshed)
             await _restore_row(connection, original, target_id)
+        # 版本降级篡改：v2 行改标 v1 必须同时清空 v2 字段才能满足 v1_shape 不变量；
+        # 即便满足 DB 形状，digest 公式按 v1 重算仍与存储的 v2 digest 不符 → 断链
+        await connection.execute(
+            "UPDATE audit_events SET audit_schema_version = 1, "
+            "effective_identity_ref = NULL, resource_version = NULL, "
+            "decision_id = NULL, policy_revision = NULL, decision_reason = NULL, "
+            "result = NULL, request_id = NULL, trace_id = NULL WHERE id = $1",
+            target_id,
+        )
+        refreshed = await connection.fetch(
+            "SELECT * FROM audit_events WHERE organization_id = $1 AND workspace_id = $2 "
+            "ORDER BY id",
+            ORG_A,
+            WS_A,
+        )
+        with pytest.raises(EventChainError):
+            verify_audit_chain(_event_data(row) for row in refreshed)
+        await _restore_row(connection, original, target_id)
         # 跨 scope 篡改（org/workspace 一起改到另一租户的合法 FK 对）：scope 检查拒绝。
         # 该篡改让行离开本 scope，必须读全库两链才能触发 scope 交叉检查。
         await connection.execute(
