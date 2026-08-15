@@ -248,9 +248,9 @@ class TestDelegation:
 class TestResourceBinding:
     def test_resource_id_required(self) -> None:
         # resource.id 缺失必须在边界拒绝（独立验收反例：缺失 id 的请求不得
-        # 到达 OPA transport）
+        # 到达 OPA transport）。走 dict 校验路径（enforcer/client 的真实输入）
         with pytest.raises(ValidationError):
-            ResourceRef(type=ResourceType.ORG, version="v1")
+            ResourceRef.model_validate({"type": "org", "version": "v1"})
         doc = base_input().model_dump(mode="python")
         del doc["resource"]["id"]
         with pytest.raises(ValidationError):
@@ -258,12 +258,12 @@ class TestResourceBinding:
 
     def test_resource_id_must_be_uuid(self) -> None:
         with pytest.raises(ValidationError):
-            ResourceRef(type=ResourceType.ORG, id="r1", version="v1")
+            ResourceRef.model_validate({"type": "org", "id": "r1", "version": "v1"})
 
     @pytest.mark.parametrize("version", [None, ""])
     def test_resource_version_required_non_empty(self, version: str | None) -> None:
         with pytest.raises(ValidationError):
-            ResourceRef(type=ResourceType.ORG, id=RES, version=version)
+            ResourceRef.model_validate({"type": "org", "id": str(RES), "version": version})
         doc = base_input().model_dump(mode="python")
         doc["resource"]["version"] = version
         with pytest.raises(ValidationError):

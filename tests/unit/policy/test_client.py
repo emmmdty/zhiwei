@@ -388,8 +388,14 @@ class TestFullSchemaValidation:
             client, requests, _ = client_with(ok_response())
             doc = {**INPUT_A}
             for key, value in patch.items():
-                if key == "actor" and "roles" in value:
-                    doc["actor"]["roles"] = [{**doc["actor"]["roles"][0], **value["roles"][0]}]
+                if key == "delegation":
+                    doc[key] = value
+                elif key == "actor" and "roles" in value:
+                    # 浅拷贝下 doc["actor"] 与 INPUT_A["actor"] 是同一对象：
+                    # 必须换新 dict，不能原位改 roles（会污染共享 fixture）
+                    actor = {**doc["actor"]}
+                    actor["roles"] = [{**doc["actor"]["roles"][0], **value["roles"][0]}]
+                    doc["actor"] = actor
                 else:
                     doc[key] = {**doc[key], **value}
             d = await client.evaluate(doc)
