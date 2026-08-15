@@ -14,9 +14,10 @@
 - 完整 schema 校验：evaluate 以 PolicyInput 校验整个 input（含嵌套字段）；
   任何非法/未声明字段（含 secret 形状）在发送前拒绝，且不进入 digest
   （PERMISSIONS.md:13 secret 不进入 decision log）；
-- 并发 revision fencing：比当前 revision 更旧的响应若晚到（先于它采纳的新
-  revision 已生效），按 stale 丢弃（fail closed，reason opa_stale_response），
-  current_revision 不得回退、其决策不得进入缓存；
+- 并发 revision fencing：响应声称的 revision 与当前不一致时，若本请求在途期间
+  已有其他响应采纳了新 revision，或该响应声称的正是发送时刻已知的 revision，
+  一律按 stale 丢弃（fail closed，reason opa_stale_response）——current_revision
+  不得回退、其决策不得进入缓存；
 - 本层不实现授权语义（Rego 唯一事实）：只做传输与决策对象构造。
 """
 
@@ -109,11 +110,6 @@ class OPAClient:
         self._cache_maxsize = max(1, cache_maxsize)
         self._ttl = timedelta(seconds=max(0.0, cache_ttl_seconds))
         self._revision: str | None = None
-        # 并发 fencing：_fence_token 是每请求单调序号（asyncio 单线程内自增+读取
-        # 无 await，原子）；_last_applied_token 记录最后一次采纳响应的序号——晚到
-        # 的旧响应（token 小于等于它）基于已撤权旧 bundle，必须丢弃
-        self._fence_token = 0
-        self._last_applied_token = 0
 
     @property
     def current_revision(self) -> str | None:
@@ -134,8 +130,6 @@ class OPAClient:
         嵌套字段），任何非法/未声明字段（含 secret 形状）在发送前拒绝且不
         进入 digest——decision log 永不回显未声明字段。
         """
-        self._fence_token += 1
-        token = self._fence_token
         now = self._clock()
         try:
             validated = PolicyInput.model_validate(input_document)
@@ -163,14 +157,21 @@ class OPAClient:
             if revision == self._revision and evaluated_at + self._ttl > now:
                 return decision
 
+        # 并发 fencing：记录发送时刻已知的 revision（读取与 POST 之间无 await，
+        # 即发送时的 current_revision）。响应声称的 revision 与当前不一致时，
+        # 只有本请求是「第一个移动 revision 的人」才允许采纳：
+        # - 若在途期间已有其他响应采纳了新 revision（current != sent_at），本
+        #   响应无法证明不旧于已采纳者（revision 是 opaque 值，不可按字符串
+        #   比较新旧）→ 丢弃；
+        # - 若本响应声称的正是发送时刻已知的 revision（claim == sent_at），它是
+        #   被已取代 bundle 求值的陈旧响应 → 丢弃。
+        # 两种丢弃都是 fail closed：不回退 current_revision、不写入缓存。
+        sent_at = self._revision
         decision = await self._evaluate_remote(normalized, now, input_digest)
         if decision.revision is not None:
             # 成功响应带 revision：与已知 revision 不一致时整体失效（撤权立即生效）
             if decision.revision != self._revision:
-                if token <= self._last_applied_token:
-                    # 晚到的旧在途响应：其 allow 基于已被新 revision 取代的旧
-                    # bundle，revision 语义上已经过期——丢弃（fail closed），
-                    # 不回退 current_revision、不写入缓存
+                if self._revision != sent_at or decision.revision == sent_at:
                     return _fail_closed(
                         "opa_stale_response",
                         evaluated_at=now,
@@ -178,7 +179,6 @@ class OPAClient:
                     )
                 self._cache.clear()
                 self._revision = decision.revision
-            self._last_applied_token = max(self._last_applied_token, token)
             self._cache[cache_key] = (decision, decision.revision, decision.evaluated_at)
             self._cache.move_to_end(cache_key)
             while len(self._cache) > self._cache_maxsize:
