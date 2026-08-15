@@ -14,15 +14,21 @@
 - 完整 schema 校验：evaluate 以 PolicyInput 校验整个 input（含嵌套字段）；
   任何非法/未声明字段（含 secret 形状）在发送前拒绝，且不进入 digest
   （PERMISSIONS.md:13 secret 不进入 decision log）；
-- 并发 revision fencing：响应声称的 revision 与当前不一致时，若本请求在途期间
-  已有其他响应采纳了新 revision，或该响应声称的正是发送时刻已知的 revision，
-  一律按 stale 丢弃（fail closed，reason opa_stale_response）——current_revision
-  不得回退、其决策不得进入缓存；
+- 并发 revision fencing：revision/cache 的关联提交在 per-client 锁的临界区内
+  串行化（远程求值仍在锁外并发——等待中的请求必须能完成，锁不能跨 HTTP）。
+  revision 是 opaque 值，绝不按值比较新旧；响应声称的 revision 与当前不一致
+  时只有三种情况允许采纳：发送时刻的 revision 未被他人迁移（本请求是在途期间
+  第一个迁移者，或顺序迁移）；声称的正是当前 revision；或无法证明新旧的
+  拒绝类决策——deny 采纳不会产生假 allow，且清空旧缓存并迁移 revision，因此
+  任何并发完成顺序下，旧 allow 都无法覆盖、阻止或缓存于更新策略的 deny。
+  其余情况（无法证明新鲜的 allow，或声称的正是已被取代 bundle 的 revision）
+  一律按 stale 丢弃（fail closed，reason opa_stale_response），决策不进入缓存；
 - 本层不实现授权语义（Rego 唯一事实）：只做传输与决策对象构造。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
@@ -83,7 +89,12 @@ def _fail_closed(reason: str, *, evaluated_at: datetime,
 
 
 class OPAClient:
-    """OPA HTTP 决策客户端（httpx）。线程安全不需要：FastAPI/PEP 每请求一个 task。"""
+    """OPA HTTP 决策客户端（httpx）。
+
+    evaluate 可能被多个 asyncio task 并发调用（FastAPI/PEP 每请求一个 task，
+    在 await 处交错）：revision 与 cache 的关联提交由 per-client asyncio.Lock
+    串行化，防止任何完成顺序下旧决策覆盖新决策。
+    """
 
     def __init__(
         self,
@@ -110,6 +121,10 @@ class OPAClient:
         self._cache_maxsize = max(1, cache_maxsize)
         self._ttl = timedelta(seconds=max(0.0, cache_ttl_seconds))
         self._revision: str | None = None
+        # 提交临界区锁：revision/cache 的关联读写（含 LRU）都在这把锁内完成。
+        # 锁不覆盖远程求值——冻结并发测试要求一个在途请求等待时其他请求能
+        # 完整完成，锁跨 HTTP 会互相阻塞；串行化的是「重新检查缓存 → 提交」。
+        self._lock = asyncio.Lock()
 
     @property
     def current_revision(self) -> str | None:
@@ -157,32 +172,49 @@ class OPAClient:
             if revision == self._revision and evaluated_at + self._ttl > now:
                 return decision
 
-        # 并发 fencing：记录发送时刻已知的 revision（读取与 POST 之间无 await，
-        # 即发送时的 current_revision）。响应声称的 revision 与当前不一致时，
-        # 只有本请求是「第一个移动 revision 的人」才允许采纳：
-        # - 若在途期间已有其他响应采纳了新 revision（current != sent_at），本
-        #   响应无法证明不旧于已采纳者（revision 是 opaque 值，不可按字符串
-        #   比较新旧）→ 丢弃；
-        # - 若本响应声称的正是发送时刻已知的 revision（claim == sent_at），它是
-        #   被已取代 bundle 求值的陈旧响应 → 丢弃。
-        # 两种丢弃都是 fail closed：不回退 current_revision、不写入缓存。
+        # 并发 fencing。sent_at 是发送时刻的快照：读取与 POST 发起之间没有
+        # await 点，asyncio 单线程下不会有其他 task 插队，因此快照即发送时的
+        # current_revision。revision 是 opaque 值，不能按字符串/字典序比较
+        # 新旧——新旧只能由「迁移发生在我发送之后」来推断。提交（revision 与
+        # cache 的关联更新）在 per-client 锁内串行化，任何完成顺序下只有一个
+        # 请求能移动 revision，且移动时清空全部旧缓存。
         sent_at = self._revision
         decision = await self._evaluate_remote(normalized, now, input_digest)
-        if decision.revision is not None:
-            # 成功响应带 revision：与已知 revision 不一致时整体失效（撤权立即生效）
-            if decision.revision != self._revision:
-                if self._revision != sent_at or decision.revision == sent_at:
-                    return _fail_closed(
-                        "opa_stale_response",
-                        evaluated_at=now,
-                        input_digest=input_digest,
-                    )
-                self._cache.clear()
-                self._revision = decision.revision
-            self._cache[cache_key] = (decision, decision.revision, decision.evaluated_at)
-            self._cache.move_to_end(cache_key)
-            while len(self._cache) > self._cache_maxsize:
-                self._cache.popitem(last=False)
+        async with self._lock:
+            # 锁内重新检查缓存：在途期间其他请求可能已填充同 key 条目，直接
+            # 复用（不再提交本方可能陈旧的决策，也不重复求值）。用独立变量
+            # 解包——复用 cached_decision 的同时不得遮蔽本请求的 decision。
+            cached = self._cache.get(cache_key)
+            if cached is not None:
+                cached_decision, cached_revision, cached_at = cached
+                if cached_revision == self._revision and cached_at + self._ttl > now:
+                    return cached_decision
+            if decision.revision is not None:
+                claim = decision.revision
+                if claim != self._revision:
+                    # 声称的 revision 与当前不一致。采纳只发生在三种情况：
+                    # - 当前与发送时刻一致（本请求是在途期间第一个移动
+                    #   revision 的人，或顺序迁移）→ 响应必然新鲜；
+                    # - 声称的正是当前 revision → 前面的分支已处理；
+                    # - 在途期间已有其他响应迁移了 revision（无法证明新旧），
+                    #   且本响应是 deny → 采纳。deny 采纳不会产生假 allow，
+                    #   且清空旧缓存、迁移 revision——旧 allow 永远无法覆盖、
+                    #   阻止或缓存于更新策略的 deny。
+                    # 无法证明新鲜度的 allow，或声称的正是发送时刻已知的
+                    # revision（已被取代 bundle 的陈旧响应），一律 stale 丢弃：
+                    # fail closed，不回退 current_revision、决策不进缓存。
+                    if self._revision != sent_at and (claim == sent_at or decision.allow):
+                        return _fail_closed(
+                            "opa_stale_response",
+                            evaluated_at=now,
+                            input_digest=input_digest,
+                        )
+                    self._cache.clear()
+                    self._revision = claim
+                self._cache[cache_key] = (decision, claim, decision.evaluated_at)
+                self._cache.move_to_end(cache_key)
+                while len(self._cache) > self._cache_maxsize:
+                    self._cache.popitem(last=False)
         return decision
 
     async def _evaluate_remote(
