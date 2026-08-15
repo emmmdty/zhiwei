@@ -7,7 +7,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select, text
+from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from zhiwei.contracts.envelope import SchemaRegistry
@@ -33,6 +33,73 @@ from zhiwei.persistence.models import (
     Run,
 )
 from zhiwei.persistence.tenant import TenantContext, TenantContextRequired
+
+_AUDIT_LOCK_NAMESPACE = 0x41554454
+
+
+async def append_audit_chain(
+    session: AsyncSession,
+    *,
+    organization_id: UUID,
+    workspace_id: UUID | None,
+    data: AuditEventData,
+) -> AuditEvent:
+    """Append one immutable audit row to the (org, workspace) digest chain.
+
+    canonical_event 路径（v1 行）与 typed audit 路径（v2 行）共用的唯一审计追加实现：
+    advisory xact lock 串行化 → 验证既有链 → 以链头为 previous_event_digest 计算 digest
+    → 插入行。digest 公式由 data.audit_schema_version 分派，v1 行逐字节不变。
+    chain 位置是权威来源：调用方传入的 previous_event_digest 以链头为准覆盖。
+    """
+    await _advisory_lock(
+        session, workspace_id or organization_id, namespace=_AUDIT_LOCK_NAMESPACE
+    )
+    if workspace_id is None:
+        scope_filter = and_(
+            AuditEvent.organization_id == organization_id,
+            AuditEvent.workspace_id.is_(None),
+        )
+    else:
+        scope_filter = and_(
+            AuditEvent.organization_id == organization_id,
+            AuditEvent.workspace_id == workspace_id,
+        )
+    audit_rows = list((await session.scalars(select(AuditEvent).where(scope_filter))).all())
+    try:
+        previous_audit_digest = verify_audit_chain(
+            audit_data_from_row(row) for row in audit_rows
+        )
+    except EventChainError as exc:
+        raise AuditChainError(str(exc)) from exc
+    linked_data = data.model_copy(update={"previous_event_digest": previous_audit_digest})
+    event_digest = build_audit_digest(linked_data)
+    row = AuditEvent(
+        id=uuid4(),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        action=data.action,
+        resource_type=data.resource_type,
+        resource_id=data.resource_id,
+        actor_ref=data.actor_ref,
+        payload_digest=data.payload_digest,
+        previous_event_digest=previous_audit_digest,
+        event_digest=event_digest,
+        schema_version=1,
+        created_at=utc_now(),
+        audit_schema_version=data.audit_schema_version,
+        effective_identity_ref=data.effective_identity_ref,
+        resource_version=data.resource_version,
+        decision_id=data.decision_id,
+        policy_revision=data.policy_revision,
+        decision_reason=data.decision_reason,
+        result=data.result,
+        request_id=data.request_id,
+        trace_id=data.trace_id,
+    )
+    session.add(row)
+    # 同事务内的后续 append 必须看到本行（同一链上连续追加），不能依赖调用方 flush 时机
+    await session.flush()
+    return row
 
 
 class EventIdempotencyConflict(RuntimeError):
@@ -288,23 +355,6 @@ class CanonicalUnitOfWork:
     async def _append_audit_and_outbox(
         self, event: CanonicalEvent, *, outbox_available_at: datetime
     ) -> None:
-        await self._lock(self._workspace_id, namespace=0x41554454)
-        audit_rows = list(
-            (
-                await self._session.scalars(
-                    select(AuditEvent).where(
-                        AuditEvent.organization_id == self._context.organization_id,
-                        AuditEvent.workspace_id == self._workspace_id,
-                    )
-                )
-            ).all()
-        )
-        try:
-            previous_audit_digest = verify_audit_chain(
-                audit_data_from_row(row) for row in audit_rows
-            )
-        except EventChainError as exc:
-            raise AuditChainError(str(exc)) from exc
         audit_data = AuditEventData(
             organization_id=self._context.organization_id,
             workspace_id=self._workspace_id,
@@ -313,26 +363,14 @@ class CanonicalUnitOfWork:
             resource_id=event.run_id,
             actor_ref=event.actor_ref,
             payload_digest=event.event_digest,
-            previous_event_digest=previous_audit_digest,
+            previous_event_digest="",
             event_digest="",
         )
-        audit_digest = build_audit_digest(audit_data)
-        audit_committed_at = utc_now()
-        self._session.add(
-            AuditEvent(
-                id=uuid4(),
-                organization_id=self._context.organization_id,
-                workspace_id=self._workspace_id,
-                action="canonical_event.append",
-                resource_type="run",
-                resource_id=event.run_id,
-                actor_ref=event.actor_ref,
-                payload_digest=event.event_digest,
-                previous_event_digest=previous_audit_digest,
-                event_digest=audit_digest,
-                schema_version=1,
-                created_at=audit_committed_at,
-            )
+        await append_audit_chain(
+            self._session,
+            organization_id=self._context.organization_id,
+            workspace_id=self._workspace_id,
+            data=audit_data,
         )
         self._session.add(
             OutboxMessage(
@@ -356,8 +394,12 @@ class CanonicalUnitOfWork:
         )
 
     async def _lock(self, value: UUID, *, namespace: int) -> None:
-        raw = int.from_bytes(value.bytes[:8], byteorder="big") ^ namespace
-        lock_key = raw if raw < 2**63 else raw - 2**64
-        await self._session.execute(
-            text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key}
-        )
+        await _advisory_lock(self._session, value, namespace=namespace)
+
+
+async def _advisory_lock(session: AsyncSession, value: UUID, *, namespace: int) -> None:
+    raw = int.from_bytes(value.bytes[:8], byteorder="big") ^ namespace
+    lock_key = raw if raw < 2**63 else raw - 2**64
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": lock_key}
+    )

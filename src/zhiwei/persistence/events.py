@@ -7,7 +7,7 @@ from copy import deepcopy
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from zhiwei.contracts.canonical import digest
 from zhiwei.contracts.envelope import SchemaRegistry
@@ -45,7 +45,12 @@ class CanonicalEventData(EventCommand):
 
 
 class AuditEventData(BaseModel):
-    """Digest-relevant fields of one immutable tenant audit event."""
+    """Digest-relevant fields of one immutable tenant audit event.
+
+    audit_schema_version 分派 digest 公式：v1 是 0001 冻结契约（逐字节不变）；v2
+    覆盖 0005 结构化审计的全部语义字段（S1-T4，总设计 §9.4）。同一 scope 链可混
+    v1/v2 行，逐行按版本验证。
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -58,6 +63,30 @@ class AuditEventData(BaseModel):
     payload_digest: str
     previous_event_digest: str | None
     event_digest: str
+    audit_schema_version: int = Field(default=1, ge=1)
+    effective_identity_ref: str | None = None
+    resource_version: int | None = None
+    decision_id: str | None = None
+    policy_revision: str | None = None
+    decision_reason: str | None = None
+    result: str | None = None
+    request_id: str | None = None
+    trace_id: str | None = None
+
+    @model_validator(mode="after")
+    def _v2_fields_required(self) -> AuditEventData:
+        if self.audit_schema_version == 2:
+            if self.effective_identity_ref is None:
+                raise ValueError("v2 audit events require effective_identity_ref")
+            if self.resource_version is None:
+                raise ValueError("v2 audit events require resource_version")
+            if self.result is None:
+                raise ValueError("v2 audit events require result")
+            if self.request_id is None:
+                raise ValueError("v2 audit events require request_id")
+            if self.trace_id is None:
+                raise ValueError("v2 audit events require trace_id")
+        return self
 
 
 def validate_event_command(
@@ -106,18 +135,47 @@ def build_event_digest(
 
 
 def build_audit_digest(event: AuditEventData) -> str:
-    """Recompute one audit event digest from its immutable semantic fields."""
-    return digest(
-        {
-            "organization_id": str(event.organization_id),
-            "workspace_id": None if event.workspace_id is None else str(event.workspace_id),
-            "action": event.action,
-            "resource_type": event.resource_type,
-            "resource_id": str(event.resource_id),
-            "actor_ref": event.actor_ref,
-            "payload_digest": event.payload_digest,
-            "previous_event_digest": event.previous_event_digest,
-        }
+    """Recompute one audit event digest from its immutable semantic fields.
+
+    v1 保持 0001 冻结契约逐字节不变；v2 覆盖全部结构化审计字段（0005）。
+    """
+    if event.audit_schema_version == 1:
+        return digest(
+            {
+                "organization_id": str(event.organization_id),
+                "workspace_id": None if event.workspace_id is None else str(event.workspace_id),
+                "action": event.action,
+                "resource_type": event.resource_type,
+                "resource_id": str(event.resource_id),
+                "actor_ref": event.actor_ref,
+                "payload_digest": event.payload_digest,
+                "previous_event_digest": event.previous_event_digest,
+            }
+        )
+    if event.audit_schema_version == 2:
+        return digest(
+            {
+                "audit_schema_version": 2,
+                "organization_id": str(event.organization_id),
+                "workspace_id": None if event.workspace_id is None else str(event.workspace_id),
+                "action": event.action,
+                "resource_type": event.resource_type,
+                "resource_id": str(event.resource_id),
+                "resource_version": event.resource_version,
+                "actor_ref": event.actor_ref,
+                "effective_identity_ref": event.effective_identity_ref,
+                "decision_id": event.decision_id,
+                "policy_revision": event.policy_revision,
+                "decision_reason": event.decision_reason,
+                "result": event.result,
+                "request_id": event.request_id,
+                "trace_id": event.trace_id,
+                "payload_digest": event.payload_digest,
+                "previous_event_digest": event.previous_event_digest,
+            }
+        )
+    raise ValueError(
+        f"unsupported audit schema version: {event.audit_schema_version}"
     )
 
 
@@ -248,6 +306,15 @@ def audit_data_from_row(row: AuditEvent) -> AuditEventData:
         payload_digest=row.payload_digest,
         previous_event_digest=row.previous_event_digest,
         event_digest=row.event_digest,
+        audit_schema_version=row.audit_schema_version,
+        effective_identity_ref=row.effective_identity_ref,
+        resource_version=row.resource_version,
+        decision_id=row.decision_id,
+        policy_revision=row.policy_revision,
+        decision_reason=row.decision_reason,
+        result=row.result,
+        request_id=row.request_id,
+        trace_id=row.trace_id,
     )
 
 

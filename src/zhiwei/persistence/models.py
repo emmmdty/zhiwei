@@ -759,6 +759,16 @@ class AuditEvent(Base):
     __tablename__ = "audit_events"
     __table_args__ = (
         CheckConstraint("schema_version > 0", name="schema_version"),
+        CheckConstraint("audit_schema_version IN (1, 2)", name="audit_schema_version"),
+        CheckConstraint(
+            "result IS NULL OR result IN ('allowed', 'denied', 'failed')", name="result"
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR ("
+            "effective_identity_ref IS NOT NULL AND resource_version IS NOT NULL "
+            "AND result IS NOT NULL AND request_id IS NOT NULL AND trace_id IS NOT NULL)",
+            name="v2_complete",
+        ),
         ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],
@@ -787,6 +797,18 @@ class AuditEvent(Base):
     resource_type: Mapped[str] = mapped_column(String(64), nullable=False)
     resource_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    # 0005 结构化审计字段：v1 行为 NULL（旧 digest 契约逐字节不变）；v2 行由 CHECK 强制必填
+    audit_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default=text("1")
+    )
+    effective_identity_ref: Mapped[str | None] = mapped_column(Text)
+    resource_version: Mapped[int | None] = mapped_column(Integer)
+    decision_id: Mapped[str | None] = mapped_column(Text)
+    policy_revision: Mapped[str | None] = mapped_column(Text)
+    decision_reason: Mapped[str | None] = mapped_column(Text)
+    result: Mapped[str | None] = mapped_column(Text)
+    request_id: Mapped[str | None] = mapped_column(Text)
+    trace_id: Mapped[str | None] = mapped_column(Text)
     payload_digest: Mapped[str] = mapped_column(String(71), nullable=False)
     previous_event_digest: Mapped[str | None] = mapped_column(String(71))
     event_digest: Mapped[str] = mapped_column(String(71), nullable=False)
