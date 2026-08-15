@@ -466,6 +466,67 @@ test_builder_can_request_own_version_publish if {
     }
 }
 
+# SoD 按主体生效，不按「正在用的帽子」：Builder 兼任 Workspace Admin 也不能
+# 发布自己最后编辑的版本（多角色并集不绕过分离约束，PERMISSIONS.md:70）
+test_builder_with_workspace_admin_hat_cannot_publish_own_last_edit if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u1", "kind": "user", "roles": [
+            binding("agent_builder", "workspace"),
+            binding("workspace_admin", "workspace"),
+        ]},
+        "effective_identity": null,
+        "resource": {"type": "agent_publish", "id": "r1", "version": "v1"},
+        "action": "review_publish",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": {
+            "requester_principal_id": null,
+            "modifier_principal_ids": [],
+            "agent_identity_principal_id": null,
+            "owner_principal_id": null,
+            "last_content_author_principal_id": "u1",
+            "publisher_principal_id": null,
+            "publisher_roles": [],
+        },
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
+
+# 互补正例：同一主体双角色，但最后编辑者是别人 → 允许复核
+test_builder_with_workspace_admin_hat_can_review_others_edit if {
+    data.zhiwei.authz.allow == true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u1", "kind": "user", "roles": [
+            binding("agent_builder", "workspace"),
+            binding("workspace_admin", "workspace"),
+        ]},
+        "effective_identity": null,
+        "resource": {"type": "agent_publish", "id": "r1", "version": "v1"},
+        "action": "review_publish",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": {
+            "requester_principal_id": null,
+            "modifier_principal_ids": [],
+            "agent_identity_principal_id": null,
+            "owner_principal_id": null,
+            "last_content_author_principal_id": "u9",
+            "publisher_principal_id": null,
+            "publisher_roles": [],
+        },
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
+
 # 有效身份（agent 背后的用户）是最后编辑者 -> deny（编辑经 agent 完成也算本人）
 test_effective_identity_self_review_denied if {
     data.zhiwei.authz.allow != true
