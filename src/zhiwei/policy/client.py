@@ -181,13 +181,18 @@ class OPAClient:
         sent_at = self._revision
         decision = await self._evaluate_remote(normalized, now, input_digest)
         async with self._lock:
-            # 锁内重新检查缓存：在途期间其他请求可能已填充同 key 条目，直接
-            # 复用（不再提交本方可能陈旧的决策，也不重复求值）。用独立变量
-            # 解包——复用 cached_decision 的同时不得遮蔽本请求的 decision。
+            # 锁内重新检查缓存：在途期间其他请求可能已填充同 key 条目。只有本
+            # 请求的响应与缓存条目属于同一 revision 时才可复用该条目——否则
+            # 复用会让缓存里的旧 allow 顶替本请求携带的更新策略 deny（deny 被
+            # 丢弃），或把 transport 失败变成缓存 allow 兜底（fail closed
+            # 契约：需要求值的请求失败即拒绝）。失败决策 revision 为 None，
+            # 天然不满足条件。用独立变量解包，不得遮蔽本请求的 decision。
             cached = self._cache.get(cache_key)
             if cached is not None:
                 cached_decision, cached_revision, cached_at = cached
-                if cached_revision == self._revision and cached_at + self._ttl > now:
+                if (cached_revision == self._revision
+                        and cached_at + self._ttl > now
+                        and decision.revision == cached_revision):
                     return cached_decision
             if decision.revision is not None:
                 claim = decision.revision
