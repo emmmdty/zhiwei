@@ -35,6 +35,17 @@ from zhiwei.policy.roles import (
 _DELEGATION_SCOPE_RE = re.compile(r"^[a-z_]+\.[a-z_]+$")
 
 
+def _require_aware_datetime(value: datetime) -> datetime:
+    """拒绝 naive datetime：Rego 按真实时刻比较，naive 无法表达时区语义。
+
+    tzinfo 非 None 但 utcoffset 为 None 的时钟同样拒绝（假 tzinfo 无法提供
+    真实时刻），保证比较基准是确定的 UTC 时刻。
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    return value
+
+
 class RoleBinding(BaseModel):
     """规范化角色绑定：矩阵的 org/workspace 作用域在这里显式化。"""
 
@@ -81,8 +92,10 @@ class ResourceRef(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     type: ResourceType
-    id: UUID | None = None
-    version: str | None = None
+    # 独立验收反例：缺 id/空 version 的请求不得到达 OPA transport——Rego 按
+    # id+version 绑定动作目标，缺失会让 own/SoD 判定失去目标
+    id: UUID
+    version: str = Field(min_length=1)
 
 
 class ResourceContext(BaseModel):
@@ -119,6 +132,11 @@ class Delegation(BaseModel):
             raise ValueError("delegation scope must be resource.action without wildcards")
         return value
 
+    @field_validator("expires_at")
+    @classmethod
+    def _expires_at_aware(cls, value: datetime) -> datetime:
+        return _require_aware_datetime(value)
+
 
 class RequestContext(BaseModel):
     """请求上下文（server 侧推导）：now 参与时间维（委托过期），ceiling 来自 workspace policy。"""
@@ -126,6 +144,12 @@ class RequestContext(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     now: datetime
+
+    @field_validator("now")
+    @classmethod
+    def _now_aware(cls, value: datetime) -> datetime:
+        return _require_aware_datetime(value)
+
     classification_ceiling: Classification | None = None
     requires_delegation: bool = False
     method: str | None = None

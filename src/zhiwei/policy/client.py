@@ -11,8 +11,12 @@
   需要求值的请求（TTL 过期 / revision 变化 / 其他 input）都必须真的求值，OPA
   不可用时直接拒绝，**绝不回落到任何缓存 allow**——缓存只缩短有界窗口内的
   重复请求，不提供故障兜底；
-- 顶层键守卫：evaluate 只接受 PolicyInput schema 的顶层字段；未声明字段
-  （含 secret 形状）在发送前拒绝（PERMISSIONS.md:13 secret 不进入 decision log）；
+- 完整 schema 校验：evaluate 以 PolicyInput 校验整个 input（含嵌套字段）；
+  任何非法/未声明字段（含 secret 形状）在发送前拒绝，且不进入 digest
+  （PERMISSIONS.md:13 secret 不进入 decision log）；
+- 并发 revision fencing：比当前 revision 更旧的响应若晚到（先于它采纳的新
+  revision 已生效），按 stale 丢弃（fail closed，reason opa_stale_response），
+  current_revision 不得回退、其决策不得进入缓存；
 - 本层不实现授权语义（Rego 唯一事实）：只做传输与决策对象构造。
 """
 
@@ -25,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 import httpx
+from pydantic import ValidationError
 
 from zhiwei.contracts.canonical import digest
 from zhiwei.contracts.time import utc_now
@@ -104,6 +109,11 @@ class OPAClient:
         self._cache_maxsize = max(1, cache_maxsize)
         self._ttl = timedelta(seconds=max(0.0, cache_ttl_seconds))
         self._revision: str | None = None
+        # 并发 fencing：_fence_token 是每请求单调序号（asyncio 单线程内自增+读取
+        # 无 await，原子）；_last_applied_token 记录最后一次采纳响应的序号——晚到
+        # 的旧响应（token 小于等于它）基于已撤权旧 bundle，必须丢弃
+        self._fence_token = 0
+        self._last_applied_token = 0
 
     @property
     def current_revision(self) -> str | None:
@@ -120,19 +130,27 @@ class OPAClient:
     async def evaluate(self, input_document: Mapping[str, object]) -> PolicyDecision:
         """对规范化 input 求值；任何失败都返回 fail-closed deny，不抛异常。
 
-        input_document 必须来自 PolicyInput 的 model_dump（顶层键与 schema 一致）；
-        未知顶层键（含 secret 形状）在发送前拒绝，保证 decision log 永不回显
-        未声明字段。
+        input_document 为 PolicyInput 形状的 dict；先做完整 schema 校验（含
+        嵌套字段），任何非法/未声明字段（含 secret 形状）在发送前拒绝且不
+        进入 digest——decision log 永不回显未声明字段。
         """
+        self._fence_token += 1
+        token = self._fence_token
         now = self._clock()
-        unknown = set(input_document) - set(PolicyInput.model_fields)
-        if unknown:
+        try:
+            validated = PolicyInput.model_validate(input_document)
+        except ValidationError:
+            # 完整 schema 校验取代旧顶层键守卫：嵌套 extra（secret 形状）同样
+            # 在发送前拒绝；被拒文档不得计算 digest（digest 只对规范化文档）
             return _fail_closed(
                 "opa_input_invalid",
                 evaluated_at=now,
                 input_digest=None,
             )
-        input_digest = digest(dict(input_document))  # digest() 内部做 canonical_json
+        normalized = validated.model_dump(mode="json")
+        # digest 与 transport body 都以规范化文档为准（等价 dict 键序不同时
+        # digest 仍一致）；digest() 内部做 canonical_json
+        input_digest = digest(normalized)
         cache_key = input_digest
 
         cached = self._cache.get(cache_key)
@@ -145,12 +163,22 @@ class OPAClient:
             if revision == self._revision and evaluated_at + self._ttl > now:
                 return decision
 
-        decision = await self._evaluate_remote(dict(input_document), now, input_digest)
+        decision = await self._evaluate_remote(normalized, now, input_digest)
         if decision.revision is not None:
             # 成功响应带 revision：与已知 revision 不一致时整体失效（撤权立即生效）
             if decision.revision != self._revision:
+                if token <= self._last_applied_token:
+                    # 晚到的旧在途响应：其 allow 基于已被新 revision 取代的旧
+                    # bundle，revision 语义上已经过期——丢弃（fail closed），
+                    # 不回退 current_revision、不写入缓存
+                    return _fail_closed(
+                        "opa_stale_response",
+                        evaluated_at=now,
+                        input_digest=input_digest,
+                    )
                 self._cache.clear()
                 self._revision = decision.revision
+            self._last_applied_token = max(self._last_applied_token, token)
             self._cache[cache_key] = (decision, decision.revision, decision.evaluated_at)
             self._cache.move_to_end(cache_key)
             while len(self._cache) > self._cache_maxsize:

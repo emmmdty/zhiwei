@@ -312,22 +312,29 @@ context_deny contains "not_owner_via_effective" if {
 }
 
 # ---------- delegation（交集公式的 delegation budget/scope 维）----------
-# 委托只收窄不扩权：scope 精确覆盖 (resource.action)、未过期、非自授；要求委托
-# 上下文（context.requires_delegation，PEP 从执行方式推导）而无链 → 拒绝。
+# 委托只收窄不扩权：链上**每一跳**都必须精确覆盖 (resource.action)（any/some
+# 一跳命中会放行部分覆盖链，属 fail-open——独立验收最小反例）、未过期、非自授；
+# 要求委托上下文（context.requires_delegation，PEP 从执行方式推导）而无链 → 拒绝。
 # 链上环检测/终止界属于 ADR-008（S2 运行时），不在本层。
 delegation_deny contains "delegation_required_missing" if {
     input.context.requires_delegation == true
     count(input.delegation) == 0
 }
 
+# 过期必须按真实时刻比较：expires_at 带 UTC 偏移时（如 01:00+02:00 实为前一天
+# 23:00Z）字符串比较会判成未过期，故统一解析到纳秒刻度再比较。
 delegation_deny contains "delegation_expired" if {
     some d in input.delegation
-    d.expires_at <= input.context.now
+    time.parse_rfc3339_ns(d.expires_at) <= time.parse_rfc3339_ns(input.context.now)
 }
 
+# 链交集：任一跳未覆盖即拒绝。覆盖要求 scope 精确且 expires_at 可解析、严格未
+# 过期；expires_at 缺失/不可解析使该跳不覆盖 → not delegation_hop_covers 为真 →
+# 拒绝，对畸形原始输入 fail closed。
 delegation_deny contains "delegation_scope_mismatch" if {
     count(input.delegation) > 0
-    not valid_delegation_scope
+    some d in input.delegation
+    not delegation_hop_covers(d)
 }
 
 delegation_deny contains "delegation_self_grant" if {
@@ -335,10 +342,20 @@ delegation_deny contains "delegation_self_grant" if {
     d.granted_by_principal_id == input.actor.principal_id
 }
 
-valid_delegation_scope if {
+# 自授同样以有效身份为准：agent 背后的人类与 grantor 相同也是自授（只比 actor
+# principal 会让 agent 借他人委托链自证授权）。
+delegation_deny contains "delegation_self_grant" if {
     some d in input.delegation
+    input.effective_identity != null
+    d.granted_by_principal_id == input.effective_identity.principal_id
+}
+
+# 正向覆盖判定：scope 精确等于 resource.action 且 expires_at 严格晚于 now。写成
+# 正向是为了让不可解析的 expires_at 令该跳**不覆盖**（not 对 undefined 为真 → 触发
+# mismatch deny），而不是因规则未定义而放行。
+delegation_hop_covers(d) if {
     d.scope == concat(".", [input.resource.type, input.action])
-    d.expires_at > input.context.now
+    time.parse_rfc3339_ns(d.expires_at) > time.parse_rfc3339_ns(input.context.now)
 }
 
 # ---------- 决策与 reason ----------
