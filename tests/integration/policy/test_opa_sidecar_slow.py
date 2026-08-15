@@ -105,15 +105,21 @@ class TestOpaLifecycle:
         enforcer = _new_enforcer(cache_ttl=3600)  # 长 TTL：证明不是 TTL 而是不可用性在拒绝
 
         # 预热缓存：allow 决策入缓存
-        d = await enforcer.authorize(_input_doc())
-        assert d.allow is True and d.revision
+        d1 = await enforcer.authorize(_input_doc())
+        assert d1.allow is True and d1.revision
 
         # 停止真实 OPA 容器
         stopped = _run("stop", "opa")
         assert stopped.returncode == 0, stopped.stderr
 
         try:
-            # 需要求值的请求（不同 purpose → 不同缓存 key）：必须 deny，不得回落缓存 allow
+            # 有界缓存契约（PERMISSIONS.md:85）：同 input 的 allow 只在 TTL+revision
+            # 界内复用（不联系 OPA）——这是缓存存在的意义；任何需要求值的请求
+            # （TTL 过期 / revision 变化 / 其他 input）在 OPA 不可用时必须拒绝。
+            d_same = await enforcer.authorize(_input_doc())
+            assert d_same.allow is True and d_same.decision_id == d1.decision_id, (
+                "TTL+revision 界内的同 input 复用是契约允许的有界缓存行为"
+            )
             d2 = await enforcer.authorize(_input_doc(purpose="compliance"))
             assert d2.allow is False
             assert d2.reason == "opa_unavailable"

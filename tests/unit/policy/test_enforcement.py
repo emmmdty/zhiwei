@@ -159,8 +159,26 @@ class TestBoundaryDeny:
     @pytest.mark.asyncio
     async def test_missing_sod_evidence_denied_at_boundary(self) -> None:
         enforcer, call = enforcer_with(ok_response())
-        doc = valid_input_doc(resource={"type": "agent_publish", "id": "r1", "version": "v1"},
+        doc = valid_input_doc(resource={"type": "agent_publish", "id": R1, "version": "v1"},
                               action="review_publish")
+        d = await enforcer.authorize(doc)
+        assert d.allow is False and d.reason == "policy_input_invalid"
+        assert call["n"] == 0
+
+    @pytest.mark.asyncio
+    async def test_agent_without_effective_identity_denied_at_boundary(self) -> None:
+        # PERMISSIONS.md:9-10：agent 执行必须记录有效主体；缺失会让 Rego 的
+        # via_effective SoD 规则全部失效，边界直接拒绝
+        enforcer, call = enforcer_with(ok_response())
+        doc = valid_input_doc(
+            actor={"principal_id": "00000000-0000-0000-0000-0000000000a2", "kind": "agent_identity",
+                   "roles": [{"name": "workspace_admin", "scope": "workspace",
+                              "organization_id": ORG, "workspace_id": "00000000-0000-0000-0000-0000000000b2"}]},
+            resource={"type": "agent_publish", "id": R1, "version": "v1"},
+            action="review_publish",
+            resource_context={"last_content_author_principal_id": U1},
+            workspace_id="00000000-0000-0000-0000-0000000000b2",
+        )
         d = await enforcer.authorize(doc)
         assert d.allow is False and d.reason == "policy_input_invalid"
         assert call["n"] == 0

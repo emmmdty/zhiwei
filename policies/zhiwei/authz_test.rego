@@ -101,6 +101,7 @@ allowed_cells := [
     ["tool_approval", "approve", "approver"],
     ["tool_approval", "reject", "approver"],
     ["tool_approval", "replace", "approver"],
+    ["tool_approval", "read_record", "auditor"],
 ]
 
 all_resources := {res | some cell in allowed_cells; res := cell[0]}
@@ -1157,6 +1158,86 @@ test_unknown_role_deny_reason_non_empty if {
         "resource": {"type": "org", "id": "r1", "version": "v1"},
         "action": "manage",
         "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
+
+# ---------- 纵深防御：agent 主体必须携带 effective_identity ----------
+# PERMISSIONS.md:9-10 双身份记录 + §3.2 多角色不绕过分离约束：agent 执行时背后的
+# 有效主体缺失会让 via_effective SoD 规则全部失效（只比 agent 自身），必须拒绝。
+test_agent_without_effective_identity_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "p-agent-1", "kind": "agent_identity", "roles": [
+            binding("workspace_admin", "workspace"),
+        ]},
+        "effective_identity": null,
+        "resource": {"type": "agent_publish", "id": "r1", "version": "v1"},
+        "action": "review_publish",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": {
+            "requester_principal_id": null,
+            "modifier_principal_ids": [],
+            "agent_identity_principal_id": null,
+            "owner_principal_id": null,
+            "last_content_author_principal_id": "u9",
+            "publisher_principal_id": null,
+            "publisher_roles": [],
+        },
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
+
+# agent 携带 effective_identity（与最后编辑者不同）仍按 matrix 判发布复核
+test_agent_with_effective_identity_can_review if {
+    data.zhiwei.authz.allow == true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "p-agent-1", "kind": "agent_identity", "roles": [
+            binding("workspace_admin", "workspace"),
+        ]},
+        "effective_identity": {"principal_id": "u2", "kind": "user"},
+        "resource": {"type": "agent_publish", "id": "r1", "version": "v1"},
+        "action": "review_publish",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": {
+            "requester_principal_id": null,
+            "modifier_principal_ids": [],
+            "agent_identity_principal_id": null,
+            "owner_principal_id": null,
+            "last_content_author_principal_id": "u9",
+            "publisher_principal_id": null,
+            "publisher_roles": [],
+        },
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
+
+# ---------- 纵深防御：未知 purpose 词汇拒绝 ----------
+# 边界（input.py）已拒绝未知 purpose；Rego 兜底覆盖绕过边界的原始 input 路径。
+test_unknown_purpose_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u1", "kind": "user", "roles": [binding("org_owner", "org")]},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "everything",
         "classification": null,
         "risk": null,
         "delegation": [],

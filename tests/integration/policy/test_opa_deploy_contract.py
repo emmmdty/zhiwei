@@ -138,19 +138,68 @@ class TestOpaEntrypoint:
         ids=["default-style", "dotted-colon", "mixed", "plain"],
     )
     def test_entrypoint_accepts_legal_revisions(self, legal: str) -> None:
-        # 合法 revision 必须通过字符契约（宿主无 opa 二进制，只能验证字符关卡本身：
-        # 不出现字符契约 fail closed 消息即可证明通过）
+        """合法 revision 必须通过字符关卡并进入正常构建/启动流程。
+
+        PATH 前置 opa 桩（宿主无 opa 二进制也不依赖它）：桩记录每次调用的
+        参数并返回 0，从而验证：字符关卡通过 → `opa build`（带 --revision）→
+        `exec opa run --server`。若字符关卡误拒绝，桩永远不会被调用。
+        """
         with tempfile.TemporaryDirectory() as tmp:
+            bin_dir = Path(tmp) / "bin"
+            bin_dir.mkdir()
+            stub = bin_dir / "opa"
+            stub.write_text(
+                "#!/bin/sh\n"
+                'echo "OPA-STUB: $*"\n',
+                encoding="utf-8",
+            )
+            stub.chmod(0o755)
+            policy_dir = Path(tmp) / "policies" / "zhiwei"
+            policy_dir.mkdir(parents=True)
+            (policy_dir / "authz.rego").write_text(
+                "package zhiwei.authz\ndefault allow := false\n", encoding="utf-8"
+            )
             result = subprocess.run(
                 ["sh", str(OPA_ENTRYPOINT)],
                 capture_output=True,
                 text=True,
+                timeout=30,
                 env={
                     **os.environ,
+                    "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
                     "OPA_BUNDLE_REVISION": legal,
-                    "OPA_POLICY_SRC": tmp,
+                    "OPA_POLICY_SRC": str(policy_dir),
+                    "OPA_BUNDLE_OUT": str(Path(tmp) / "bundle.tar.gz"),
                 },
             )
             assert "fail closed" not in result.stderr, (
                 f"合法 revision 不得触发字符契约: {legal!r}\n{result.stderr}"
             )
+            assert "OPA-STUB: build" in result.stdout, (
+                f"字符关卡通过后必须调用 opa build:\n{result.stdout}\n{result.stderr}"
+            )
+            assert "--revision" in result.stdout and legal in result.stdout
+            assert "OPA-STUB: run --server" in result.stdout, (
+                f"构建后必须以 server 模式启动:\n{result.stdout}"
+            )
+            assert result.returncode == 0, f"完整控制流必须成功:\n{result.stdout}\n{result.stderr}"
+
+    def test_entrypoint_rejects_control_characters_in_policy_src(self) -> None:
+        # OPA_POLICY_SRC 同款字符契约：控制字符 fail closed（镜像内路径不允许）
+        for dangerous in ("\n", "/policies\r/zhiwei", "/pol icy"):
+            printable = "".join(c for c in dangerous if c.isprintable())
+            with tempfile.TemporaryDirectory() as _tmp:
+                result = subprocess.run(
+                    ["sh", str(OPA_ENTRYPOINT)],
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "OPA_BUNDLE_REVISION": "s1-t3-local",
+                        "OPA_POLICY_SRC": dangerous,
+                    },
+                )
+                assert result.returncode != 0, f"危险 OPA_POLICY_SRC 必须 fail closed: {dangerous!r}"
+                if printable:
+                    assert printable not in result.stderr, "消息不得回显注入值"
+                assert "OPA_POLICY_SRC" in result.stderr and "fail closed" in result.stderr

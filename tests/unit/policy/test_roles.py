@@ -170,6 +170,7 @@ class TestResourceActionSchema:
                 "approve",
                 "reject",
                 "replace",
+                "read_record",  # Auditor 列「只读记录」（矩阵保真修正）
             },
         }
         actual = {

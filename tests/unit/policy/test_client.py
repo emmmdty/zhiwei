@@ -27,6 +27,7 @@ INPUT_A = {
         {"name": "org_owner", "scope": "org",
          "organization_id": "00000000-0000-0000-0000-000000000001", "workspace_id": None},
     ]},
+    "effective_identity": None,
     "resource": {"type": "org", "id": "r1", "version": "v1"},
     "action": "manage",
     "purpose": "general",
@@ -271,11 +272,18 @@ class TestBoundedCache:
         assert call["n"] == 3, "缓存不得跨 revision"
 
     @pytest.mark.asyncio
-    async def test_opa_down_never_falls_back_to_cached_allow(self) -> None:
+    async def test_opa_down_same_input_served_only_within_bounds(self) -> None:
+        """有界缓存契约（PERMISSIONS.md:85 不能使用缓存 allow 超过明确 TTL/版本）：
+
+        同 input 的 allow 只能在 TTL+revision 界内复用（不再联系 OPA）；一旦
+        需要求值（TTL 过期 / revision 变化 / 其他 input），OPA 不可用即拒绝，
+        绝不回落到任何缓存 allow。
+        """
         fail: list[httpx.ConnectError | None] = [None]
-        _transport, _, _ = make_transport()
+        _transport, requests, _ = make_transport()
 
         def handler(request: httpx.Request) -> httpx.Response:
+            requests.append(request)
             if fail[0] is not None:
                 raise fail[0]
             return httpx.Response(200, json=ok_response(), request=request)
@@ -287,9 +295,47 @@ class TestBoundedCache:
         d1 = await client.evaluate(INPUT_A)
         assert d1.allow is True
         fail[0] = httpx.ConnectError("down")
-        d2 = await client.evaluate(INPUT_B)  # 需要求值的请求：不得回落到任何缓存 allow
+        # 同 input、TTL 内、同 revision：有界复用（不再发请求）
+        d_same = await client.evaluate(INPUT_A)
+        assert d_same.allow is True and d_same.decision_id == d1.decision_id
+        assert len(requests) == 1, "TTL 界内的同 input 复用不得再联系 OPA"
+        # 需要求值的请求（不同 input）：必须拒绝，不得回落到任何缓存 allow
+        d2 = await client.evaluate(INPUT_B)
         assert d2.allow is False
         assert d2.reason == "opa_unavailable" and d2.decision_id is None
+
+    @pytest.mark.asyncio
+    async def test_recovery_after_outage_repopulates_cache(self) -> None:
+        fail: list[httpx.ConnectError | None] = [None]
+        _transport, _, _ = make_transport()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            if fail[0] is not None:
+                raise fail[0]
+            return httpx.Response(200, json=ok_response(decision_id="d2"), request=request)
+
+        client = OPAClient(
+            BASE,
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=5.0),
+        )
+        d1 = await client.evaluate(INPUT_A)
+        assert d1.allow is True
+        fail[0] = httpx.ConnectError("down")
+        await client.evaluate(INPUT_B)  # 故障期请求拒绝
+        fail[0] = None
+        d3 = await client.evaluate(INPUT_B)  # 恢复后重新求值成功
+        assert d3.allow is True and d3.decision_id == "d2"
+        d4 = await client.evaluate(INPUT_B)  # 缓存恢复工作
+        assert d4.decision_id == "d2"
+
+    @pytest.mark.asyncio
+    async def test_unknown_top_level_key_rejected_before_send(self) -> None:
+        """client 顶层键守卫：未声明字段（含 secret 形状）不得进入 OPA decision log。"""
+        client, requests, _ = client_with(ok_response())
+        d = await client.evaluate({**INPUT_A, "access_token": "s3cr3t"})
+        assert d.allow is False
+        assert d.reason == "opa_input_invalid"
+        assert len(requests) == 0, "未知顶层键必须在发送前拒绝"
 
     @pytest.mark.asyncio
     async def test_cache_never_serves_beyond_ttl_even_when_denied(self) -> None:
