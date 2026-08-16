@@ -161,7 +161,7 @@ def _record(
         result=result,
         request_id=request_id,
         trace_id=trace_id,
-        payload_digest="a" * 71,
+        payload_digest="sha256:" + "a" * 64,
     )
 
 
@@ -556,7 +556,7 @@ async def test_tampering_any_semantic_field_breaks_chain(
             ("resource_type", "tampered"),
             ("resource_id", uuid4()),
             ("actor_ref", "user:mallory"),
-            ("payload_digest", "f" * 71),
+            ("payload_digest", "sha256:" + "f" * 64),
             ("previous_event_digest", "e" * 71),
         ]
         for column, tampered_value in tamper_cases:
@@ -662,7 +662,7 @@ async def test_v1_and_v2_audit_rows_coexist_in_one_chain(
                 resource_type="run",
                 resource_id=v1_resource,
                 actor_ref="user:alice",
-                payload_digest="b" * 71,
+                payload_digest="sha256:" + "b" * 64,
                 previous_event_digest="",
                 event_digest="",
                 audit_schema_version=1,

@@ -322,6 +322,7 @@ def _full_auth_app_settings(tmp_path: Path) -> dict[str, str]:
         "ZHIWEI_OIDC_CLIENT_SECRET": SENTINEL_SECRET,
         "ZHIWEI_OIDC_REDIRECT_URI": "https://app.example.com/auth/callback",
         "ZHIWEI_IDENTITY_MASTER_KEY_FILE": str(tmp_path / "master.key"),
+        "ZHIWEI_OPA_BASE_URL": "http://opa.example:8181",
     }
 
 
@@ -335,6 +336,7 @@ def _full_auth_app_settings(tmp_path: Path) -> dict[str, str]:
         "ZHIWEI_OIDC_CLIENT_SECRET",
         "ZHIWEI_OIDC_REDIRECT_URI",
         "ZHIWEI_IDENTITY_MASTER_KEY_FILE",
+        "ZHIWEI_OPA_BASE_URL",
     ],
 )
 def test_create_app_rejects_missing_composition_inputs(tmp_path: Path, dropped: str) -> None:

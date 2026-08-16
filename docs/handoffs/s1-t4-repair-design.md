@@ -173,6 +173,10 @@
 | `test_audit.py` 篡改用例 | `("payload_digest", "f"*71)` → `"sha256:"+"f"*64` | 新 CHECK 会拒绝该 UPDATE（DB 错误而非 EventChainError）；换成格式合法但内容不同的 digest，断链断言语义不变 |
 | `test_settings.py` | `_full_auth_app_settings` 补 `ZHIWEI_OPA_BASE_URL`；`dropped` parametrize 补同名项 | 组合期新增必需输入（I6）；断言语义不变 |
 | `test_oidc.py` `_settings` | 补 `ZHIWEI_OPA_BASE_URL` | 同上；auth 流程不触发 policy 求值，无需 mock transport |
+| `test_audit_contract.py` `_insert_raw_v2/_insert_raw_v1` | `"sha256:"+uuid4().hex`（39 字符）→ `"sha256:"+uuid4().hex*2`（64 字符） | 机制缺陷：基线行 digest 形状不满足 0006 CHECK 契约，RED 阶段无 CHECK 掩盖了它；GREEN 后 PG 会先报 payload_digest 约束名（错误约束名断言失败 / 正向控制失败）。只修 fixture 数据形状，断言语义不变 |
+| `test_mutation_policy_audit.py` app fixture | `ASGITransport(app=app)` → `ASGITransport(app=app, raise_app_exceptions=False)` | 机制缺陷：Starlette ServerErrorMiddleware 发送 500 后总是再抛原始异常，默认 raise_app_exceptions=True 让预期内的 500 场景变成 client.post 抛错；500 场景的响应断言需要关闭重抛。断言语义不变 |
+| `test_mutation_policy_audit.py` test 3 | 创建 workspace 名称 `"sales"` → `"eng"` | 机制缺陷：同用例先 seed 了同名（默认 "sales"）workspace，名称唯一约束 → 409 `resource name is already taken`，断言 201 永不成立；改为不冲突的名称。断言语义不变 |
+| `test_mutation_policy_audit.py` test 1 | `resource_context == {}` → 断言 7 个默认字段的完整形状 | 期望值缺陷：T3 `PolicyInput.model_dump` 序列化全部默认字段（不省略 None/空值），`{}` 永不成立；改为断言 SoD/own 证据全空的具体形状。语义（无证据）不变 |
 
 > 以上均非 RLS 测试；RLS/pool/IDOR 三文件零改动。
 

@@ -344,7 +344,33 @@ def _settings(keyring_path: Path) -> dict[str, str]:
         "ZHIWEI_OIDC_CLIENT_SECRET": CLIENT_SECRET,
         "ZHIWEI_OIDC_REDIRECT_URI": REDIRECT_URI,
         "ZHIWEI_IDENTITY_MASTER_KEY_FILE": str(keyring_path),
+        "ZHIWEI_OPA_BASE_URL": "http://opa.test:8181",
     }
+
+
+def _policy_allow_client() -> httpx.AsyncClient:
+    """测试用策略 transport：一律 allow（本文件不冻结授权语义，只跑通组合与 auth 流程）。
+
+    RED 修订登记（docs/handoffs/s1-t4-repair-design.md §3.3）：create_app 组合期新增必需
+    ZHIWEI_OPA_BASE_URL 与 policy 组合后，本文件的 bootstrap mutation 用例经真实 gate 求值，
+    必须注入可控 policy transport 才能保持 201 断言。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "decision_id": "test-oidc-decision",
+                "result": {"allow": True, "reason": "allow:org_owner"},
+                "provenance": {
+                    "version": "1.19.0",
+                    "bundles": {"/bundle.tar.gz": {"revision": "test-oidc-rev"}},
+                },
+            },
+            request=request,
+        )
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=5.0)
 
 
 @pytest_asyncio.fixture(loop_scope="function")
@@ -355,6 +381,7 @@ async def app_and_client(
     app = create_app(
         load_settings(_settings(keyring_path)),
         oidc_http_client=httpx.AsyncClient(transport=httpx.MockTransport(idp.handler), timeout=5.0),
+        policy_http_client=_policy_allow_client(),
     )
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="https://test", follow_redirects=False
@@ -367,6 +394,7 @@ def _new_app(keyring_path: Path, idp: FakeIdP) -> FastAPI:
     return create_app(
         load_settings(_settings(keyring_path)),
         oidc_http_client=httpx.AsyncClient(transport=httpx.MockTransport(idp.handler), timeout=5.0),
+        policy_http_client=_policy_allow_client(),
     )
 
 
