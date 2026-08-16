@@ -474,8 +474,37 @@ async def _seed_membership(principal_id: UUID, organization_id: UUID, roles: lis
         await connection.close()
 
 
+async def _delete_bootstrap_claims_if_exists(principal_id: UUID) -> None:
+    """fixture 清理专用窄 helper：claim 表不存在则跳过，存在才 DELETE。
+
+    四轮 RED 机制修订登记：RED 数据库停在 0007，claim 表（0008）尚不存在——无条件
+    DELETE 会在 fixture 阶段抛 UndefinedTableError，把全部用例截断在 setup 期，永远
+    到不了真实行为反例（并发 [201,201] / 自移除后 201）。先经
+    to_regclass('public.organization_bootstrap_claims') 判断表是否存在：存在才清理，
+    不存在直接继续。这是 RED fixture 兼容，不是生产旁路（生产路径不经过本函数）。
+    """
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        exists = await connection.fetchval(
+            "SELECT to_regclass('public.organization_bootstrap_claims') IS NOT NULL"
+        )
+        if exists:
+            await connection.execute(
+                "DELETE FROM organization_bootstrap_claims WHERE principal_id = $1",
+                principal_id,
+            )
+    finally:
+        await connection.close()
+
+
 async def _reset_alice() -> UUID:
-    """清空 alice-oidc 的既有 memberships，返回 principal id（每用例自建精确集合）。"""
+    """清空 alice-oidc 的既有 memberships 与 bootstrap claim，返回 principal id。
+
+    四轮 RED 机制修订登记：bootstrap claim 是 identity-global 持久状态（0008），
+    本文件共享同一数据库与同一 principal——用例必须连同 claim 一起重置，否则先前
+    用例的 claim 会让后续用例的 bootstrap 得到 403。claim 表无直接表权限，
+    测试经 migrator（superuser）清理。
+    """
     principal = await _seed_principal("alice-oidc")
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -485,6 +514,7 @@ async def _reset_alice() -> UUID:
         )
     finally:
         await connection.close()
+    await _delete_bootstrap_claims_if_exists(principal)
     return principal
 
 
@@ -537,6 +567,34 @@ async def _bootstrap_post(
 
 def _event_data(row: dict) -> AuditEventData:
     return audit_data_from_row(AuditEvent(**row))
+
+
+async def _install_audit_fail_trigger() -> None:
+    """audit_events BEFORE INSERT 触发器：模拟 allowed 审计写失败（用后必须删除）。"""
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "CREATE OR REPLACE FUNCTION zhiwei_test_audit_fail() RETURNS trigger AS "
+            "$$ BEGIN RAISE EXCEPTION 'intentional audit write failure (test trigger)'; END $$ "
+            "LANGUAGE plpgsql"
+        )
+        await connection.execute(
+            "CREATE TRIGGER zhiwei_test_audit_fail_trg BEFORE INSERT ON audit_events "
+            "FOR EACH ROW EXECUTE FUNCTION zhiwei_test_audit_fail()"
+        )
+    finally:
+        await connection.close()
+
+
+async def _drop_audit_fail_trigger() -> None:
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "DROP TRIGGER IF EXISTS zhiwei_test_audit_fail_trg ON audit_events"
+        )
+        await connection.execute("DROP FUNCTION IF EXISTS zhiwei_test_audit_fail()")
+    finally:
+        await connection.close()
 
 
 # --------------------------------------------------------------------------- slow tests
@@ -839,16 +897,19 @@ async def test_real_opa_bootstrap_exact_replay_returns_200_without_new_writes(
 
 @pytest.mark.slow
 @pytest.mark.asyncio
-async def test_real_opa_bootstrap_same_key_different_digest_conflict_409(
+async def test_real_opa_bootstrap_pre_existing_conflicting_digest_state_409(
     migrated_database: None,
     opa_service: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
 ) -> None:
-    """同 key 不同 body：409 idempotency_conflict + failed 审计，业务零写入。
+    """数据库已有不一致 claim 时的 fail-closed 409（非真实 two-body HTTP replay）。
 
-    预置一条 request_digest 与服务端对真实请求算出的 digest 必然不同的 claim
-    （sha256:00…0）。policy 放行（目标 org 在 active 集合）后必须由幂等冲突
-    判定拒绝；二轮 Rego 在策略层就 deny（403 policy denied），到不了该判定。
+    四轮验收裁决：CreateOrganizationRequest 只有 organization_id，且幂等 scope 本身
+    包含目标 org——「same key/different body 409」在当前 API 上无法由两次普通 HTTP
+    请求形成，不得为此增加请求字段或修改幂等域。本用例预置一条 request_digest 与服务端
+    对真实请求算出的 digest 必然不同的 claim（sha256:00…0），只证明「数据库已存在
+    不一致 claim 时 fail closed 409」；它不是 two-body replay 契约，不得以此宣称
+    「同 key 异 body 产生 409」。
     """
     _, client, idp = app_and_client
     principal = await _seed_principal("alice-oidc")
@@ -1011,14 +1072,16 @@ async def test_real_opa_bootstrap_multi_org_replay_is_deterministic(
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
         # 本文件用例共享同一数据库（migrated_database 为 session 级）：先前用例
-        # 可能给 bob-oidc 留过 memberships，必须清空才能把 bob 当成「首登无 org」
-        # 的 bootstrap 主体（与 _reset_alice 同款机制）。
+        # 可能给 bob-oidc 留过 memberships 或 bootstrap claim，必须清空才能把 bob
+        # 当成「首登无 org」的 bootstrap 主体（与 _reset_alice 同款机制，claim
+        # 清理经窄 helper 判表存在性，RED 期 0008 未装不截断）。
         await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
         await connection.execute(
             "DELETE FROM workspace_memberships WHERE principal_id = $1", bob_pid
         )
     finally:
         await connection.close()
+    await _delete_bootstrap_claims_if_exists(bob_pid)
     await _perform_login_as(client, idp, "bob-oidc")
     csrf_bob = await _csrf_token(client)
     created_b = await _bootstrap_post(client, csrf_bob, org_b, "slow-bootstrap-multi-b")
@@ -1059,6 +1122,441 @@ async def test_real_opa_bootstrap_multi_org_replay_is_deterministic(
                 key_a,
             )
             == 1
+        )
+    finally:
+        await connection.close()
+
+
+# --------------------------------------------------------------------------- 四轮 RED：bootstrap 持久 claim 围栏
+#
+# 修复目标（四轮任务书）：一个 principal 最多只能 claim 一个由自己 bootstrap 创建的
+# Organization；membership 被删除不能重置该资格。持久 claim（zhiwei_claim_organization_
+# bootstrap，事务内最终围栏）位于 OPA 快速门禁之后：OPA 先于任何 claim/mutation；
+# claim 与 org/owner membership/idempotency/allowed audit/outbox 同事务，任何一步失败
+# 全部回滚。loser target 不存在合法 audit FK scope，沿用冻结的 pre-tenant 例外：
+# 零 audit/outbox（bootstrap claim 冲突绝不写 failed 审计）。
+#
+# RED 状态（四轮）：无 claim 表/函数——并发不同 target 双双 201、自移除后 create B
+# 返回 201（资格未被持久化）、claim 相关断言在 count 查询/函数调用点失败。本段用例
+# 每项断言都钉死最终行数，防止 GREEN 用「缓存/旁路」或「新写行」假过。
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_concurrent_bootstrap_different_targets_only_one_201(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """同一无组织 principal 并发 bootstrap 两个不同 target：只能一个 201、一个 403。
+
+    两个请求都先经 OPA 放行（active org 集合为空 → 首次 bootstrap 候选），随后在
+    create_organization 事务内由持久 claim（principal 级 advisory lock 串行化）分胜负：
+    winner 写入 claim 后继续 owner membership / idempotency / allowed audit / outbox；
+    loser 的 claim=false 使整个事务回滚并映射 403 bootstrap claim already used for
+    another organization。终态必须只有一套 claim/org/owner membership/allowed audit/
+    outbox/idempotency 行；loser target 零残留（含 audit/outbox——loser org 不存在，
+    无合法 FK scope，pre-tenant 例外）。
+    """
+    _, client, idp = app_and_client
+    principal = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_a = uuid4()
+    org_b = uuid4()
+
+    first = client.post(
+        "/api/v1/organizations",
+        json={"organization_id": str(org_a)},
+        headers={
+            "X-CSRF-Token": csrf_token,
+            "Origin": "https://test",
+            "Idempotency-Key": "slow-bootstrap-concurrent-a",
+        },
+    )
+    second = client.post(
+        "/api/v1/organizations",
+        json={"organization_id": str(org_b)},
+        headers={
+            "X-CSRF-Token": csrf_token,
+            "Origin": "https://test",
+            "Idempotency-Key": "slow-bootstrap-concurrent-b",
+        },
+    )
+    response_a, response_b = await asyncio.gather(first, second)
+    statuses = sorted([response_a.status_code, response_b.status_code])
+    assert statuses == [201, 403], (
+        f"并发不同 target 的 bootstrap 必须恰好一个 201 一个 403，实际 {statuses}"
+    )
+
+    winner, loser = (response_a, response_b) if response_a.status_code == 201 else (
+        response_b,
+        response_a,
+    )
+    winner_org, loser_org = (
+        (org_a, org_b) if winner is response_a else (org_b, org_a)
+    )
+    assert winner.json() == {"id": str(winner_org), "status": "active"}
+    assert loser.json()["detail"] == "bootstrap claim already used for another organization"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM organization_bootstrap_claims WHERE principal_id = $1",
+                principal,
+            )
+            == 1
+        ), "并发创建必须只留下一条 claim"
+        claim_org = await connection.fetchval(
+            "SELECT organization_id FROM organization_bootstrap_claims WHERE principal_id = $1",
+            principal,
+        )
+        assert claim_org == winner_org, "claim 必须指向 winner target"
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", winner_org)
+            == 1
+        )
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", loser_org)
+            == 0
+        ), "loser target 必须零残留"
+        member_rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1",
+            winner_org,
+        )
+        assert len(member_rows) == 1
+        assert member_rows[0]["principal_id"] == principal
+        assert json.loads(member_rows[0]["role_bindings"]) == ["owner"]
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM memberships WHERE organization_id = $1", loser_org
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1", winner_org
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1", loser_org
+            )
+            == 0
+        ), "loser 不写审计（无合法 FK scope，pre-tenant 例外）"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM outbox WHERE topic = 'audit.decision' "
+                "AND payload->>'resource_id' = $1",
+                str(winner_org),
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM outbox WHERE topic = 'audit.decision' "
+                "AND payload->>'resource_id' = $1",
+                str(loser_org),
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", winner_org
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", loser_org
+            )
+            == 0
+        ), "loser 不得 claim 幂等记录"
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_self_removed_owner_cannot_bootstrap_another_org(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """生命周期：owner 自移除后不能 bootstrap 新 org；原 target 精确重放仍 200。
+
+    create A（201）→ alice 以 owner 身份自移除（membership 删除，资格不得被重置）→
+    create B 必须 403 bootstrap claim already used for another organization 且
+    业务/audit/outbox/idempotency 零写入；随后用 A 的原 key/body 精确重放仍为 200 且
+    零新增——claim 围栏不干扰既有 owner-bound 重放路径。
+    """
+    _, client, idp = app_and_client
+    principal = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_a = uuid4()
+    key_a = "slow-bootstrap-lifecycle-a"
+
+    first = await _bootstrap_post(client, csrf_token, org_a, key_a)
+    assert first.status_code == 201
+
+    removed = await client.delete(
+        f"/api/v1/organizations/{org_a}/members/{principal}",
+        headers={
+            "X-CSRF-Token": csrf_token,
+            "Origin": "https://test",
+            "Idempotency-Key": "slow-bootstrap-lifecycle-remove",
+            "X-ZhiWei-Organization": str(org_a),
+        },
+    )
+    assert removed.status_code == 204
+
+    org_b = uuid4()
+    denied = await _bootstrap_post(client, csrf_token, org_b, "slow-bootstrap-lifecycle-b")
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "bootstrap claim already used for another organization"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM organizations WHERE id = $1", org_b
+            )
+            == 0
+        )
+        for table in ("memberships", "audit_events", "outbox"):
+            assert await connection.fetchval(
+                f"SELECT count(*) FROM {table} WHERE organization_id = $1", org_b
+            ) == 0, f"自移除后的新 target bootstrap 必须 {table} 零写入"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", org_b
+            )
+            == 0
+        )
+        claim_org = await connection.fetchval(
+            "SELECT organization_id FROM organization_bootstrap_claims WHERE principal_id = $1",
+            principal,
+        )
+        assert claim_org == org_a, "claim 必须仍然指向 A（membership 删除不得重置资格）"
+    finally:
+        await connection.close()
+
+    replayed = await _bootstrap_post(client, csrf_token, org_a, key_a)
+    assert replayed.status_code == 200
+    assert replayed.json() == first.json()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+            == 1
+        )
+        # org_a 的审计链含 bootstrap allow + 自移除 allow 各一条；精确重放不得追加
+        # 任何 organization.create 审计（按 action 计数，不受 member.remove 影响）。
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1 "
+                "AND action = 'organization.create'",
+                org_a,
+            )
+            == 1
+        ), "自移除后的精确重放不得追加 bootstrap 审计"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_a,
+                key_a,
+            )
+            == 1
+        ), "自移除后的精确重放不得新增幂等记录"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM memberships WHERE organization_id = $1", org_a
+            )
+            == 0
+        ), "重放不得重新添加已移除的 membership"
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_invited_member_never_bootstrapped_can_still_claim_own_org(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """普通受邀成员（从未 bootstrap）被移出所有组织后，仍可首次 claim 自己的 org。
+
+    「曾经是 member」不等于「曾经 bootstrap」：bob 被邀请进 org_x（member）、随后被
+    移除，从未 bootstrap 过 → POST 自己的 org_z 必须 201 且恰好一条 claim 指向 org_z。
+    """
+    _, client, idp = app_and_client
+    bob_pid = await _seed_principal("bob-oidc")
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
+        await connection.execute(
+            "DELETE FROM workspace_memberships WHERE principal_id = $1", bob_pid
+        )
+    finally:
+        await connection.close()
+    await _delete_bootstrap_claims_if_exists(bob_pid)
+    org_x = await _seed_org()
+    await _seed_membership(bob_pid, org_x, ["member"])
+    await _perform_login_as(client, idp, "bob-oidc")
+    csrf_token = await _csrf_token(client)
+
+    # 模拟管理员移除（受邀 member 无 org/manage 自移除权）：直接清 membership
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
+    finally:
+        await connection.close()
+
+    org_z = uuid4()
+    created = await _bootstrap_post(client, csrf_token, org_z, "slow-bootstrap-invitee-1")
+    assert created.status_code == 201
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        claim_org = await connection.fetchval(
+            "SELECT organization_id FROM organization_bootstrap_claims WHERE principal_id = $1",
+            bob_pid,
+        )
+        assert claim_org == org_z, "从未 bootstrap 过的受邀成员必须能首次 claim 自己的 org"
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_z)
+            == 1
+        )
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_bootstrap_audit_failure_rolls_back_claim_and_retry_different_target(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """原子回滚：allowed 审计写失败 → claim 随事务整体回滚，失败不消耗 claim 资格。
+
+    注入 audit_events BEFORE INSERT 失败触发器后 bootstrap A → 500；
+    org/membership/audit/outbox/idempotency/claim 全部零残留。随后用不同 target B
+    重试 → 201——证明 claim 与业务/审计/幂等处于同一 PostgreSQL 事务。
+    """
+    _, client, idp = app_and_client
+    principal = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_a = uuid4()
+
+    await _install_audit_fail_trigger()
+    try:
+        failed = await _bootstrap_post(client, csrf_token, org_a, "slow-bootstrap-rollback-a")
+        assert failed.status_code == 500
+    finally:
+        await _drop_audit_fail_trigger()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM memberships WHERE organization_id = $1", org_a
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1", org_a
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval("SELECT count(*) FROM outbox WHERE organization_id = $1", org_a)
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", org_a
+            )
+            == 0
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM organization_bootstrap_claims WHERE principal_id = $1",
+                principal,
+            )
+            == 0
+        ), "失败事务必须连同 claim 一起回滚（失败不得消耗 claim 资格）"
+    finally:
+        await connection.close()
+
+    org_b = uuid4()
+    retried = await _bootstrap_post(client, csrf_token, org_b, "slow-bootstrap-rollback-b")
+    assert retried.status_code == 201
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        claim_org = await connection.fetchval(
+            "SELECT organization_id FROM organization_bootstrap_claims WHERE principal_id = $1",
+            principal,
+        )
+        assert claim_org == org_b, "回滚后的不同 target 重试必须成功"
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_b)
+            == 1
+        )
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_deny_writes_no_bootstrap_claim(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """OPA 先于任何 claim/mutation：policy deny 时不得写 claim。
+
+    alice 已有 active org（org_x）→ POST 不同 target org_y 在策略层即 403 policy
+    denied（bootstrap 被拒审计例外，零审计）；业务事务不开始，
+    organization_bootstrap_claims 必须零行。
+    """
+    _, client, idp = app_and_client
+    principal = await _reset_alice()
+    org_x = await _seed_org()
+    await _seed_membership(principal, org_x, ["owner"])
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_y = uuid4()
+
+    denied = await _bootstrap_post(client, csrf_token, org_y, "slow-bootstrap-deny-claim")
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "policy denied"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM organization_bootstrap_claims WHERE principal_id = $1",
+                principal,
+            )
+            == 0
+        ), "OPA deny 的 bootstrap 不得写 claim"
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_y)
+            == 0
         )
     finally:
         await connection.close()

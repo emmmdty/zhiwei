@@ -64,6 +64,7 @@ REQUIRED_TABLES = {
     "runs",
     "workspace_memberships",
     "workspaces",
+    "organization_bootstrap_claims",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -86,13 +87,21 @@ ORG_SCOPED_TABLES = {"memberships"}
 # Principal / ExternalIdentity 是跨 Organization 的 identity-global 记录（DATA_MODEL §2：
 # 首次 callback 时用户可能尚未创建/加入组织，同一 Principal 也可属于多个组织），
 # 不能挂 organization_id，也不能用 org GUC 做 RLS——它们不是租户表。
+# organization_bootstrap_claims（0008，S1-T4 四轮）同属 identity-global：principal 级
+# 唯一 claim，无 org/ws 租户作用域语义、无 RLS，不给 zhiwei_app 任何直接表权限（只走窄
+# SECURITY DEFINER 函数）——四轮 RED 机制修订登记：REQUIRED_TABLES 契约随新表扩展。
 IDENTITY_GLOBAL_TABLES = {
     "auth_sessions",
     "external_identities",
     "oidc_login_attempts",
+    "organization_bootstrap_claims",
     "principals",
     "secret_envelopes",
 }
+# organization_bootstrap_claims（0008）的 organization_id 是 claim 的目标值（指向被
+# bootstrap 的组织），不是租户作用域列：表无 RLS、无 GUC 语义、不给任何角色直接访问。
+# 其余 identity-global 表不得出现任何租户列（S0 冻结契约保持原样）。
+TENANT_COLUMN_FREE_TABLES = IDENTITY_GLOBAL_TABLES - {"organization_bootstrap_claims"}
 # S1-T2：zhiwei_app 对这些表无任何直接 SELECT/INSERT（权限在 0003 撤销/从不授予）
 APP_DENIED_TABLES = IDENTITY_GLOBAL_TABLES
 TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
@@ -767,7 +776,7 @@ async def test_identity_global_tables_have_no_tenant_scope(
     assert migrated_database
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
-        for table in sorted(IDENTITY_GLOBAL_TABLES):
+        for table in sorted(TENANT_COLUMN_FREE_TABLES):
             assert await connection.fetchval(
                 "SELECT relrowsecurity FROM pg_catalog.pg_class "
                 "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
@@ -797,6 +806,19 @@ async def test_identity_global_tables_have_no_tenant_scope(
                 )
             }
             assert tenant_columns == set(), f"{table} 不得含租户列: {tenant_columns}"
+        # organization_bootstrap_claims：claim 目标列豁免租户列断言（见常量注释），
+        # 但必须无 RLS、owner 不得是 zhiwei_app（与其余 identity-global 表一致）。
+        for table in IDENTITY_GLOBAL_TABLES - TENANT_COLUMN_FREE_TABLES:
+            assert await connection.fetchval(
+                "SELECT relrowsecurity FROM pg_catalog.pg_class "
+                "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
+                table,
+            ) is False
+            assert await connection.fetchval(
+                "SELECT pg_get_userbyid(relowner) FROM pg_catalog.pg_class "
+                "WHERE relname = $1 AND relnamespace = 'public'::regnamespace",
+                table,
+            ) != "zhiwei_app"
     finally:
         await connection.close()
 

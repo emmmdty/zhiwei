@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from zhiwei.contracts.time import utc_now
 from zhiwei.identity.commands import (
+    BootstrapClaimConflict,
     CommandOutcome,
     ExternalIdentityConflictError,
     IdempotencyRequest,
@@ -73,6 +74,22 @@ class FakeIdentityRepository:
         self.groups: dict[UUID, Group] = {}
         self.group_members: dict[tuple[UUID, UUID], GroupMember] = {}
         self.idempotency: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        self.bootstrap_claims: dict[UUID, UUID] = {}
+
+    async def claim_organization_bootstrap(
+        self, principal_id: UUID, organization_id: UUID
+    ) -> bool:
+        """镜像 zhiwei_claim_organization_bootstrap 语义：principal 级唯一 claim。
+
+        四轮 RED 机制修订登记：命令契约新增 bootstrap claim 围栏（0008 窄函数），
+        内存替身必须镜像同语义——claim 已存在且 target 相同 → True；不同 → False；
+        首次 → 记录并返回 True（不更新既有 claim）。
+        """
+        existing = self.bootstrap_claims.get(principal_id)
+        if existing is not None:
+            return existing == organization_id
+        self.bootstrap_claims[principal_id] = organization_id
+        return True
 
     async def create_principal(
         self,
@@ -633,6 +650,36 @@ async def test_create_organization_bootstraps_org_and_owner_membership() -> None
     )
     assert membership is not None
     assert membership.role_bindings == frozenset({"owner"})
+
+
+@pytest.mark.asyncio
+async def test_create_organization_bootstrap_claim_blocks_second_target() -> None:
+    """持久 claim 围栏：同一 principal bootstrap 第二个 org 必须 BootstrapClaimConflict。
+
+    四轮 RED 契约：claim 与 org 创建同事务（首个 org 已创建、claim 已记录）；第二个
+    target 的 claim=false 抛明确异常，由 API 层映射 403 并整体回滚（org 行回滚属
+    数据库事务语义，由 DB 契约/集成测试覆盖——内存 fake 无回滚，这里只冻结命令层
+    行为）。membership 被删除不得重置该资格——fake 的 bootstrap_claims 独立于
+    memberships 存活。
+    """
+    repository = FakeIdentityRepository()
+    owner = await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    org_a = uuid4()
+    first = await create_organization(
+        repository, organization_id=org_a, owner_principal_id=owner.id
+    )
+    assert first.created is True
+    assert repository.bootstrap_claims == {owner.id: org_a}
+
+    org_b = uuid4()
+    with pytest.raises(BootstrapClaimConflict):
+        await create_organization(
+            repository, organization_id=org_b, owner_principal_id=owner.id
+        )
+    assert repository.bootstrap_claims == {owner.id: org_a}, "claim 不得迁移到新 target"
+    assert (owner.id, org_b) not in repository.memberships, (
+        "claim 拒绝发生在 owner membership 写入之前"
+    )
 
 
 @pytest.mark.asyncio

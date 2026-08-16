@@ -518,8 +518,36 @@ async def _seed_workspace_membership(
         await connection.close()
 
 
+async def _delete_bootstrap_claims_if_exists(principal_id: UUID) -> None:
+    """fixture 清理专用窄 helper：claim 表不存在则跳过，存在才 DELETE。
+
+    四轮 RED 机制修订登记：RED 数据库停在 0007，claim 表（0008）尚不存在——无条件
+    DELETE 会在 fixture 阶段抛 UndefinedTableError，把用例截断在 setup 期。先经
+    to_regclass('public.organization_bootstrap_claims') 判断表是否存在：存在才清理，
+    不存在直接继续。这是 RED fixture 兼容，不是生产旁路。
+    """
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        exists = await connection.fetchval(
+            "SELECT to_regclass('public.organization_bootstrap_claims') IS NOT NULL"
+        )
+        if exists:
+            await connection.execute(
+                "DELETE FROM organization_bootstrap_claims WHERE principal_id = $1",
+                principal_id,
+            )
+    finally:
+        await connection.close()
+
+
 async def _reset_alice() -> UUID:
-    """清空 alice-oidc 的既有 memberships，返回 principal id（每用例自建精确集合）。"""
+    """清空 alice-oidc 的既有 memberships 与 bootstrap claim，返回 principal id。
+
+    四轮 RED 机制修订登记：bootstrap claim 是 identity-global 持久状态（0008），
+    本文件共享同一数据库与同一 principal——用例必须连同 claim 一起重置，否则先前
+    用例的 claim 会让后续用例的 bootstrap 得到 403。claim 表无直接表权限，
+    测试经 migrator（superuser）清理。
+    """
     principal = await _seed_principal("alice-oidc")
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -529,6 +557,7 @@ async def _reset_alice() -> UUID:
         )
     finally:
         await connection.close()
+    await _delete_bootstrap_claims_if_exists(principal)
     return principal
 
 
