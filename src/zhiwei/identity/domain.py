@@ -42,6 +42,15 @@ class OrganizationExistsError(IdentityCommandError):
     """bootstrap 目标组织已存在且请求不是创建者的精确重放（租户接管拒绝）。"""
 
 
+class BootstrapClaimConflict(IdentityCommandError):
+    """principal 已 bootstrap 过另一个 Organization：持久 claim 围栏拒绝（403）。
+
+    一个 principal 最多 claim 一个由自己 bootstrap 创建的 Organization；membership
+    被删除不能重置该资格。claim 与 org 创建同事务——claim=false 使刚插入的 org
+    整体回滚（S1-T4 四轮修复）。
+    """
+
+
 class ResourceConflictError(IdentityCommandError):
     """目标资源 id 已存在且请求不是原始幂等重放。"""
 

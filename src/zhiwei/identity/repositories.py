@@ -315,6 +315,28 @@ class IdentityRepository:
         )
         return IdempotencyResult(created=result.created, response=result.response)
 
+    async def claim_organization_bootstrap(
+        self, principal_id: UUID, organization_id: UUID
+    ) -> bool:
+        """经窄 SECURITY DEFINER 函数声明 bootstrap claim（identity-global 最终围栏）。
+
+        organization_bootstrap_claims 不给任何角色直接表权限（0008），本方法是唯一
+        调用点：函数内部以 transaction-level advisory lock 按 principal 串行化，
+        claim 已存在且 target 相同 → True；不同 → False；返回 False 时调用方必须
+        抛 BootstrapClaimConflict 并使整个事务回滚。
+        """
+        result = await self._session.execute(
+            text(
+                "SELECT public.zhiwei_claim_organization_bootstrap(:principal_id, "
+                ":organization_id)"
+            ),
+            {
+                "principal_id": principal_id,
+                "organization_id": organization_id,
+            },
+        )
+        return bool(result.scalar_one())
+
     async def lookup_idempotency(
         self, *, scope: str, key: str
     ) -> IdempotencyLookup | None:

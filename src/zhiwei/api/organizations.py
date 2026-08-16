@@ -11,7 +11,12 @@
   审计 + outbox（任一写失败整体回滚）；业务拒绝 → 独立事务 failed 审计。bootstrap
   被 OPA 拒绝不写审计（schema 边界例外，见 policy_gate 文档）。
 - bootstrap 的 PEP 输入使用独立 org/create 动作（二轮修复：不借用 org/manage），
-  仅无 active org 的 USER 且无任何角色绑定可进入。
+  仅无 active org 的 USER 且无任何角色绑定可进入；
+- 持久 bootstrap claim（四轮修复）：仅当本次确实创建新 org 时，在同一事务内声明
+  claim（窄 SECURITY DEFINER 函数 + principal 级 advisory lock 串行化）；claim 已
+  指向其他 org → BootstrapClaimConflict → 403、刚插入的 org 整体回滚、不写 failed
+  审计（loser target 无合法 audit FK scope，pre-tenant 例外）；membership 删除不
+  重置 claim 资格。
 """
 
 from collections.abc import Callable
@@ -31,6 +36,7 @@ from zhiwei.api.policy_gate import (
     request_trace,
 )
 from zhiwei.identity.commands import (
+    BootstrapClaimConflict,
     IdempotencyRequest,
     OrganizationExistsError,
     PrincipalDisabledError,
@@ -198,6 +204,15 @@ def create_organizations_router(
                         resource_version=1,
                         authorization=authorization,
                     )
+            except BootstrapClaimConflict:
+                # 持久 claim 围栏拒绝（四轮）：同一 principal 已 bootstrap 过另一个
+                # org。事务已整体回滚（含刚插入的 org）；loser target 不存在，无合法
+                # audit FK scope → 沿用冻结的 pre-tenant 例外：不写 failed 审计、
+                # 零 audit/outbox（不得静默扩大该例外）。
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="bootstrap claim already used for another organization",
+                ) from None
             except _REQUEST_ERRORS as error:
                 await append_failed_mutation_audit(
                     sessions,

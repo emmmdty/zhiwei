@@ -254,9 +254,45 @@ class Membership(Base):
     )
 
 
+class OrganizationBootstrapClaim(Base):
+    """identity-global bootstrap claim（S1-T4 四轮）：一个 principal 最多一个 bootstrap org。
+
+    不属于 tenant 数据面（0008）：无 RLS、无 org/ws 列，不给任何角色直接表权限——
+    只允许经窄 SECURITY DEFINER 函数 zhiwei_claim_organization_bootstrap 访问
+    （principal 级 advisory lock 串行化 + UNIQUE 第二层防线）。membership 生命周期
+    不影响 claim：成员资格被删除不能重置 bootstrap 资格。
+    """
+
+    __tablename__ = "organization_bootstrap_claims"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["principal_id"],
+            ["principals.id"],
+            name="fk_organization_bootstrap_claims_principal",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id"],
+            ["organizations.id"],
+            name="fk_organization_bootstrap_claims_organization",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", name="uq_organization_bootstrap_claims_organization_id"
+        ),
+    )
+
+    principal_id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class WorkspaceMembership(Base):
     """Workspace 级角色绑定；organization_id 与 workspace_id 复合外键保证租户一致。"""
-
     __tablename__ = "workspace_memberships"
     __table_args__ = (
         ForeignKeyConstraint(

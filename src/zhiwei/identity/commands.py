@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from zhiwei.contracts.canonical import digest as canonical_digest
 from zhiwei.identity.domain import (
+    BootstrapClaimConflict,
     ExternalIdentity,
     ExternalIdentityConflictError,
     Group,
@@ -42,6 +43,7 @@ IDEMPOTENCY_SCOPE_MEMBER_REMOVE = "organization.member.remove"
 IDEMPOTENCY_SCOPE_GROUP_CREATE = "workspace.group.create"
 
 __all__ = [
+    "BootstrapClaimConflict",
     "CommandOutcome",
     "ExternalIdentityConflictError",
     "IdempotencyRequest",
@@ -136,6 +138,10 @@ class IdentityRepositoryProtocol(Protocol):
     async def create_organization(
         self, organization_id: UUID, *, status: str
     ) -> tuple[bool, Organization]: ...
+
+    async def claim_organization_bootstrap(
+        self, principal_id: UUID, organization_id: UUID
+    ) -> bool: ...
 
     async def get_organization(self, organization_id: UUID) -> Organization | None: ...
 
@@ -271,10 +277,14 @@ async def create_organization(
     owner_principal_id: UUID,
     idempotency: IdempotencyRequest | None = None,
 ) -> CommandOutcome:
-    """Organization bootstrap：原子创建 Organization 与创建者的 Owner Membership。
+    """Organization bootstrap：原子创建 Organization、bootstrap claim 与 Owner Membership。
 
     INSERT ... RETURNING 原子区分「本次创建」与「组织已存在」：组织已存在时绝不先写
-    Owner membership（租户接管防护），只走只读幂等重放路径。
+    Owner membership（租户接管防护），只走只读幂等重放路径；仅本次确实创建新 org 时
+    调用持久 bootstrap claim（S1-T4 四轮：一个 principal 最多 claim 一个 bootstrap
+    org，membership 删除不重置资格）。claim=false（同一 principal 已 claim 不同
+    target）抛 BootstrapClaimConflict，使刚插入的 organization 整体回滚——API 层映射
+    403 且不写 failed 审计（loser target 无合法 audit FK scope，pre-tenant 例外）。
     """
     response = {"id": str(organization_id), "status": "active"}
     created, _ = await repository.create_organization(organization_id, status="active")
@@ -285,6 +295,13 @@ async def create_organization(
             owner_principal_id=owner_principal_id,
             idempotency=idempotency,
             response=response,
+        )
+    claimed = await repository.claim_organization_bootstrap(
+        owner_principal_id, organization_id
+    )
+    if not claimed:
+        raise BootstrapClaimConflict(
+            "principal has already bootstrapped another organization"
         )
     await repository.add_membership(
         principal_id=owner_principal_id,
