@@ -2,6 +2,7 @@ PY   ?= .venv/bin/python
 S    := evals/scripts
 SUMS := evals/CHECKSUMS.sha256
 ART  := evals/novels evals/questions evals/risk
+HANDOFF_BASE ?= HEAD
 
 .PHONY: help evals corpus questions risk checksums validate determinism clean-evals handoff-check
 
@@ -13,7 +14,7 @@ help:
 	@echo "make checksums     重写 $(SUMS)"
 	@echo "make validate      跑一致性 / 可复算 / 自校验 / 篡改检测（CI 门禁）"
 	@echo "make determinism   连续两次干净重建，断言产物逐字节一致"
-	@echo "make handoff-check 校验交接规则：tests/ 与 evals/ 未被实现方改动"
+	@echo "make handoff-check HANDOFF_BASE=<RED commit> 校验 GREEN 阶段锁定测试与 evals/"
 	@echo "make assets-lock   校验冻结资产与 $(SUMS) 无漂移（等价 zhiwei assets lock --check）"
 
 # 冻结资产 lock Gate：默认只读校验，漂移即失败；重写需显式 --write
@@ -58,22 +59,27 @@ determinism:
 	  || { echo "[determinism] ✗ 产物不可复现"; exit 1; }
 	@$(MAKE) --no-print-directory checksums
 
-# 交接门禁：实现方（B/C 档）只写实现，不得动测试与冻结资产。
-# 前提是交接前 RED 已提交——因此这里比对的基线就是 HEAD，untracked 的新测试文件同样算违规。
+# 交接门禁：RED 已提交后，GREEN 阶段不得修改锁定测试，任何阶段都不得修改冻结资产。
+# HANDOFF_BASE 应指向 RED commit；默认 HEAD 仅用于兼容既有交接单。untracked 文件同样算漂移。
 # 详见 docs/DEV_ALLOCATION.md §4。
 handoff-check:
 	@bad=0; \
-	t=$$(git status --porcelain -- tests/ 2>/dev/null); \
+	if ! git rev-parse --verify "$(HANDOFF_BASE)^{commit}" >/dev/null 2>&1; then \
+	  echo "[handoff] ✗ HANDOFF_BASE 不是有效 commit: $(HANDOFF_BASE)"; exit 2; \
+	fi; \
+	t=$$({ git diff --name-status "$(HANDOFF_BASE)" -- tests/; \
+	        git ls-files --others --exclude-standard tests/ | sed 's/^/??\t/'; } 2>/dev/null); \
 	if [ -n "$$t" ]; then \
-	  echo "[handoff] ✗ tests/ 被改动——实现方不得修改测试（含加 skip / 改断言 / 新增用例）:"; \
+	  echo "[handoff] ✗ tests/ 相对 RED commit 漂移——GREEN 阶段不得修改锁定测试:"; \
 	  echo "$$t" | sed 's/^/           /'; bad=1; \
 	fi; \
-	e=$$(git status --porcelain -- evals/ 2>/dev/null); \
+	e=$$({ git diff --name-status "$(HANDOFF_BASE)" -- evals/; \
+	        git ls-files --others --exclude-standard evals/ | sed 's/^/??\t/'; } 2>/dev/null); \
 	if [ -n "$$e" ]; then \
-	  echo "[handoff] ✗ evals/ 冻结资产被改动:"; \
+	  echo "[handoff] ✗ evals/ 冻结资产相对交接基线漂移:"; \
 	  echo "$$e" | sed 's/^/           /'; bad=1; \
 	fi; \
-	if [ $$bad -eq 0 ]; then echo "[handoff] ✓ tests/ 与 evals/ 未被改动"; fi; \
+	if [ $$bad -eq 0 ]; then echo "[handoff] ✓ 锁定测试与 evals/ 相对 $(HANDOFF_BASE) 未漂移"; fi; \
 	exit $$bad
 
 clean-evals:

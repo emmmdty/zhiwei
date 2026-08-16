@@ -101,7 +101,7 @@ allowlist、数据分类、能力 attestation、供应商侧余额关闭和 oper
 - [Discover/Risk 评测](docs/RISK_EVAL.md)
 - [S0-S11 能力门](docs/ROADMAP.md)
 - [对外叙事与声明注册表](docs/PORTFOLIO_NARRATIVE.md)
-- [Codex/Claude Code 实施计划](docs/superpowers/plans/README.md)
+- [Agent 实施计划](docs/superpowers/plans/README.md)
 
 ## 开发状态规则
 

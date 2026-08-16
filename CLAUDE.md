@@ -7,11 +7,11 @@
 
 以下是仅对 Claude Code 生效的补充：
 
-- **承担 A 档任务**（安全边界、并发/事务、密码学与 digest、核心不变量、契约冻结、统计方法）。
-  这类改动先用 plan mode 过一遍设计再动手。
-- **写 RED 时对 B 档产出交接单**，格式见 `docs/DEV_ALLOCATION.md` §4.1。交接前必须先提交 RED，
-  否则 `make handoff-check` 没有比对基线。
-- **回收 B 档产出时做第三层 review**：自动检查拦不住「刚好骗过测试」的实现——重点看有没有
+- 当承担**设计/验收方**职责时，负责规格与计划、A 档不变量和关键测试、UI 视觉设计与验收，以及
+  阶段 Gate；不因使用 Claude Code 就自动取得某个 Task 的实现所有权。
+- 当承担**执行方**职责时，与其他工具遵守相同规则；B/C 档可完成 RED → GREEN，A 档按已冻结契约
+  实现。RED 必须先提交，随后使用 `make handoff-check HANDOFF_BASE=<RED commit>` 验证锁定测试。
+- **做独立 review 时检查假实现**：自动检查拦不住「刚好骗过测试」的实现——重点看有没有
   `if input == <测试里的值>`、`except: pass`、只覆盖测试用到的分支、TODO 占位。
-- **阶段 Gate 由 Claude Code 跑**，不交给 opencode。
+- 工具名称不是 Gate 的硬前置；阶段 Gate 应由未直接实现该阶段关键路径的设计/验收方执行。
 - live 模型调用（S3-T7、S9 live suite）只由 operator 手动触发，任何代理都不得自动执行。

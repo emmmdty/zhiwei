@@ -1,24 +1,36 @@
-# 开发工具分工、并行与交接
+# 开发职责、风险分级与交接
 
-> 本文规定 86 个 Task 由哪个工具承担、如何并行、如何交接与验收。
+> 本文规定各 Task 的风险档位、职责边界、并行方式、交接与验收。
 > 纪律见 [AGENTS.md](../AGENTS.md)（对所有编码代理生效的唯一指令源；`CLAUDE.md` 只是导入它并追加
-> Claude Code 专属条目）。此处只解决「谁做、何时做、怎么验收」。
+> Claude Code 专属条目）。此处只解决「由哪类职责做、何时做、怎么验收」。
 >
-> **Opus 5 与 deepseek-v4-flash 在本文中一律指开发工具**（Claude Code / opencode 的驱动模型），
-> 与 Agent 系统运行时使用的 model provider 无关——后者由 `docs/MODELS.md` 的 EndpointProfile 管理。
+> **档位不绑定具体模型或开发工具。** 默认优先用 GPT/Opus 承担设计与验收、DeepSeek 承担执行，
+> 但可按额度和可用性替换；交接单必须按职责与产物写，不得把模型名称写成开工或 Gate 前置条件。
+> 这里提到的开发工具与 Agent 系统运行时 model provider 无关；后者由 `docs/MODELS.md` 管理。
 
 ## 1. 分档判据
 
-| 档 | 承担者 | 判据 | 占比 |
-| --- | --- | --- | --- |
-| **A** | Claude Code + Opus 5 | **错误不一定被测试捕获，或后果不可逆**：安全边界、并发/事务、密码学与 digest、核心不变量、契约冻结、统计方法 | ~45% |
-| **B** | Opus 5 写 RED → opencode + deepseek-v4-flash 写 GREEN | 契约明确、行为可被测试完整覆盖：repository/CRUD、adapter、parser、CLI、UI | ~50% |
-| **C** | opencode + deepseek-v4-flash 全包 | 机械转换 + 确定性验证：fixture 数据、样板导出、同一模式的第 N 个实现、文档同步 | ~5% |
+| 档 | 默认工作流 | 判据 |
+| --- | --- | --- |
+| **A** | 设计/验收方冻结设计、不变量和关键测试 → 执行方实现 → 独立验收 | **错误不一定被测试捕获，或后果不可逆**：安全边界、并发/事务、密码学与 digest、核心不变量、契约冻结、统计方法 |
+| **B** | 执行方完成 RED → GREEN → 自动检查，设计/验收方在 Task 或阶段 Gate 复核 | 契约明确、行为可被测试完整覆盖：repository/CRUD、adapter、parser、CLI、UI |
+| **C** | 执行方端到端完成，自动 Gate 兜底，阶段收口抽查 | 机械转换 + 确定性验证：fixture 数据、样板导出、同一模式的第 N 个实现、文档同步 |
 
 判据的关键不是「难不难」，而是**测试红了能不能兜住**。RLS 策略写对了但连接池没清 tenant context，
 测试可能全绿而隔离已破——这类归 A。序列化一个 tool_call 结构写错了，golden fixture 立刻红——这类归 B。
 
-## 2. 逐阶段分配
+### 1.1 职责而非模型
+
+| 职责 | 默认工具偏好 | 产物与边界 |
+| --- | --- | --- |
+| 设计/验收方 | GPT/Opus | 规格、计划、A 档不变量与关键测试、UI 视觉稿与验收、独立代码 review、阶段 Gate |
+| 执行方 | DeepSeek | 大部分 RED 测试、GREEN 实现、修复、自动检查和前端落地；A 档也由执行方实现 |
+| operator | 人工 | live、外部 OAuth、破坏性故障、发布等必须显式授权的动作 |
+
+工具偏好不是强制绑定。同一个工具可在不同 Task 承担不同职责，但 A 档最终验收必须与关键路径实现
+保持独立；无法做到独立验收时，该主张只能标为 `未验证`，不得降级 Gate 来换取通过。
+
+## 2. 逐阶段风险分级
 
 ### S0 Foundation — 全项目地基，A 档密度最高
 
@@ -150,7 +162,7 @@
 | 3 S9 发布流集成 | B | |
 | 4 Knowledge/Capability/Memory/Admin journeys | B | |
 | 5 ChangeBrief 定义 | B | |
-| 6 ChangeBrief 实现 | B | **必须由 B 档完成**——若实现方需要改 Core 才能做完，说明通用性主张不成立，这是最有价值的检验 |
+| 6 ChangeBrief 实现 | B | **必须保持 B 档工作流**——若执行方需要改 Core 才能做完，说明通用性主张不成立，这是最有价值的检验 |
 | 7 architecture 证据封存 | **A** | |
 
 ### S11 Production Reference
@@ -172,33 +184,36 @@
 
 - **阶段之间**：`S0 → S1 → … → S11`，前一阶段 Gate 全绿才能进入下一阶段。这是能力门制的核心，
   不因为工具并行而放宽。
-- **阶段内的 A 档基础 Task**：后续 Task 依赖其产出的表、契约与不变量。
+- **阶段内的 A 档基础 Task**：后续 Task 依赖其产出的表、契约与不变量；串行约束来自依赖，不来自
+  使用哪一种开发工具。
 
 ### 3.2 两条线流水并行
 
-真正的并行不在「同档任务之间」，而在**两个工具之间**：
+并行围绕职责和文件所有权组织，不围绕模型名称组织：
 
 ```
-Opus 5 主线   │ S(n) A 档实现 ──→ S(n) B 档 RED 批量产出 ──→ review ──→ S(n) Gate ──→ S(n+1)…
-              │                          │                     ↑
-              │                        交接单                 完成回收
-              │                          ↓                     │
-flash 副线    │            ┌──── B 档 GREEN（可开多会话并行）───┘
-              │            └──── C 档（fixture / 样板 / 文档同步）
+设计/验收线 │ 阶段计划 ──→ A 档不变量/关键 RED ─────────→ review / 视觉验收 / Gate
+            │                    │                                  ↑
+            │                  交接单                              回收
+            │                    ↓                                  │
+执行线      │      A 档 GREEN ──┼── B/C 档 RED → GREEN ────────────┘
 ```
 
 节奏：
 
-1. Opus 进入阶段 S(n)，先完成该阶段全部 **A 档基础 Task**（表、契约、不变量）。
-2. Opus 为该阶段全部 **B 档 Task 批量写 RED**，一次性产出交接单。
-3. flash 并行认领 B 档 —— **文件白名单互不重叠的 Task 可同时开多个会话**。
-4. flash 完成一个，Opus review 一个；同时 Opus 推进剩余 A 档。
-5. 阶段 Gate 由 Opus 跑，不交给 flash。
+1. 设计/验收方先明确阶段计划、Task 档位、依赖顺序和验收证据；A 档还要冻结不变量与关键测试，
+   UI Task 还要冻结视觉稿或可判定的视觉准则。
+2. 执行方默认使用 DeepSeek。A 档按冻结契约实现；B/C 档由执行方完成 RED → GREEN，RED 必须先
+   单独提交，进入 GREEN 后测试锁定。
+3. **文件白名单互不重叠且依赖已满足的 Task 可并行执行**，无需等待某个指定模型空闲。
+4. Task review 可按风险逐个或批量进行；阶段 Gate 由独立的设计/验收方执行，默认优先使用 GPT/Opus，
+   但工具名称不是 Gate 条件。
+5. A 档或 UI journey 未通过独立验收时，不能仅凭执行方自测升级为 `已验证`。
 
 ### 3.3 可跨阶段提前做的 C 档
 
 总设计允许在不依赖尚未冻结 schema 的前提下提前做：UI renderer 静态部分、评测语料、reference
-MCP/OpenAPI server、样板 fixture。这些可以在任何时候交给 flash 副线，**但不得提前冻结依赖未实现
+MCP/OpenAPI server、样板 fixture。这些可以在任何时候交给执行线，**但不得提前冻结依赖未实现
 schema 的契约**，也不得以此绕过前置 Gate。
 
 ### 3.4 同阶段内可并行的 B 档组（示例）
@@ -213,14 +228,20 @@ schema 的契约**，也不得以此绕过前置 Gate。
 
 ## 4. 交接协议
 
-### 4.1 交接单（Opus → flash）
+### 4.1 Task 交接单（设计/验收方 → 执行方）
 
-每个 B 档 Task 交接时产出一份自包含的交接单，flash **不需要理解整体架构**即可执行：
+A 档和 UI Task 必须有自包含交接单；B/C 档在计划、白名单和验收命令已经足够明确时可直接按计划执行。
+交接单描述职责和产物，不指定必须使用哪个模型：
 
 ```markdown
 ## 交接单 S{n}-T{m}
 
 **目标**：一句话说明要实现什么
+
+**风险与职责**
+- 档位：A / B / C
+- 设计/验收方：负责哪些契约、视觉标准和 Gate
+- 执行方：负责哪些 RED、GREEN 和自动检查
 
 **必读文件**（只读这些，不要通读仓库）
 - specs/s{n}-*.md 的第 X 节
@@ -229,17 +250,26 @@ schema 的契约**，也不得以此绕过前置 Gate。
 **可修改文件白名单**（只能改这些，其他一律不许动）
 - src/zhiwei/.../{a}.py   （新建）
 - src/zhiwei/.../{b}.py   （修改）
+- tests/...               （B/C 的 RED 阶段可写；A 的冻结测试只读）
 
-**当前 RED**
-$ uv run pytest tests/unit/xxx -q      # 预期：N failed，失败原因是 ModuleNotFoundError / 未实现
+**RED 所有权与冻结点**
+- A：列出设计/验收方已冻结的关键测试；执行方不得修改
+- B/C：执行方先写 RED、确认失败原因正确并单独提交
+- RED commit：<commit sha，进入 GREEN 前填写>
 
 **完成判据 GREEN**
-$ uv run pytest tests/unit/xxx -q      # 预期：N passed
+$ uv run pytest tests/unit/xxx -q
 $ uv run ruff check src tests && uv run pyright
-$ make handoff-check                    # 预期：tests/ 未被改动
+$ make handoff-check HANDOFF_BASE=<RED commit>
+
+**UI 视觉验收**（非 UI Task 删除本节）
+- 已批准参考稿或 journey：<path>
+- 必须检查的 viewport、状态和交互：<list>
+- 验收证据：截图、Playwright artifact 或人工 review 记录
 
 **禁止**
-- 修改 tests/ 下任何文件（包括加 skip、改断言、改期望值）
+- GREEN 阶段修改已锁定测试，包括加 skip/xfail、放宽断言或改期望值
+- A 档执行方修改已冻结的关键测试
 - 修改白名单外的文件
 - 引入新的第三方依赖（需要时停下来报告）
 - 为了让测试通过而硬编码返回值
@@ -250,29 +280,34 @@ $ make handoff-check                    # 预期：tests/ 未被改动
 - 需要改白名单外的文件才能完成
 ```
 
-### 4.2 验收（flash → Opus）
+### 4.2 验收（执行方 → 设计/验收方）
 
-三层验收，前两层自动、第三层人工：
+验收分为自动证据和独立判断：
 
 | 层 | 手段 | 拦截什么 |
 | --- | --- | --- |
-| 1 自动 | `make handoff-check` | 改测试、改白名单外文件 |
+| 1 自动 | `make handoff-check HANDOFF_BASE=<RED commit>` | GREEN 阶段改锁定测试、冻结资产漂移 |
 | 2 自动 | 该 Task 的 pytest + ruff + pyright | 功能未完成、类型错误 |
-| 3 人工 | Opus review | **假实现**：硬编码返回值、只覆盖测试用到的分支、吞掉异常、TODO 占位 |
+| 3 独立 review | 设计/验收方检查 diff、契约、视觉证据和 Gate artifact | **假实现**：硬编码返回值、只覆盖测试用到的分支、吞掉异常、TODO 占位，以及视觉偏离 |
 
-第三层不可省。小模型最典型的失败模式不是「写不出来」，而是**写出刚好骗过测试的实现**。
-review 重点看：有没有 `if input == <测试里的值>`、有没有 `except: pass`、边界条件是否真的处理了。
+第三层对 A 档、UI journey 和阶段 Gate 不可省；B/C 可在阶段收口批量 review，避免为每个机械 Task
+消耗高成本模型额度。review 重点看：有没有 `if input == <测试里的值>`、`except: pass`、只处理测试
+路径、TODO 占位，以及边界条件是否真的处理了。
 
 ### 4.3 冲突与回滚
 
-- flash 在独立分支工作：`feat/s{n}-t{m}-<slug>`，Opus review 后合并。
-- review 不通过时：**退回重做，不由 Opus 直接改**——否则分工失去意义，且掩盖了交接单写得不够清楚
-  这一真正问题。第二次仍不通过则该 Task 升档为 A。
-- 升档记录在本文件，作为后续判据的校准依据。
+- 执行方在独立分支工作：`feat/s{n}-t{m}-<slug>`，通过 review 后合并。
+- review 不通过时优先退回执行方修复；若根因是契约不清，先由设计/验收方修订交接单或关键测试，
+  再重新进入 RED。不要由验收方静默改实现来掩盖交接缺陷。
+- 重复失败时提高验收强度或将 Task 升为 A 档，但仍不绑定具体模型；升级原因记录在本文或交接单，
+  作为后续分级判据的校准依据。
 
 ## 5. 成本与效果的取舍
 
-- A 档不省。它占的是「错了要返工整个下游」的位置，返工成本远高于模型成本。
-- B 档是成本节约的主战场：RED 由 Opus 写一次，GREEN 由 flash 做，且 GREEN 通常是 Task 中体量最大的部分。
-- C 档几乎无风险，全部交给 flash。
+- 高成本模型额度优先用于规格、计划、A 档契约、视觉判断、独立 review 和阶段 Gate，不用于承担大部分
+  常规实现。
+- DeepSeek 默认承担执行主线：B/C 档 RED → GREEN，以及 A 档在冻结契约下的实现与修复。
+- A 档不省的是**独立设计与验收强度**，不是指定模型亲自写实现。额度不足时可批量 review、缩小
+  验收上下文或更换同职责工具，但不得删减安全不变量、关键测试或 Gate。
+- 模型和工具只是可替换资源；任务状态以 commit、测试输出和 Gate artifact 为准，不以工具品牌为准。
 - **live 模型调用永远不交给任何 AI 开发工具**，只由 operator 手动触发（S3-T7、S9 live suite）。

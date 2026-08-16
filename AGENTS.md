@@ -52,34 +52,48 @@ override，优先级高于 `config/providers/endpoints.yaml`**——企业自部
 
 **测试文件是契约，不是可调整的障碍。**
 
-- 实现方**不得**修改 `tests/` 下任何文件——包括放宽断言、加 `skip`、改期望值、注释掉用例。
-- 测试写错了要改，必须回到 RED 阶段由测试作者改，并说明为什么原断言是错的。
-- 交接后运行 `make handoff-check` 验证这条规则未被破坏。
+- B/C 档可由同一执行方完成 RED 和 GREEN；RED 测试必须先单独提交，进入 GREEN 后测试即锁定。
+- A 档的关键契约与安全测试由设计/验收方先冻结；执行方可在 RED 阶段补充实现级测试，但不得修改
+  已冻结测试。
+- GREEN 阶段禁止放宽断言、加 `skip` / `xfail`、改期望值或注释用例。测试确实有错时，必须说明
+  原契约为什么错误、回到 RED 阶段修订，并重新确认预期失败；A 档修订还需设计/验收方确认。
+- GREEN 完成后运行 `make handoff-check HANDOFF_BASE=<RED commit>`，验证锁定测试与 `evals/` 未漂移。
 
-## 角色分工
+## 职责与风险分工
 
-工作按风险分三档，逐 Task 分配见 `docs/DEV_ALLOCATION.md`：
+工作按风险分三档，逐 Task 分级见 `docs/DEV_ALLOCATION.md`。档位约束工作流和验收强度，**不绑定
+具体模型或开发工具**：
 
-| 档 | 承担者 | 判据 |
+| 档 | 工作流 | 判据 |
 | --- | --- | --- |
-| A | Claude Code + Opus 5 | 错误不一定被测试捕获，或后果不可逆：安全边界、并发/事务、密码学与 digest、核心不变量、契约冻结、统计方法 |
-| B | Opus 5 写 RED → opencode + deepseek-v4-flash 写 GREEN | 契约明确、行为可被测试完整覆盖 |
-| C | opencode + deepseek-v4-flash 全包 | 机械转换 + 确定性验证 |
+| A | 先冻结设计、不变量和关键测试，再由执行方实现，最后独立验收 | 错误不一定被测试捕获，或后果不可逆：安全边界、并发/事务、密码学与 digest、核心不变量、契约冻结、统计方法 |
+| B | 执行方完成 RED → GREEN，设计/验收方在 Task 或阶段 Gate 复核 | 契约明确、行为可被测试完整覆盖 |
+| C | 执行方端到端完成，自动 Gate 兜底，阶段收口抽查 | 机械转换 + 确定性验证 |
 
-**如果你是 B/C 档的实现方**：
+默认职责分配如下，但可按额度和可用性替换工具；交接单记录的是职责和产物，不把模型名称写成前置条件：
 
-- 只改交接单白名单内的文件，不要通读整个仓库。
-- 遇到规格歧义、需要改测试、需要动白名单外的文件、或发现设计缺陷时——**停下来报告，不要自行决策**。
-  你看不到的上下文比你看到的多。
+- **设计/验收方**：优先使用 GPT/Opus，负责规格与计划、A 档不变量和关键测试、UI 视觉设计与
+  视觉验收、代码审查及阶段 Gate。
+- **执行方**：优先使用 DeepSeek，负责大部分任务的 RED、GREEN、修复、自动检查和前端实现；A 档
+  同样由执行方写实现，只是关键契约先冻结、最终验收独立进行。
+- **operator**：只负责必须由人显式触发的 live、外部 OAuth、破坏性故障和发布动作。
+
+**如果你是执行方**：
+
+- 只读 Task 必需上下文，只改计划或交接单白名单内的文件。
+- B/C 档可在 RED 阶段创建或修订本 Task 的测试；A 档已冻结的关键测试只读。
+- 遇到规格歧义、GREEN 阶段需要改锁定测试、需要动白名单外的文件、或发现设计缺陷时——**停下来
+  报告，不要自行决策**。B/C 档测试修订若只是正常 RED 设计，不视为异常。
 - 不引入新的第三方依赖。需要时停下来报告。
 - 不为了让测试通过而硬编码返回值——这会在 REVIEW 阶段被退回重做。
+- UI 以已批准的视觉稿和 journey 为契约；执行方负责实现，不自行改变视觉方向。
 
 ## 命令
 
 ```bash
 make evals            # 重建并校验冻结基准资产（110 项）
 make determinism      # 两次干净重建，断言逐字节一致
-make handoff-check    # 校验交接规则：tests/ 与 evals/ 未被实现方改动
+make handoff-check HANDOFF_BASE=<RED commit>  # 校验 GREEN 阶段锁定测试与 evals/ 未漂移
 uv run pytest -q
 uv run ruff check .
 uv run pyright
@@ -96,6 +110,7 @@ uv run pyright
 
 ## 提交
 
-- 按 plan 中的 `Suggested commit` 边界提交，一个 Task 一个 commit。
+- 不把多个 Task 混进同一提交。执行方同时承担 RED/GREEN 时，先提交 RED，再按 plan 中的
+  `Suggested commit` 提交 GREEN 实现。
 - Conventional Commits，作用域取模块名：`feat(contracts):`、`fix(runtime):`。
 - 不在提交信息里写未经 artifact 支撑的效果数字。
