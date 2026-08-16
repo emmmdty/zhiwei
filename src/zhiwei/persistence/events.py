@@ -104,7 +104,7 @@ class AuditEventData(BaseModel):
             raise ValueError("v2 audit events require a sha256: hex payload digest")
         if self.resource_version is not None and self.resource_version < 0:
             raise ValueError("v2 audit events require a non-negative resource_version")
-        if self.decision_reason is not None and len(self.decision_reason) == 0:
+        if self.decision_reason is None or len(self.decision_reason) == 0:
             raise ValueError("v2 audit events require a non-empty decision_reason")
         has_decision_id = self.decision_id is not None
         has_revision = self.policy_revision is not None
