@@ -75,6 +75,8 @@ class Actor(BaseModel):
     principal_id: UUID
     kind: PrincipalKind
     roles: tuple[RoleBinding, ...] = ()
+    # 二轮修复：bootstrap 判定输入（PEP 从权威 memberships 解析；None = 无 active org）
+    active_organization_id: UUID | None = None
 
 
 class EffectiveIdentity(BaseModel):

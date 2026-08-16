@@ -40,10 +40,12 @@ _SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 class AuditRecord(BaseModel):
     """一条结构化审计命令；S1 无 delegation 时 effective_identity_ref = actor_ref。
 
-    metadata 配对（与 0006 CHECK 逐条一致，repair addendum §3.1.6）：
+    metadata 配对（与 0006/0007 CHECK 逐条一致，repair addendum §3.1.6/§3.2）：
     - allowed → decision_id 与 policy_revision 必须同时非空；
     - denied（OPA deny）→ 同时非空；denied（本地拒绝）→ 同时 NULL；
-    - failed → 同时 NULL；禁止只有 decision_id 或只有 policy_revision。
+    - failed → 同时 NULL；禁止只有 decision_id 或只有 policy_revision；
+    - 非空即长度 ≥ 1：两者同为 NULL，或同为长度 ≥ 1 的非空字符串；空串拒绝
+      （二轮修复，与 0007 CHECK 逐条一致）。
     resource_version=0 是「unknown（mutation 未应用）」哨兵，只在 denied/failed 路径使用。
     """
 
@@ -57,8 +59,8 @@ class AuditRecord(BaseModel):
     resource_version: int = Field(ge=0)
     actor_ref: str = Field(min_length=1, max_length=255)
     effective_identity_ref: str = Field(min_length=1, max_length=255)
-    decision_id: str | None = Field(default=None, max_length=2048)
-    policy_revision: str | None = Field(default=None, max_length=2048)
+    decision_id: str | None = Field(default=None, min_length=1, max_length=2048)
+    policy_revision: str | None = Field(default=None, min_length=1, max_length=2048)
     decision_reason: str = Field(min_length=1, max_length=2048)
     result: Literal["allowed", "denied", "failed"]
     request_id: str = Field(min_length=1, max_length=2048)

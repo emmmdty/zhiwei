@@ -207,6 +207,9 @@ class ActorContext(_FrozenModel):
     AgentIdentity 不创建会话；默认值只在 S1 会话路径内成立，AGENT 主体接入时改为显式必填。
     role_bindings 由 resolve_context 从已验证 memberships 填充，只含已解析 org/workspace 的
     绑定（repair addendum §3.2 provenance 裁决），绝不跨 org 携带。
+    active_organization_id 由 resolve_context 从权威 memberships 解析：存在任一
+    organization_status='active' 的绑定（org 或 workspace 作用域）时为其组织 id，否则
+    None（bootstrap 判定输入）。
     """
 
     principal_id: UUID
@@ -214,6 +217,7 @@ class ActorContext(_FrozenModel):
     workspace_id: UUID | None = None
     kind: PrincipalKind = PrincipalKind.USER
     role_bindings: tuple[ActorRoleBinding, ...] = ()
+    active_organization_id: UUID | None = None
 
     @model_validator(mode="after")
     def _workspace_requires_organization(self) -> ActorContext:

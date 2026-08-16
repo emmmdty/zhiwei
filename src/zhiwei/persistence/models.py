@@ -806,6 +806,16 @@ class AuditEvent(Base):
             "audit_schema_version = 1 OR resource_version >= 0",
             name="v2_resource_version",
         ),
+        # 0007 audit metadata non-empty（二轮修复）：v2 行的 decision_id/policy_revision
+        # 同为 NULL 或同为长度 ≥ 1 的非空串；空串在 DB 层同样拒绝（direct INSERT 不可绕过）。
+        CheckConstraint(
+            "audit_schema_version = 1 OR (decision_id IS NULL OR length(decision_id) > 0)",
+            name="v2_decision_id_nonempty",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR (policy_revision IS NULL OR length(policy_revision) > 0)",
+            name="v2_policy_revision_nonempty",
+        ),
         ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],

@@ -830,13 +830,23 @@ class SessionService:
         role_bindings 只含已解析 org 的 org 级绑定 + 已解析 workspace（若存在）的
         workspace 级绑定（repair addendum §3.2 provenance 裁决）：绝不携带其他 org
         的绑定，防止跨 org 遗留角色字符串在构造 PolicyInput 时按 fail closed 拒绝。
+
+        principal-only context（无 org 声明）也经权威 memberships 解析
+        active_organization_id（bootstrap 规则需要；不携带其他绑定数据，provenance
+        裁决不变）。
         """
         from zhiwei.identity.domain import ActorContext, ActorRoleBinding
 
         if organization_id is None:
             if workspace_id is not None:
                 raise MembershipScopeError("workspace context requires an organization")
-            return ActorContext(principal_id=principal_id)
+            memberships = await self.memberships(principal_id)
+            active_org = next(
+                (row["organization_id"] for row in memberships
+                 if row["organization_status"] == "active"),
+                None,
+            )
+            return ActorContext(principal_id=principal_id, active_organization_id=active_org)
         try:
             org = UUID(organization_id)
         except (ValueError, AttributeError) as exc:
@@ -849,6 +859,15 @@ class SessionService:
         ]
         if not org_memberships:
             raise MembershipScopeError("principal is not a member of the organization")
+        active_organization_id = (
+            org
+            if any(
+                row["organization_status"] == "active"
+                for row in memberships
+                if row["organization_id"] == org
+            )
+            else None
+        )
         role_bindings = tuple(
             ActorRoleBinding(
                 name=role,
@@ -860,7 +879,10 @@ class SessionService:
         )
         if workspace_id is None:
             return ActorContext(
-                principal_id=principal_id, organization_id=org, role_bindings=role_bindings
+                principal_id=principal_id,
+                organization_id=org,
+                role_bindings=role_bindings,
+                active_organization_id=active_organization_id,
             )
         try:
             workspace = UUID(workspace_id)
@@ -892,6 +914,7 @@ class SessionService:
             organization_id=org,
             workspace_id=workspace,
             role_bindings=role_bindings,
+            active_organization_id=active_organization_id,
         )
 
 

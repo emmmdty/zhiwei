@@ -358,6 +358,27 @@ delegation_hop_covers(d) if {
     time.parse_rfc3339_ns(d.expires_at) > time.parse_rfc3339_ns(input.context.now)
 }
 
+# ---------- bootstrap：无 active org 的 USER 创建首个组织（S1-T4 二轮修复）----------
+# 独立 org/create 动作，不向 org.manage 开放（矩阵不变，org_owner 专属）。
+# 仅 kind=user + 无 active org + 无任何角色绑定可进入；service account / agent
+# identity / 已有 active org（active_organization_id 非空）或携带绑定（roles 非空）
+# 的主体一律拒绝。active_organization_id 由 PEP 从权威 memberships 解析，非 caller 自述。
+bootstrap_org_create if {
+    input.resource.type == "org"
+    input.action == "create"
+    input.actor.kind == "user"
+    input.actor.active_organization_id == null
+    count(input.actor.roles) == 0
+}
+
+allow if {
+    bootstrap_org_create
+    count(hard_deny) == 0
+    count(sod_deny) == 0
+    count(context_deny) == 0
+    count(delegation_deny) == 0
+}
+
 # ---------- 决策与 reason ----------
 allow if {
     matrix_cell_allowed
@@ -386,8 +407,14 @@ deny_details := {d |
     d := concat("", ["delegation_deny:", k])
 }
 
+reason := "allow:org_create_bootstrap" if {
+    allow
+    bootstrap_org_create
+}
+
 reason := concat("", ["allow:", concat(",", sort([r | some r in allowed_via_roles]))]) if {
     allow
+    not bootstrap_org_create
 }
 
 reason := concat("", ["deny:", concat(";", sort(deny_details))]) if {

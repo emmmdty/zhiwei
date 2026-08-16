@@ -198,7 +198,9 @@ def _build_policy_input(
     """ActorContext → PolicyInput；未知角色名抛 ValueError（gate 捕获 → 本地拒绝）。
 
     角色绑定来自已验证 memberships（ActorContext.role_bindings，resolve_context 填充），
-    不信任 caller；S1 无 delegation → effective_identity=None。
+    不信任 caller；S1 无 delegation → effective_identity=None。actor.active_organization_id
+    同样来自 resolve_context 的权威 memberships 解析（None = 无 active org），供 OPA
+    org/create bootstrap 规则判定。
     """
     role_bindings = tuple(
         binding_from_membership(
@@ -210,7 +212,12 @@ def _build_policy_input(
         for binding in actor.role_bindings
     )
     return PolicyInput(
-        actor=Actor(principal_id=actor.principal_id, kind=actor.kind, roles=role_bindings),
+        actor=Actor(
+            principal_id=actor.principal_id,
+            kind=actor.kind,
+            roles=role_bindings,
+            active_organization_id=actor.active_organization_id,
+        ),
         effective_identity=None,
         organization_id=organization_id,
         workspace_id=workspace_id,
@@ -279,6 +286,7 @@ async def authorize_mutation(
             reason=REASON_TENANT_SCOPE_MISMATCH,
             request_id=request_id,
             trace_id=trace_id,
+            bootstrap=bootstrap,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="outside tenant scope"
@@ -311,6 +319,7 @@ async def authorize_mutation(
             reason=decision.reason,
             request_id=request_id,
             trace_id=trace_id,
+            bootstrap=bootstrap,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="policy denied"
@@ -331,12 +340,18 @@ async def _write_denied_audit(
     reason: str,
     request_id: str,
     trace_id: str,
+    bootstrap: bool,
 ) -> None:
-    """denied 审计（独立事务）。bootstrap 被拒（actor 无 org）→ 跳过（schema 边界例外）。
+    """denied 审计（独立事务）。bootstrap 被拒 → 跳过（§3.1.9 schema 边界例外）。
+
+    例外键是显式 bootstrap 标志而非「actor 无 org」：pre-tenant 目标不存在时任何
+    scope 都无合法 FK audit 落点（独立审查 WATCH-1 处置）。除 bootstrap 外的一切
+    deny（tenant 不匹配 / OPA deny / 本地拒绝）都必须写审计——跳过点只有这一个，
+    禁止以其他条件扩展。
 
     审计写失败 → 异常上抛（500）：mutation 绝不执行（repair addendum §3.1.7）。
     """
-    if actor.organization_id is None:
+    if bootstrap:
         return
     record = denied_audit_record(
         actor=actor,

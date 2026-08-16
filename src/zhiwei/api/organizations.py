@@ -5,10 +5,13 @@
 - mutation 要求非空 Idempotency-Key（接入 S0 idempotency 基础）；
 - 读跨租户/不存在资源统一 404（防枚举）；actor 与 tenant context 必须显式注入，
   没有默认 allow（OIDC 真实身份依赖在 S1-T2 由 app.py 组合时提供）；
-- 生产纵切（S1-T4 修复，repair addendum §3.1）：policy_enforcer 注入时，mutation 先经
-  api.policy_gate 求值——denied → 独立事务 denied 审计 + 403；allowed → 同一 tenant
-  事务内写 allowed 审计 + outbox（任一写失败整体回滚）；业务拒绝 → 独立事务 failed
-  审计。bootstrap 被 OPA 拒绝不写审计（schema 边界例外，见 policy_gate 文档）。
+- 生产纵切（S1-T4 修复，repair addendum §3.1）：policy_enforcer 为组合期必需注入
+  （fail closed，缺失在构造期抛 TypeError），mutation 一律先经 api.policy_gate 求值
+  ——denied → 独立事务 denied 审计 + 403；allowed → 同一 tenant 事务内写 allowed
+  审计 + outbox（任一写失败整体回滚）；业务拒绝 → 独立事务 failed 审计。bootstrap
+  被 OPA 拒绝不写审计（schema 边界例外，见 policy_gate 文档）。
+- bootstrap 的 PEP 输入使用独立 org/create 动作（二轮修复：不借用 org/manage），
+  仅无 active org 的 USER 且无任何角色绑定可进入。
 """
 
 from collections.abc import Callable
@@ -103,13 +106,14 @@ def create_organizations_router(
     actor_dependency: Callable[[], ActorContext],
     sessions: async_sessionmaker[AsyncSession],
     identity_sessions: async_sessionmaker[AsyncSession],
-    policy_enforcer: PolicyEnforcer | None = None,
+    policy_enforcer: PolicyEnforcer,
 ) -> APIRouter:
-    """组成时必须显式注入 actor dependency 与 identity session 工厂；缺少注入在构造期
-    即失败（fail closed）。identity_sessions 供 T2 membership 解析使用。
+    """组成时必须显式注入 actor dependency、identity session 工厂与 policy_enforcer；
+    缺少注入在构造期即失败（fail closed，policy_enforcer 缺失抛 TypeError）。
+    identity_sessions 供 T2 membership 解析使用。
 
-    policy_enforcer 是生产纵切的可选注入（repair addendum §3.2）：缺省保留 legacy 直接
-    组合路径（既有冻结测试）；create_app 永远注入。不得在端点内复制 gate 逻辑。
+    policy_enforcer 是生产纵切（repair addendum §3.2）的必需注入：create_app 组合时
+    提供，任何直连调用点都不得绕过。不得在端点内复制 gate 逻辑。
     """
 
     router = APIRouter(prefix="/api/v1/organizations", tags=["organizations"])
@@ -148,26 +152,24 @@ def create_organizations_router(
         # 首登 principal 可以没有 active Organization：bootstrap 以新 org 为事务上下文。
         # 生产纵切：policy 先于事务求值（输入 org = 新建 org、roles 为空——首登无绑定，
         # §3.1.9）；allowed 审计只在 outcome.created 时写（重放不追加，§3.1.8）。
-        authorization = None
-        if policy_enforcer is not None:
-            request_id, trace_id = request_trace(request_scope)
-            authorization = await authorize_mutation(
-                enforcer=policy_enforcer,
-                sessions=sessions,
-                actor=actor,
-                bootstrap=True,
-                organization_id=request.organization_id,
-                workspace_id=None,
-                audit_action="organization.create",
-                resource_type="organization",
-                policy_type=ResourceType.ORG,
-                policy_action=Action.MANAGE,
-                resource_id=request.organization_id,
-                resource_version=1,
-                purpose=Purpose.GENERAL,
-                request_id=request_id,
-                trace_id=trace_id,
-            )
+        request_id, trace_id = request_trace(request_scope)
+        authorization = await authorize_mutation(
+            enforcer=policy_enforcer,
+            sessions=sessions,
+            actor=actor,
+            bootstrap=True,
+            organization_id=request.organization_id,
+            workspace_id=None,
+            audit_action="organization.create",
+            resource_type="organization",
+            policy_type=ResourceType.ORG,
+            policy_action=Action.CREATE,
+            resource_id=request.organization_id,
+            resource_version=1,
+            purpose=Purpose.GENERAL,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
         context = TenantContext(organization_id=request.organization_id)
         async with tenant_session(sessions, context) as session:
             try:
@@ -182,7 +184,7 @@ def create_organizations_router(
                         ),
                     ),
                 )
-                if authorization is not None and outcome.created:
+                if outcome.created:
                     await append_allowed_audit(
                         session,
                         actor=actor,
@@ -195,19 +197,18 @@ def create_organizations_router(
                         authorization=authorization,
                     )
             except _REQUEST_ERRORS as error:
-                if authorization is not None:
-                    await append_failed_mutation_audit(
-                        sessions,
-                        actor=actor,
-                        organization_id=request.organization_id,
-                        workspace_id=None,
-                        action="organization.create",
-                        resource_type="organization",
-                        resource_id=request.organization_id,
-                        error=error,
-                        request_id=authorization.request_id,
-                        trace_id=authorization.trace_id,
-                    )
+                await append_failed_mutation_audit(
+                    sessions,
+                    actor=actor,
+                    organization_id=request.organization_id,
+                    workspace_id=None,
+                    action="organization.create",
+                    resource_type="organization",
+                    resource_id=request.organization_id,
+                    error=error,
+                    request_id=authorization.request_id,
+                    trace_id=authorization.trace_id,
+                )
                 _reject_write(error)
         if outcome.created:
             return JSONResponse(content=outcome.response, status_code=status.HTTP_201_CREATED)

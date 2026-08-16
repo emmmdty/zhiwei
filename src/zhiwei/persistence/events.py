@@ -70,8 +70,8 @@ class AuditEventData(BaseModel):
     audit_schema_version: int = Field(default=1, ge=1)
     effective_identity_ref: str | None = None
     resource_version: int | None = None
-    decision_id: str | None = None
-    policy_revision: str | None = None
+    decision_id: str | None = Field(default=None, min_length=1)
+    policy_revision: str | None = Field(default=None, min_length=1)
     decision_reason: str | None = None
     result: str | None = None
     request_id: str | None = None
@@ -97,6 +97,7 @@ class AuditEventData(BaseModel):
         """v2 行与 AuditRecord/0006 CHECK 同款边界（repair addendum §3.1.6/§3.2）。
 
         v1 行保持 0005 冻结契约（任意 payload_digest、新列全 NULL），不受本节约束。
+        二轮修复：非空即长度 ≥ 1，空串在 Pydantic 层同样拒绝（与 0007 CHECK 逐条一致）。
         """
         if self.audit_schema_version != 2:
             return self

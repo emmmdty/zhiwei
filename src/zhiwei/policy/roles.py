@@ -62,6 +62,8 @@ class Action(StrEnum):
     """矩阵动作词汇（行内自然语言的机读分解）。与 Rego 侧一致；未知动作边界拒绝。"""
 
     # org（Org、IdP、SCIM、角色绑定）
+    CREATE = "create"
+    # 二轮修复：bootstrap（无 active org 的 USER 创建首个组织）独立动作，不借用 manage
     MANAGE = "manage"
     DELEGATE = "delegate"
     CONFIG_SECURITY = "config_security"
@@ -141,7 +143,7 @@ class Action(StrEnum):
 # 这只是 schema 校验（哪些动作存在），不含角色；角色映射只在 Rego。
 RESOURCE_ACTIONS: Mapping[ResourceType, frozenset[Action]] = {
     ResourceType.ORG: frozenset({
-        Action.MANAGE, Action.DELEGATE, Action.CONFIG_SECURITY,
+        Action.CREATE, Action.MANAGE, Action.DELEGATE, Action.CONFIG_SECURITY,
         Action.MANAGE_WORKSPACE_MEMBERS, Action.READ_SELF, Action.READ_AUDIT,
     }),
     ResourceType.WORKSPACE_POLICY: frozenset({

@@ -4,9 +4,10 @@
 - GET|POST /api/v1/workspaces/{workspace_id}/groups（workspace 级上下文，总设计 §3.1）
 - mutation 要求非空 Idempotency-Key；读跨租户/不存在资源统一 404，写越权 403；
 - 命令经 application commands 执行，不直接调用 persistence repository；
-- 生产纵切（S1-T4 修复）：policy_enforcer 注入时 mutation 先经 api.policy_gate 求值
-  （policy 先于事务；denied → 独立事务 denied 审计 + 403；allowed 审计只在
-  outcome.created 时同事务追加；业务拒绝 → 独立事务 failed 审计）。
+- 生产纵切（S1-T4 修复）：policy_enforcer 为组合期必需注入（fail closed，缺失在构造期
+  抛 TypeError），mutation 一律先经 api.policy_gate 求值（policy 先于事务；denied →
+  独立事务 denied 审计 + 403；allowed 审计只在 outcome.created 时同事务追加；业务拒绝
+  → 独立事务 failed 审计）。
 """
 
 from collections.abc import Callable
@@ -120,10 +121,11 @@ def create_workspaces_router(
     *,
     actor_dependency: Callable[[], ActorContext],
     sessions: async_sessionmaker[AsyncSession],
-    policy_enforcer: PolicyEnforcer | None = None,
+    policy_enforcer: PolicyEnforcer,
 ) -> APIRouter:
-    """policy_enforcer 是生产纵切的可选注入（repair addendum §3.2）：缺省保留 legacy
-    直接组合路径（既有冻结测试）；create_app 永远注入。不得在端点内复制 gate 逻辑。"""
+    """policy_enforcer 是生产纵切（repair addendum §3.2）的必需注入：create_app 组合时
+    提供，任何直连调用点都不得绕过；缺失在构造期抛 TypeError（fail closed）。不得在
+    端点内复制 gate 逻辑。"""
 
     router = APIRouter(prefix="/api/v1", tags=["workspaces"])
 
@@ -165,26 +167,24 @@ def create_workspaces_router(
     ) -> JSONResponse:
         if actor.organization_id is None:
             _no_organization(TenantContextRequired("organization context is required"))
-        authorization = None
-        if policy_enforcer is not None:
-            request_id, trace_id = request_trace(request_scope)
-            authorization = await authorize_mutation(
-                enforcer=policy_enforcer,
-                sessions=sessions,
-                actor=actor,
-                bootstrap=False,
-                organization_id=organization_id,
-                workspace_id=None,
-                audit_action="organization.workspace.create",
-                resource_type="workspace",
-                policy_type=ResourceType.WORKSPACE_POLICY,
-                policy_action=Action.CONFIGURE_WORKSPACE,
-                resource_id=request.workspace_id,
-                resource_version=1,
-                purpose=Purpose.GENERAL,
-                request_id=request_id,
-                trace_id=trace_id,
-            )
+        request_id, trace_id = request_trace(request_scope)
+        authorization = await authorize_mutation(
+            enforcer=policy_enforcer,
+            sessions=sessions,
+            actor=actor,
+            bootstrap=False,
+            organization_id=organization_id,
+            workspace_id=None,
+            audit_action="organization.workspace.create",
+            resource_type="workspace",
+            policy_type=ResourceType.WORKSPACE_POLICY,
+            policy_action=Action.CONFIGURE_WORKSPACE,
+            resource_id=request.workspace_id,
+            resource_version=1,
+            purpose=Purpose.GENERAL,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
         context = TenantContext(
             organization_id=actor.organization_id, workspace_id=actor.workspace_id
         )
@@ -202,7 +202,7 @@ def create_workspaces_router(
                         ),
                     ),
                 )
-                if authorization is not None and outcome.created:
+                if outcome.created:
                     await append_allowed_audit(
                         session,
                         actor=actor,
@@ -215,19 +215,18 @@ def create_workspaces_router(
                         authorization=authorization,
                     )
             except _REQUEST_ERRORS as error:
-                if authorization is not None:
-                    await append_failed_mutation_audit(
-                        sessions,
-                        actor=actor,
-                        organization_id=actor.organization_id or organization_id,
-                        workspace_id=None,
-                        action="organization.workspace.create",
-                        resource_type="workspace",
-                        resource_id=request.workspace_id,
-                        error=error,
-                        request_id=authorization.request_id,
-                        trace_id=authorization.trace_id,
-                    )
+                await append_failed_mutation_audit(
+                    sessions,
+                    actor=actor,
+                    organization_id=actor.organization_id or organization_id,
+                    workspace_id=None,
+                    action="organization.workspace.create",
+                    resource_type="workspace",
+                    resource_id=request.workspace_id,
+                    error=error,
+                    request_id=authorization.request_id,
+                    trace_id=authorization.trace_id,
+                )
                 _reject_write(error)
         if outcome.created:
             return JSONResponse(content=outcome.response, status_code=status.HTTP_201_CREATED)
@@ -264,26 +263,24 @@ def create_workspaces_router(
     ) -> JSONResponse:
         if actor.organization_id is None:
             _no_organization(TenantContextRequired("organization context is required"))
-        authorization = None
-        if policy_enforcer is not None:
-            request_id, trace_id = request_trace(request_scope)
-            authorization = await authorize_mutation(
-                enforcer=policy_enforcer,
-                sessions=sessions,
-                actor=actor,
-                bootstrap=False,
-                organization_id=actor.organization_id,
-                workspace_id=workspace_id,
-                audit_action="workspace.group.create",
-                resource_type="group",
-                policy_type=ResourceType.WORKSPACE_POLICY,
-                policy_action=Action.CONFIGURE_WORKSPACE,
-                resource_id=request.group_id,
-                resource_version=1,
-                purpose=Purpose.GENERAL,
-                request_id=request_id,
-                trace_id=trace_id,
-            )
+        request_id, trace_id = request_trace(request_scope)
+        authorization = await authorize_mutation(
+            enforcer=policy_enforcer,
+            sessions=sessions,
+            actor=actor,
+            bootstrap=False,
+            organization_id=actor.organization_id,
+            workspace_id=workspace_id,
+            audit_action="workspace.group.create",
+            resource_type="group",
+            policy_type=ResourceType.WORKSPACE_POLICY,
+            policy_action=Action.CONFIGURE_WORKSPACE,
+            resource_id=request.group_id,
+            resource_version=1,
+            purpose=Purpose.GENERAL,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
         context = TenantContext(
             organization_id=actor.organization_id, workspace_id=actor.workspace_id
         )
@@ -302,7 +299,7 @@ def create_workspaces_router(
                         ),
                     ),
                 )
-                if authorization is not None and outcome.created:
+                if outcome.created:
                     await append_allowed_audit(
                         session,
                         actor=actor,
@@ -315,19 +312,18 @@ def create_workspaces_router(
                         authorization=authorization,
                     )
             except _REQUEST_ERRORS as error:
-                if authorization is not None:
-                    await append_failed_mutation_audit(
-                        sessions,
-                        actor=actor,
-                        organization_id=actor.organization_id,
-                        workspace_id=actor.workspace_id,
-                        action="workspace.group.create",
-                        resource_type="group",
-                        resource_id=request.group_id,
-                        error=error,
-                        request_id=authorization.request_id,
-                        trace_id=authorization.trace_id,
-                    )
+                await append_failed_mutation_audit(
+                    sessions,
+                    actor=actor,
+                    organization_id=actor.organization_id,
+                    workspace_id=actor.workspace_id,
+                    action="workspace.group.create",
+                    resource_type="group",
+                    resource_id=request.group_id,
+                    error=error,
+                    request_id=authorization.request_id,
+                    trace_id=authorization.trace_id,
+                )
                 _reject_write(error)
         if outcome.created:
             return JSONResponse(content=outcome.response, status_code=status.HTTP_201_CREATED)
