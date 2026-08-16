@@ -23,7 +23,7 @@
 | --- | --- | --- |
 | I1 | `build_audit_digest` v1 公式逐字节不变；v2 覆盖全部语义字段 | **不动**。v2 已覆盖 17 项语义字段（audit_schema_version/org/ws/action/resource type+id+version/actor/effective/decision/revision/reason/result/request/trace/payload/previous digest）。Subagent B 以契约测试冻结「新增语义字段继续进入 v2 digest」。 |
 | I2 | 0001~0005 迁移只读 | **不动**。新 CHECK 全部追加到新迁移 `0006_audit_contract`（down_revision=`0005_audit_structured`），可逆。 |
-| I3 | `test_rls.py` / `test_pool.py` / `test_idor.py`（RLS/pool/IDOR 边界） | **只读**。router factory 新增 policy 参数为关键字可选参数（默认 None=legacy 直接组合路径），既有工厂调用不破坏；`zhiwei_app` repository 谓词与 FORCE RLS 不改。 |
+| I3 | `test_rls.py` / `test_pool.py` / `test_idor.py`（RLS/pool/IDOR 边界） | **只读**。router factory 新增 policy 参数为关键字可选参数（**四轮修订：无 legacy 直连路径**——显式 `policy_enforcer=None` 在组合期抛 TypeError（fail closed，`create_organizations_router` 等三处守卫），生产 create_app 恒注入真实 enforcer；既有工厂调用不破坏），`zhiwei_app` repository 谓词与 FORCE RLS 不改。 |
 | I4 | `test_audit.py`（T4 已冻结审计契约） | 修复 RED 阶段修订 2 处**机制缺陷**（§7），修订动机与断言语义不变；新 RED commit 后锁定。 |
 | I5 | `test_settings.py` / `test_oidc.py`（T2 已冻结组合契约） | 修复 RED 阶段修订：组合期新增必需输入 `ZHIWEI_OPA_BASE_URL`（§3.2），2 处 helper 补键 + 1 处 parametrize 补项；断言语义不变。 |
 | I6 | 未配置/不可达策略 endpoint 时 mutation 行为 | 组合期拒绝缺 OPA URL（fail closed，与既有 `_REQUIRED` 组合检查同模式）；运行期 OPA 不可达 → 本地拒绝 + denied 审计，mutation 零写入。 |
