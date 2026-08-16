@@ -46,3 +46,4 @@ apps/web/dist/
 .idea/
 .vscode/
 *.swp
+.worktrees/
