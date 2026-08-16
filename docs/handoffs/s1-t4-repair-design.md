@@ -96,6 +96,27 @@
     `resource.version`（PolicyInput 侧）取 `str(resource_version)`；ResourceContext 全空、
     delegation 空、classification/risk 空、context.now=utc_now、context.trace_id=本请求 trace_id。
 
+11. **审计 action 字符串**（冻结，镜像 IDEMPOTENCY_SCOPE_* 语义名）：
+
+    | mutation | audit action | audit scope | resource_version |
+    | --- | --- | --- | --- |
+    | bootstrap org | `organization.create` | (新 org, NULL) | 1 |
+    | create workspace | `organization.workspace.create` | (org, NULL) | 1 |
+    | create group | `workspace.group.create` | (org, ws) | 1 |
+    | add org member | `organization.member.add` | (org, NULL) | 1 |
+    | remove org member | `organization.member.remove` | (org, NULL) | 1 |
+
+    S1 资源（org/ws/group/membership）无版本列：创建即版本 1，删除引用创建版本 1；
+    allowed 路径写 1，denied/failed 路径写 0（unknown）。`actor_ref` /
+    `effective_identity_ref` = `user:<principal_id>`（S1 会话只产生 USER principal）。
+12. **API 403 detail 裁决**：OPA deny / `opa_unavailable` / `policy_input_invalid` /
+    `enforcement_internal_error` → `policy denied`；`tenant_scope_mismatch`（org 不一致）→
+    `outside tenant scope`（与既有冻结 detail 一致）；actor 无 org context 的目标 mutation →
+    `organization context required`（与既有 detail 一致，audit reason 仍 `tenant_scope_mismatch`）。
+    审计写失败（deny 路径）→ 异常上抛（500），mutation 绝不执行。
+13. **request/trace 格式**：`uuid4().hex`（32 hex 字符），per-request 生成，`request.state` 缓存，
+    同一请求内 policy input（context.trace_id）与 audit 共用。
+
 ### 3.2 生产编排
 
 - `Settings` 增 `opa_base_url: str | None = None`（`ZHIWEI_OPA_BASE_URL`，非 Secret）；`create_app`
