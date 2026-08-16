@@ -293,6 +293,7 @@ class OrganizationBootstrapClaim(Base):
 
 class WorkspaceMembership(Base):
     """Workspace 级角色绑定；organization_id 与 workspace_id 复合外键保证租户一致。"""
+
     __tablename__ = "workspace_memberships"
     __table_args__ = (
         ForeignKeyConstraint(
