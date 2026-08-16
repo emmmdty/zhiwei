@@ -32,6 +32,9 @@ _OIDC_CLIENT_ID_ENV = "ZHIWEI_OIDC_CLIENT_ID"
 _OIDC_CLIENT_SECRET_ENV = "ZHIWEI_OIDC_CLIENT_SECRET"
 _OIDC_REDIRECT_URI_ENV = "ZHIWEI_OIDC_REDIRECT_URI"
 _IDENTITY_MASTER_KEY_FILE_ENV = "ZHIWEI_IDENTITY_MASTER_KEY_FILE"
+# S1-T4 修复：策略 endpoint 是组合期必需输入（缺失 → create_app 组合期拒绝）。
+# 取值是部署期 override，与 endpoints.yaml 的 OPA 侧无关（策略边车地址由部署拓扑决定）。
+_OPA_BASE_URL_ENV = "ZHIWEI_OPA_BASE_URL"
 
 
 class DeploymentProfile(StrEnum):
@@ -75,6 +78,7 @@ class Settings(BaseModel):
     oidc_client_secret: SecretStr | None = None
     oidc_redirect_uri: str | None = None
     identity_master_key_file: Path | None = None
+    opa_base_url: str | None = None
 
     @model_validator(mode="after")
     def _deny_live_below_production(self) -> Self:
@@ -155,4 +159,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         oidc_client_secret=_optional_secret(source.get(_OIDC_CLIENT_SECRET_ENV)),
         oidc_redirect_uri=source.get(_OIDC_REDIRECT_URI_ENV),
         identity_master_key_file=_optional_path(source.get(_IDENTITY_MASTER_KEY_FILE_ENV)),
+        opa_base_url=source.get(_OPA_BASE_URL_ENV),
     )

@@ -777,6 +777,35 @@ class AuditEvent(Base):
             "AND request_id IS NULL AND trace_id IS NULL)",
             name="v1_shape",
         ),
+        # 0006 audit contract（repair addendum §3.1.6）：v2 行 metadata 配对与格式边界，
+        # 与 AuditRecord/AuditEventData Pydantic 校验逐字一致（direct INSERT 不可绕过）。
+        CheckConstraint(
+            "audit_schema_version = 1 OR (decision_reason IS NOT NULL "
+            "AND length(decision_reason) > 0)",
+            name="v2_decision_reason",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR ((decision_id IS NULL) = (policy_revision IS NULL))",
+            name="v2_decision_pairing",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR result <> 'allowed' OR "
+            "(decision_id IS NOT NULL AND policy_revision IS NOT NULL)",
+            name="v2_allowed_metadata",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR result <> 'failed' OR "
+            "(decision_id IS NULL AND policy_revision IS NULL)",
+            name="v2_failed_metadata",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR payload_digest ~ '^sha256:[0-9a-f]{64}$'",
+            name="v2_payload_digest",
+        ),
+        CheckConstraint(
+            "audit_schema_version = 1 OR resource_version >= 0",
+            name="v2_resource_version",
+        ),
         ForeignKeyConstraint(
             ["organization_id"],
             ["organizations.id"],

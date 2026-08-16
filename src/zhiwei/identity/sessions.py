@@ -826,8 +826,12 @@ class SessionService:
 
         任何 membership 缺失 / org-workspace 归属不一致 → MembershipScopeError
         （API 层按读/写映射 404 / 403）。客户端声明只是请求，不是授权事实。
+
+        role_bindings 只含已解析 org 的 org 级绑定 + 已解析 workspace（若存在）的
+        workspace 级绑定（repair addendum §3.2 provenance 裁决）：绝不携带其他 org
+        的绑定，防止跨 org 遗留角色字符串在构造 PolicyInput 时按 fail closed 拒绝。
         """
-        from zhiwei.identity.domain import ActorContext
+        from zhiwei.identity.domain import ActorContext, ActorRoleBinding
 
         if organization_id is None:
             if workspace_id is not None:
@@ -845,8 +849,19 @@ class SessionService:
         ]
         if not org_memberships:
             raise MembershipScopeError("principal is not a member of the organization")
+        role_bindings = tuple(
+            ActorRoleBinding(
+                name=role,
+                scope="org",
+                organization_id=org,
+            )
+            for row in org_memberships
+            for role in (row["role_bindings"] or [])
+        )
         if workspace_id is None:
-            return ActorContext(principal_id=principal_id, organization_id=org)
+            return ActorContext(
+                principal_id=principal_id, organization_id=org, role_bindings=role_bindings
+            )
         try:
             workspace = UUID(workspace_id)
         except (ValueError, AttributeError) as exc:
@@ -862,8 +877,21 @@ class SessionService:
             raise MembershipScopeError(
                 "principal has no workspace membership in the declared organization"
             )
+        role_bindings = role_bindings + tuple(
+            ActorRoleBinding(
+                name=role,
+                scope="workspace",
+                organization_id=org,
+                workspace_id=workspace,
+            )
+            for row in workspace_memberships
+            for role in (row["role_bindings"] or [])
+        )
         return ActorContext(
-            principal_id=principal_id, organization_id=org, workspace_id=workspace
+            principal_id=principal_id,
+            organization_id=org,
+            workspace_id=workspace,
+            role_bindings=role_bindings,
         )
 
 

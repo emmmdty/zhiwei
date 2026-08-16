@@ -173,17 +173,47 @@ class GroupMember(_FrozenModel):
     created_at: datetime
 
 
+class ActorRoleBinding(_FrozenModel):
+    """请求级 actor 的角色绑定（从已验证 membership 解析，供 PEP 构造 PolicyInput）。
+
+    形状镜像 policy.input.RoleBinding 但独立声明：domain 层不得导入 policy 层（依赖方向
+    见 docs/ARCHITECTURE.md §2），转换发生在 api.policy_gate。未知角色名在转换期按
+    fail closed 拒绝，不在这里放宽。scope 取值 org | workspace，与 policy.roles.RoleScope
+    的字符串值严格一致。
+    """
+
+    name: str = Field(min_length=1)
+    scope: str
+    organization_id: UUID
+    workspace_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def _scope_workspace_consistency(self) -> ActorRoleBinding:
+        if self.scope == "workspace" and self.workspace_id is None:
+            raise ValueError("workspace-scoped binding requires workspace_id")
+        if self.scope == "org" and self.workspace_id is not None:
+            raise ValueError("org-scoped binding must not carry workspace_id")
+        return self
+
+
 class ActorContext(_FrozenModel):
     """请求级 actor 与显式租户作用域。
 
     首次登录的 authenticated Principal 可以没有 active Organization：organization_id 可空；
     workspace_id 非空时 organization_id 必须非空。S1-T1 没有 OIDC，routers 必须由调用方
     显式注入本依赖；T2 提供真实身份依赖。
+
+    kind 默认 USER：S1 会话路径（OIDC 交互登录）只产生 USER principal，ServiceAccount /
+    AgentIdentity 不创建会话；默认值只在 S1 会话路径内成立，AGENT 主体接入时改为显式必填。
+    role_bindings 由 resolve_context 从已验证 memberships 填充，只含已解析 org/workspace 的
+    绑定（repair addendum §3.2 provenance 裁决），绝不跨 org 携带。
     """
 
     principal_id: UUID
     organization_id: UUID | None = None
     workspace_id: UUID | None = None
+    kind: PrincipalKind = PrincipalKind.USER
+    role_bindings: tuple[ActorRoleBinding, ...] = ()
 
     @model_validator(mode="after")
     def _workspace_requires_organization(self) -> ActorContext:

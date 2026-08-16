@@ -13,10 +13,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import re
+from typing import Literal, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.persistence.events import AuditEventData
@@ -31,9 +32,20 @@ from zhiwei.persistence.unit_of_work import append_audit_chain
 
 _OUTBOX_TOPIC_AUDIT_DECISION = "audit.decision"
 
+# 与 0006 ck_audit_events_v2_payload_digest 逐字一致（digest_bytes 输出形状：
+# "sha256:" + 64 位小写 hex；Pydantic 与 PostgreSQL 同款边界，direct INSERT 不可绕过）。
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+
 
 class AuditRecord(BaseModel):
-    """一条结构化审计命令；S1 无 delegation 时 effective_identity_ref = actor_ref。"""
+    """一条结构化审计命令；S1 无 delegation 时 effective_identity_ref = actor_ref。
+
+    metadata 配对（与 0006 CHECK 逐条一致，repair addendum §3.1.6）：
+    - allowed → decision_id 与 policy_revision 必须同时非空；
+    - denied（OPA deny）→ 同时非空；denied（本地拒绝）→ 同时 NULL；
+    - failed → 同时 NULL；禁止只有 decision_id 或只有 policy_revision。
+    resource_version=0 是「unknown（mutation 未应用）」哨兵，只在 denied/failed 路径使用。
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -42,7 +54,7 @@ class AuditRecord(BaseModel):
     action: str = Field(min_length=1, max_length=128)
     resource_type: str = Field(min_length=1, max_length=64)
     resource_id: UUID
-    resource_version: int = Field(ge=1)
+    resource_version: int = Field(ge=0)
     actor_ref: str = Field(min_length=1, max_length=255)
     effective_identity_ref: str = Field(min_length=1, max_length=255)
     decision_id: str | None = Field(default=None, max_length=2048)
@@ -51,7 +63,21 @@ class AuditRecord(BaseModel):
     result: Literal["allowed", "denied", "failed"]
     request_id: str = Field(min_length=1, max_length=2048)
     trace_id: str = Field(min_length=1, max_length=2048)
-    payload_digest: str = Field(min_length=1, max_length=71)
+    payload_digest: str = Field(pattern=_SHA256_DIGEST_RE.pattern)
+
+    @model_validator(mode="after")
+    def _decision_metadata_pairing(self) -> Self:
+        has_decision_id = self.decision_id is not None
+        has_revision = self.policy_revision is not None
+        if has_decision_id != has_revision:
+            raise ValueError(
+                "decision_id and policy_revision must be present together or not at all"
+            )
+        if self.result == "allowed" and not (has_decision_id and has_revision):
+            raise ValueError("allowed audits require decision_id and policy_revision")
+        if self.result == "failed" and (has_decision_id or has_revision):
+            raise ValueError("failed audits must not carry decision_id or policy_revision")
+        return self
 
 
 async def append_audit(

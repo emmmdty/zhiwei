@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -12,6 +13,9 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from zhiwei.contracts.canonical import digest
 from zhiwei.contracts.envelope import SchemaRegistry
 from zhiwei.persistence.models import AuditEvent, CanonicalEvent
+
+# v2 行 payload_digest 形状（与 AuditRecord / 0006 CHECK 逐字一致）
+_SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 class EventChainError(ValueError):
@@ -86,6 +90,32 @@ class AuditEventData(BaseModel):
                 raise ValueError("v2 audit events require request_id")
             if self.trace_id is None:
                 raise ValueError("v2 audit events require trace_id")
+        return self
+
+    @model_validator(mode="after")
+    def _v2_metadata_boundaries(self) -> Self:
+        """v2 行与 AuditRecord/0006 CHECK 同款边界（repair addendum §3.1.6/§3.2）。
+
+        v1 行保持 0005 冻结契约（任意 payload_digest、新列全 NULL），不受本节约束。
+        """
+        if self.audit_schema_version != 2:
+            return self
+        if not _SHA256_DIGEST_RE.fullmatch(self.payload_digest):
+            raise ValueError("v2 audit events require a sha256: hex payload digest")
+        if self.resource_version is not None and self.resource_version < 0:
+            raise ValueError("v2 audit events require a non-negative resource_version")
+        if self.decision_reason is not None and len(self.decision_reason) == 0:
+            raise ValueError("v2 audit events require a non-empty decision_reason")
+        has_decision_id = self.decision_id is not None
+        has_revision = self.policy_revision is not None
+        if has_decision_id != has_revision:
+            raise ValueError(
+                "decision_id and policy_revision must be present together or not at all"
+            )
+        if self.result == "allowed" and not (has_decision_id and has_revision):
+            raise ValueError("allowed audits require decision_id and policy_revision")
+        if self.result == "failed" and (has_decision_id or has_revision):
+            raise ValueError("failed audits must not carry decision_id or policy_revision")
         return self
 
 

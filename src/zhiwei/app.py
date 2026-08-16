@@ -1,11 +1,14 @@
-"""应用组合根（S1-T2）。
+"""应用组合根（S1-T2，S1-T4 修复扩展策略组合）。
 
 契约（冻结）：
 - auth app 缺 identity DSN / OIDC issuer+client+secret+redirect / master-key file /
-  app DSN 任一项都在组合期拒绝（fail closed）；
+  app DSN / OPA base URL 任一项都在组合期拒绝（fail closed）；
 - 组合真实 session actor 依赖（cookie → principal + CSRF/Origin + membership）与
   现有 T1 routers（organizations / workspaces / members）；
 - master key 只从显式挂载文件加载（load_keyring），不存在 → 组合期失败；
+- 策略纵切：组合 OPAClient + PolicyEnforcer 并注入全部 mutation router（policy 先于
+  mutation、三类 metadata 审计，见 api.policy_gate）；policy_http_client 是唯一外部
+  binding 替换点（MockTransport 只出现在测试），生产代码不硬编码 OPA URL；
 - 不得用测试专用认证旁路挂载生产 routers；OIDC transport 是唯一外部 binding 替换点
   （MockTransport 只出现在测试）。
 """
@@ -33,6 +36,8 @@ from zhiwei.identity.sessions import (
     SessionService,
 )
 from zhiwei.persistence.database import create_database_engine, create_session_factory
+from zhiwei.policy.client import OPAClient
+from zhiwei.policy.enforcement import PolicyEnforcer
 from zhiwei.secrets.local import LocalSecretBackend, load_keyring
 
 _REQUIRED = (
@@ -43,10 +48,17 @@ _REQUIRED = (
     ("ZHIWEI_OIDC_CLIENT_SECRET", "oidc_client_secret"),
     ("ZHIWEI_OIDC_REDIRECT_URI", "oidc_redirect_uri"),
     ("ZHIWEI_IDENTITY_MASTER_KEY_FILE", "identity_master_key_file"),
+    # S1-T4 修复：策略 endpoint 是组合期必需输入（缺失 → 拒绝，不静默降级为无策略）
+    ("ZHIWEI_OPA_BASE_URL", "opa_base_url"),
 )
 
 
-def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> FastAPI:
+def create_app(
+    settings: Settings,
+    *,
+    oidc_http_client: Any | None = None,
+    policy_http_client: Any | None = None,
+) -> FastAPI:
     missing = [env for env, attr in _REQUIRED if getattr(settings, attr) is None]
     if missing:
         raise ValueError("auth app 组合期拒绝：缺少 " + ", ".join(missing))
@@ -57,6 +69,7 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
     oidc_client_secret = settings.oidc_client_secret
     oidc_redirect_uri = settings.oidc_redirect_uri
     master_key_file = settings.identity_master_key_file
+    opa_base_url = settings.opa_base_url
     if (
         database_url is None
         or identity_database_url is None
@@ -65,12 +78,13 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
         or oidc_client_secret is None
         or oidc_redirect_uri is None
         or master_key_file is None
+        or opa_base_url is None
     ):
         raise ValueError("auth app 组合期拒绝：缺少必需配置")
     assert database_url is not None and identity_database_url is not None
     assert oidc_issuer is not None and oidc_client_id is not None
     assert oidc_client_secret is not None and oidc_redirect_uri is not None
-    assert master_key_file is not None
+    assert master_key_file is not None and opa_base_url is not None
 
     app_engine = create_database_engine(database_url.get_secret_value())
     identity_engine = create_database_engine(identity_database_url.get_secret_value())
@@ -103,6 +117,11 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
         identity_session_factory=identity_sessions,
     )
 
+    # 策略纵切（S1-T4 修复）：OPAClient 端点来自 settings（部署 override），transport
+    # 可由测试注入；PolicyEnforcer 注入全部 mutation router。
+    policy_client = OPAClient(opa_base_url, http_client=policy_http_client)
+    policy_enforcer = PolicyEnforcer(policy_client)
+
     app = FastAPI(title="zhiwei", version="0.1.0")
 
     @app.middleware("http")
@@ -127,16 +146,31 @@ def create_app(settings: Settings, *, oidc_http_client: Any | None = None) -> Fa
             actor_dependency=session_actor,
             sessions=app_sessions,
             identity_sessions=identity_sessions,
+            policy_enforcer=policy_enforcer,
         )
     )
-    app.include_router(create_workspaces_router(actor_dependency=session_actor, sessions=app_sessions))
-    app.include_router(create_memberships_router(actor_dependency=session_actor, sessions=app_sessions))
+    app.include_router(
+        create_workspaces_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            policy_enforcer=policy_enforcer,
+        )
+    )
+    app.include_router(
+        create_memberships_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            policy_enforcer=policy_enforcer,
+        )
+    )
 
     async def dispose_engines() -> None:
         await oidc_service.aclose()
+        await policy_client.aclose()
         await app_engine.dispose()
         await identity_engine.dispose()
 
     app.state.dispose_engines = dispose_engines
     app.state.session_service = session_service
+    app.state.policy_client = policy_client
     return app
