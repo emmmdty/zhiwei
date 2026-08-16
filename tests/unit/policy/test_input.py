@@ -333,3 +333,33 @@ class TestEffectiveIdentity:
             ),
         )
         assert doc.effective_identity is not None
+
+
+class TestOrgCreateBootstrapInput:
+    """bootstrap（org/create）输入契约：无 active org 的 USER 可进入；字段形状冻结。"""
+
+    def test_bootstrap_eligible_user_accepted(self) -> None:
+        doc = base_input(
+            actor=Actor(
+                principal_id=RES,
+                kind=PrincipalKind.USER,
+                roles=(),
+                active_organization_id=None,
+            ),
+            resource=ResourceRef(type=ResourceType.ORG, id=RES, version="1"),
+            action=Action.CREATE,
+        )
+        assert doc.action is Action.CREATE
+
+    def test_bootstrap_input_serializes_active_organization_id(self) -> None:
+        doc = base_input(
+            actor=Actor(
+                principal_id=RES,
+                kind=PrincipalKind.USER,
+                roles=(),
+                active_organization_id=None,
+            ),
+            resource=ResourceRef(type=ResourceType.ORG, id=RES, version="1"),
+            action=Action.CREATE,
+        ).model_dump(mode="json")
+        assert doc["actor"]["active_organization_id"] is None

@@ -32,6 +32,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
+from fixtures.policy_fake import FakePolicyEnforcer
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -212,6 +213,7 @@ async def test_api_cross_org_organization_read_is_uniform_404(
             actor_dependency=_alice_org_actor,
             sessions=sessions,
             identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -235,6 +237,7 @@ async def test_api_cross_org_organization_read_is_uniform_404(
             actor_dependency=_no_org_actor,
             sessions=sessions,
             identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(
@@ -252,7 +255,7 @@ async def test_api_cross_org_workspace_write_403_and_list_404(
     """org_a actor 对 org_b 路径的 workspace 写 403、读 404，且零写入。"""
     await _seed_two_org_world()
     app = FastAPI()
-    app.include_router(create_workspaces_router(actor_dependency=_alice_org_actor, sessions=sessions))
+    app.include_router(create_workspaces_router(actor_dependency=_alice_org_actor, sessions=sessions, policy_enforcer=FakePolicyEnforcer()))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             f"/api/v1/organizations/{ORG_B}/workspaces",
@@ -288,7 +291,7 @@ async def test_api_workspace_level_cross_org_groups_404_403_and_no_name_leak(
     await _seed_two_org_world()
     app = FastAPI()
     app.include_router(
-        create_workspaces_router(actor_dependency=_alice_workspace_actor, sessions=sessions)
+        create_workspaces_router(actor_dependency=_alice_workspace_actor, sessions=sessions, policy_enforcer=FakePolicyEnforcer())
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"/api/v1/workspaces/{WS_B}/groups")
@@ -323,7 +326,7 @@ async def test_self_declared_org_in_body_and_path_never_overrides_actor_context(
     """
     await _seed_two_org_world()
     app = FastAPI()
-    app.include_router(create_workspaces_router(actor_dependency=_alice_org_actor, sessions=sessions))
+    app.include_router(create_workspaces_router(actor_dependency=_alice_org_actor, sessions=sessions, policy_enforcer=FakePolicyEnforcer()))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             f"/api/v1/organizations/{ORG_B}/workspaces",
@@ -603,7 +606,7 @@ async def test_membership_and_workspace_membership_idor_blocked(
 
     # API 层：读 404、删 403；org_a 自己的成员列表正常
     app = FastAPI()
-    app.include_router(create_memberships_router(actor_dependency=_alice_org_actor, sessions=sessions))
+    app.include_router(create_memberships_router(actor_dependency=_alice_org_actor, sessions=sessions, policy_enforcer=FakePolicyEnforcer()))
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get(f"/api/v1/organizations/{ORG_A}/members")
         assert response.status_code == 200

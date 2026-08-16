@@ -27,6 +27,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
+from fixtures.policy_fake import FakePolicyEnforcer
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
@@ -1062,7 +1063,8 @@ async def test_api_requires_idempotency_key_for_mutations(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(principal_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _no_org_actor(principal_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     transport = ASGITransport(app=app)
@@ -1107,7 +1109,7 @@ async def test_api_organization_bootstrap_and_list(
     actor = _no_org_actor(principal_id)
     app = FastAPI()
     app.include_router(
-        create_organizations_router(actor_dependency=lambda: actor, sessions=sessions, identity_sessions=identity_sessions)
+        create_organizations_router(actor_dependency=lambda: actor, sessions=sessions, identity_sessions=identity_sessions, policy_enforcer=FakePolicyEnforcer())
     )
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -1150,6 +1152,7 @@ async def test_api_organization_bootstrap_and_list(
             ),
             sessions=sessions,
             identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(
@@ -1176,7 +1179,8 @@ async def test_api_organization_read_is_scoped_to_actor_org(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _org_actor(first_org), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _org_actor(first_org), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     transport = ASGITransport(app=app)
@@ -1192,7 +1196,7 @@ async def test_api_organization_read_is_scoped_to_actor_org(
 
     no_org_app = FastAPI()
     no_org_app.include_router(
-        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions)
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions, policy_enforcer=FakePolicyEnforcer())
     )
     async with AsyncClient(
         transport=ASGITransport(app=no_org_app), base_url="http://test"
@@ -1224,7 +1228,8 @@ async def test_api_workspaces_and_groups_endpoints_enforce_scope(
     org_app = FastAPI()
     org_app.include_router(
         create_workspaces_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=org_app), base_url="http://test") as client:
@@ -1282,6 +1287,7 @@ async def test_api_workspaces_and_groups_endpoints_enforce_scope(
                 organization_id, workspace_id=first_workspace
             ),
             sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(
@@ -1367,7 +1373,8 @@ async def test_api_members_endpoints_enforce_scope(
     app = FastAPI()
     app.include_router(
         create_memberships_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     transport = ASGITransport(app=app)
@@ -1422,7 +1429,7 @@ async def test_api_members_endpoints_enforce_scope(
 
     no_org_app = FastAPI()
     no_org_app.include_router(
-        create_memberships_router(actor_dependency=_no_org_actor, sessions=sessions)
+        create_memberships_router(actor_dependency=_no_org_actor, sessions=sessions, policy_enforcer=FakePolicyEnforcer())
     )
     async with AsyncClient(
         transport=ASGITransport(app=no_org_app), base_url="http://test"
@@ -1456,7 +1463,8 @@ async def test_api_bootstrap_takeover_rejected(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(attacker_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _no_org_actor(attacker_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1493,7 +1501,8 @@ async def test_api_bootstrap_replay_confirms_owner(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     transport = ASGITransport(app=app)
@@ -1512,7 +1521,8 @@ async def test_api_bootstrap_replay_confirms_owner(
     foreign_app = FastAPI()
     foreign_app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(foreign_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _no_org_actor(foreign_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(
@@ -1545,7 +1555,8 @@ async def test_api_bootstrap_concurrent_same_request(
     app = FastAPI()
     app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _no_org_actor(creator_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1589,7 +1600,8 @@ async def test_api_existing_workspace_collision_rejected(
     app = FastAPI()
     app.include_router(
         create_workspaces_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1650,6 +1662,7 @@ async def test_api_existing_group_collision_rejected(
                 organization_id, workspace_id=workspace_id
             ),
             sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1702,7 +1715,8 @@ async def test_api_request_models_reject_unknown_fields(
     org_app = FastAPI()
     org_app.include_router(
         create_organizations_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions, identity_sessions=identity_sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions, identity_sessions=identity_sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     workspaces_app = FastAPI()
@@ -1712,12 +1726,14 @@ async def test_api_request_models_reject_unknown_fields(
                 organization_id, workspace_id=workspace_id
             ),
             sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
     members_app = FastAPI()
     members_app.include_router(
         create_memberships_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions
+            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
         )
     )
 
@@ -1767,7 +1783,7 @@ async def test_api_idempotency_key_rejects_missing_empty_whitespace(
     """缺失、空字符串、纯空白 Idempotency-Key 一律 422。"""
     app = FastAPI()
     app.include_router(
-        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions)
+        create_organizations_router(actor_dependency=_no_org_actor, sessions=sessions, identity_sessions=identity_sessions, policy_enforcer=FakePolicyEnforcer())
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         for headers in (

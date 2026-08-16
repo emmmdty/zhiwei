@@ -755,7 +755,7 @@ async def test_bootstrap_creates_org_owner_audit_outbox_and_policy_input(
     policy_input = opa.inputs[0]
     assert policy_input["organization_id"] == str(org_id)
     assert policy_input["workspace_id"] is None
-    assert policy_input["action"] == "manage"
+    assert policy_input["action"] == "create"
     assert policy_input["purpose"] == "general"
     assert policy_input["resource"] == {"type": "org", "id": str(org_id), "version": "1"}
     assert policy_input["classification"] is None
@@ -776,6 +776,7 @@ async def test_bootstrap_creates_org_owner_audit_outbox_and_policy_input(
         "principal_id": str(principal),
         "kind": "user",
         "roles": [],
+        "active_organization_id": None,
     }
     assert policy_input["context"]["trace_id"] == rows[0]["trace_id"]
 
@@ -873,7 +874,7 @@ async def test_bootstrap_opa_deny_blocks_without_audit_row(
     assert policy_input["organization_id"] == str(org_id)
     assert policy_input["actor"]["kind"] == "user"
     assert policy_input["actor"]["roles"] == []
-    assert policy_input["action"] == "manage"
+    assert policy_input["action"] == "create"
 
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -1439,3 +1440,166 @@ async def test_request_and_trace_ids_are_distinct_server_generated(
     for row in (first_row, second_row):
         assert row["request_id"] not in client_values
         assert row["trace_id"] not in client_values
+
+
+@pytest.mark.asyncio
+async def test_no_mutation_success_with_zero_audit_and_outbox(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA]
+) -> None:
+    """生产 API 反例冻结：任何 mutation 成功（201/204）都不得与「audit/outbox 双零」同现。
+
+    每个 mutation 端点独立 scope；成功后该 scope 的 audit_events 与 outbox 必须各 ≥ 1。
+    """
+    _, client, idp, _ = app_and_client
+    principal = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+
+    org_id = uuid4()
+    # bootstrap 是 identity-global 请求：不携带 X-ZhiWei-Organization（actor 尚无 org）
+    response = await client.post(
+        "/api/v1/organizations",
+        json={"organization_id": str(org_id)},
+        headers={
+            "X-CSRF-Token": csrf_token,
+            "Origin": "https://test",
+            "Idempotency-Key": "counter-bootstrap-1",
+        },
+    )
+    assert response.status_code == 201
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM audit_events WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 1, "bootstrap 201 不得与 audit 双零同现"
+        assert await connection.fetchval(
+            "SELECT count(*) FROM outbox WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 1, "bootstrap 201 不得与 outbox 双零同现"
+    finally:
+        await connection.close()
+
+    workspace_id = uuid4()
+    response = await client.post(
+        f"/api/v1/organizations/{org_id}/workspaces",
+        json={"workspace_id": str(workspace_id), "name": "counter-ws"},
+        headers=_mutation_headers(csrf_token, "counter-ws-1", organization_id=org_id),
+    )
+    assert response.status_code == 201
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM audit_events WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 2
+        assert await connection.fetchval(
+            "SELECT count(*) FROM outbox WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 2
+    finally:
+        await connection.close()
+
+    group_id = uuid4()
+    # group 端点要求 workspace 级 actor 上下文：为 alice 补一条新建 workspace 的绑定
+    await _seed_workspace_membership(principal, org_id, workspace_id, ["builder"])
+    response = await client.post(
+        f"/api/v1/workspaces/{workspace_id}/groups",
+        json={"group_id": str(group_id), "name": "CounterGroup"},
+        headers=_mutation_headers(
+            csrf_token, "counter-group-1", organization_id=org_id, workspace_id=workspace_id
+        ),
+    )
+    assert response.status_code == 201
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM audit_events WHERE organization_id = $1 AND workspace_id = $2",
+            org_id, workspace_id,
+        ) >= 1
+        assert await connection.fetchval(
+            "SELECT count(*) FROM outbox WHERE organization_id = $1 AND workspace_id = $2",
+            org_id, workspace_id,
+        ) >= 1
+    finally:
+        await connection.close()
+
+    member_id = await _seed_principal("counter-member-" + uuid4().hex[:8])
+    response = await client.post(
+        f"/api/v1/organizations/{org_id}/members",
+        json={"principal_id": str(member_id), "role_bindings": ["member"]},
+        headers=_mutation_headers(csrf_token, "counter-member-1", organization_id=org_id),
+    )
+    assert response.status_code == 201
+    response = await client.delete(
+        f"/api/v1/organizations/{org_id}/members/{member_id}",
+        headers=_mutation_headers(csrf_token, "counter-member-remove-1", organization_id=org_id),
+    )
+    assert response.status_code == 204
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM audit_events WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 4
+        assert await connection.fetchval(
+            "SELECT count(*) FROM outbox WHERE organization_id = $1 AND workspace_id IS NULL",
+            org_id,
+        ) >= 4
+    finally:
+        await connection.close()
+
+
+# --------------------------------------------------------------------------- 二轮修复：pre-tenant 免审计边界冻结
+
+
+@pytest.mark.asyncio
+async def test_pre_tenant_no_org_mutation_403_without_audit(
+    migrated_database: None, app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA]
+) -> None:
+    """预租户边界冻结：actor 无 org context 的目标 mutation → 403、gate 不求值、零审计。
+
+    与 bootstrap-OPA-deny 例外同源（§3.1.9：目标租户不存在时任何 scope 都无合法
+    FK audit 落点）：本路径在 gate 求值前被 router 拒绝（organization context
+    required），OPA 不得被调用、不得写任何审计/outbox 行。该「免审计」边界只允许
+    存在于 pre-tenant 路径；tenant deny（actor 有 org）必须写审计
+    （test_opa_deny_blocks_mutation_and_writes_denied_audit），禁止静默扩大。
+    """
+    _, client, idp, opa = app_and_client
+    await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_a = await _seed_org()
+    guessed = uuid4()
+
+    response = await client.post(
+        f"/api/v1/organizations/{org_a}/workspaces",
+        json={"workspace_id": str(guessed), "name": "pre-tenant"},
+        headers={
+            "X-CSRF-Token": csrf_token,
+            "Origin": "https://test",
+            "Idempotency-Key": "pre-tenant-1",
+        },
+    )
+    assert response.status_code == 403
+    assert response.json()["detail"] == "organization context required"
+    assert len(opa.inputs) == 0, "gate 未求值：OPA 不得被调用"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM workspaces WHERE id = $1", guessed)
+            == 0
+        )
+        assert (
+            await connection.fetchval("SELECT count(*) FROM audit_events WHERE resource_id = $1", guessed)
+            == 0
+        ), "pre-tenant 403 不得写审计行"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM outbox WHERE payload->>'resource_id' = $1", str(guessed)
+            )
+            == 0
+        ), "pre-tenant 403 不得写 outbox 行"
+    finally:
+        await connection.close()

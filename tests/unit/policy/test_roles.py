@@ -19,6 +19,7 @@ from zhiwei.policy.roles import (
     Action,
     Classification,
     Purpose,
+    ResourceType,
     Risk,
     Role,
     RoleScope,
@@ -83,6 +84,7 @@ class TestResourceActionSchema:
                 "manage_workspace_members",
                 "read_self",
                 "read_audit",
+                "create",
             },
             "workspace_policy": {
                 "configure",
@@ -188,6 +190,11 @@ class TestResourceActionSchema:
         listed = {a.value for a in Action}
         schema_actions = {a.value for actions in RESOURCE_ACTIONS.values() for a in actions}
         assert listed == schema_actions
+
+    def test_org_create_bootstrap_action_vocabulary(self) -> None:
+        """二轮修复：bootstrap 使用独立 org/create 动作，不借用 org.manage。"""
+        assert Action.CREATE.value == "create"
+        assert Action.CREATE in RESOURCE_ACTIONS[ResourceType.ORG]
 
 
 class TestLegacyAliases:

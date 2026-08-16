@@ -19,6 +19,17 @@
 RED 状态（head=0005_audit_structured）：A/B 的格式与配对校验不存在、C 的违例 INSERT
 全部成功、D 的六条 CHECK 缺失——本文件在这些点精确失败；E 是回归冻结（v2 digest 已覆盖
 全部语义字段，今日即通过）。
+
+第二轮 RED（0007_audit_metadata_nonempty，head=0006_audit_contract）：冻结「metadata 非空」
+契约——v2 行的 decision_id/policy_revision 要么双 NULL（local denied / failed），要么都是
+非空字符串；空字符串 ""、单侧空串、单侧 NULL 一律拒绝。四层覆盖：
+- AuditRecord / AuditEventData（Pydantic 边界）：min_length=1 尚未实现，空串今日被接受。
+- DB CHECK：0007 两条新 CHECK（ck_audit_events_v2_decision_id_nonempty /
+  ck_audit_events_v2_policy_revision_nonempty）不存在，直接 INSERT 空串今日成功（DID NOT
+  RAISE）；测试期望精确报告 23514 + 对应约束名。
+- ORM 镜像：models.AuditEvent 尚无两条非空 CHECK，今日断言失败。
+- 迁移契约：_V2_CONSTRAINTS 已含两条新名字，base → head 断言今日失败；0007 可逆性测试
+  head → 0006 → head 今日在 final assert 失败。
 """
 
 from __future__ import annotations
@@ -36,6 +47,7 @@ from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from pydantic import ValidationError
+from sqlalchemy import CheckConstraint
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -68,7 +80,7 @@ _SHA256_PREFIX = "sha256:"
 _VALID_DIGEST = _SHA256_PREFIX + "a" * 64
 _V1_VALID_DIGEST = _SHA256_PREFIX + "b" * 64
 
-# §3.2 冻结的 0006 CHECK 约束名（downgrade 全撤）
+# §3.2 冻结的 0006 CHECK 约束名（downgrade 全撤）+ 0007 两条非空 CHECK（第二轮 RED 新增）
 _V2_CONSTRAINTS = frozenset(
     {
         "ck_audit_events_v2_decision_reason",
@@ -77,6 +89,8 @@ _V2_CONSTRAINTS = frozenset(
         "ck_audit_events_v2_failed_metadata",
         "ck_audit_events_v2_payload_digest",
         "ck_audit_events_v2_resource_version",
+        "ck_audit_events_v2_decision_id_nonempty",
+        "ck_audit_events_v2_policy_revision_nonempty",
     }
 )
 
@@ -486,6 +500,23 @@ def test_audit_record_rejects_empty_decision_reason() -> None:
         _record(organization_id=ORG_A, workspace_id=WS_A, decision_reason="")
 
 
+@pytest.mark.parametrize(
+    "mutations",
+    [
+        {"decision_id": ""},
+        {"policy_revision": ""},
+        {"decision_id": "", "policy_revision": ""},
+    ],
+)
+@pytest.mark.parametrize("result", ["allowed", "denied"])
+def test_audit_record_rejects_empty_decision_metadata(
+    mutations: dict[str, Any], result: Literal["allowed", "denied"]
+) -> None:
+    """0007 契约：空字符串在 Pydantic 边界即拒绝（None 仍允许，local denied/failed 合法）。"""
+    with pytest.raises(ValidationError):
+        _record(organization_id=ORG_A, workspace_id=WS_A, result=result, **mutations)
+
+
 def test_audit_record_accepts_resource_version_zero() -> None:
     _record(organization_id=ORG_A, workspace_id=WS_A, resource_version=0)
 
@@ -514,6 +545,23 @@ def test_audit_event_v2_rejects_non_sha256_64_digest_formats(payload_digest: str
 def test_audit_event_v2_rejects_empty_decision_reason() -> None:
     with pytest.raises(ValidationError):
         _v2_event(decision_reason="")
+
+
+@pytest.mark.parametrize(
+    "mutations",
+    [
+        {"decision_id": ""},
+        {"policy_revision": ""},
+        {"decision_id": "", "policy_revision": ""},
+    ],
+)
+@pytest.mark.parametrize("result", ["allowed", "denied"])
+def test_audit_event_v2_rejects_empty_decision_metadata(
+    mutations: dict[str, Any], result: str
+) -> None:
+    """0007 契约：v2 行空 metadata 在 Pydantic 边界即拒绝（与 AuditRecord 同款校验）。"""
+    with pytest.raises(ValidationError):
+        _v2_event(result=result, **mutations)
 
 
 @pytest.mark.parametrize(
@@ -623,6 +671,8 @@ def test_v2_digest_covers_all_semantic_fields(field: str, value: Any) -> None:
         ),
         ({"payload_digest": "a" * 71}, "ck_audit_events_v2_payload_digest"),
         ({"resource_version": -1}, "ck_audit_events_v2_resource_version"),
+        ({"decision_id": ""}, "ck_audit_events_v2_decision_id_nonempty"),
+        ({"policy_revision": ""}, "ck_audit_events_v2_policy_revision_nonempty"),
     ],
 )
 @pytest.mark.asyncio
@@ -691,6 +741,22 @@ async def test_direct_insert_v1_row_with_v2_style_result_rejected(
         assert getattr(excinfo.value, "constraint_name", None) == "ck_audit_events_v1_shape"
     finally:
         await connection.close()
+
+
+def test_audit_event_orm_has_nonempty_metadata_checks() -> None:
+    """models.AuditEvent 必须镜像 0007 的两条非空 CHECK（ORM 与 DB 逐字一致）。"""
+    from typing import cast
+
+    from sqlalchemy import Table
+
+    from zhiwei.persistence.models import AuditEvent
+
+    table = cast(Table, AuditEvent.__table__)
+    texts = {
+        str(cc.sqltext) for cc in table.constraints if isinstance(cc, CheckConstraint)
+    }
+    assert any("decision_id IS NULL OR length(decision_id) > 0" in t for t in texts)
+    assert any("policy_revision IS NULL OR length(policy_revision) > 0" in t for t in texts)
 
 
 # --------------------------------------------------------------------------- D. 迁移契约
@@ -825,6 +891,19 @@ def test_downgrade_head_to_0005_drops_checks_and_upgrade_restores(
     config = _alembic_config()
     command.downgrade(config, "0005_audit_structured")
     assert asyncio.run(_audit_check_names()) & _V2_CONSTRAINTS == set()
+    command.upgrade(config, "head")
+    assert asyncio.run(_audit_check_names()) >= _V2_CONSTRAINTS
+
+
+def test_downgrade_0007_drops_nonempty_checks_and_upgrade_restores(
+    migrated_database: None,
+) -> None:
+    """head → 0006 → head：两条非空 CHECK 全撤再重建（0006 历史不动）。"""
+    config = _alembic_config()
+    command.downgrade(config, "0006_audit_contract")
+    names = asyncio.run(_audit_check_names())
+    assert "ck_audit_events_v2_decision_id_nonempty" not in names
+    assert "ck_audit_events_v2_policy_revision_nonempty" not in names
     command.upgrade(config, "head")
     assert asyncio.run(_audit_check_names()) >= _V2_CONSTRAINTS
 

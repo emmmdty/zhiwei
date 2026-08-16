@@ -1461,3 +1461,71 @@ test_unknown_purpose_denied if {
         "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
     }
 }
+
+# ---------- 二轮修复：org/create bootstrap（无 active org 的 USER 创建首个组织）----------
+# 规则语义：仅 kind=user + 无 active org + 无角色绑定可进入；其余主体一律 deny。
+bootstrap_input(kind, roles, active_org) := {
+    "organization_id": org_id,
+    "workspace_id": null,
+    "actor": {"principal_id": "u1", "kind": kind, "roles": roles,
+              "active_organization_id": active_org},
+    "effective_identity": null,
+    "resource": {"type": "org", "id": "r-new", "version": "1"},
+    "action": "create",
+    "purpose": "general",
+    "classification": null,
+    "risk": null,
+    "delegation": [],
+    "resource_context": sweep_context("org"),
+    "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+}
+
+# 无 active org 的 USER（无任何绑定）→ allow
+test_bootstrap_eligible_user_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as bootstrap_input("user", [], null)
+}
+
+# 已有 active org 的 USER → deny（即使该 org 绑定不在本次 input 中）
+test_bootstrap_user_with_active_org_denied if {
+    data.zhiwei.authz.allow != true
+    with input as bootstrap_input("user", [], org_id)
+}
+
+# 带角色绑定的 USER（有成员身份）→ deny
+test_bootstrap_user_with_bindings_denied if {
+    data.zhiwei.authz.allow != true
+    with input as bootstrap_input("user", [binding("member", "org")], null)
+}
+
+# service account → deny
+test_bootstrap_service_account_denied if {
+    data.zhiwei.authz.allow != true
+    with input as bootstrap_input("service_account", [], null)
+}
+
+# agent identity（即使有有效主体）→ deny
+test_bootstrap_agent_identity_denied if {
+    data.zhiwei.authz.allow != true
+    with input as bootstrap_input("agent_identity", [], null)
+}
+
+# org/manage 不因 bootstrap 规则放宽：无角色主体管理已有组织仍 deny
+test_org_manage_roleless_denied if {
+    data.zhiwei.authz.allow != true
+    with input as {
+        "organization_id": org_id,
+        "workspace_id": ws_id,
+        "actor": {"principal_id": "u1", "kind": "user", "roles": [],
+                  "active_organization_id": null},
+        "effective_identity": null,
+        "resource": {"type": "org", "id": "r1", "version": "v1"},
+        "action": "manage",
+        "purpose": "general",
+        "classification": null,
+        "risk": null,
+        "delegation": [],
+        "resource_context": sweep_context("org"),
+        "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
+    }
+}
