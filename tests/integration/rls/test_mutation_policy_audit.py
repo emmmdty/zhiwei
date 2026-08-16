@@ -776,7 +776,7 @@ async def test_bootstrap_creates_org_owner_audit_outbox_and_policy_input(
         "principal_id": str(principal),
         "kind": "user",
         "roles": [],
-        "active_organization_id": None,
+        "active_organization_ids": [],
     }
     assert policy_input["context"]["trace_id"] == rows[0]["trace_id"]
 

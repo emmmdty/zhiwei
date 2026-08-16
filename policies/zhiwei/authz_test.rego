@@ -1462,13 +1462,19 @@ test_unknown_purpose_denied if {
     }
 }
 
-# ---------- 二轮修复：org/create bootstrap（无 active org 的 USER 创建首个组织）----------
-# 规则语义：仅 kind=user + 无 active org + 无角色绑定可进入；其余主体一律 deny。
-bootstrap_input(kind, roles, active_org) := {
+# ---------- 三轮修复：org/create bootstrap（USER 首次创建 / 既有目标重放候选）----------
+# 规则语义：仅 kind=user + 无角色绑定可进入；且满足其一：
+#   - active org 集合为空 → 首次 bootstrap（任意 target 可进入命令层）；
+#   - target organization_id 位于 active org 集合 → 既有目标的重放候选
+#     （只允许进入 application command；最终精确重放由 owner-bound idempotency
+#     key + request digest 校验决定，不复制幂等逻辑到 Rego）。
+# 其余主体（service account / agent / 带绑定 / target 不在集合内）一律 deny。
+other_org := "o2"
+bootstrap_input(kind, roles, active_orgs) := {
     "organization_id": org_id,
     "workspace_id": null,
     "actor": {"principal_id": "u1", "kind": kind, "roles": roles,
-              "active_organization_id": active_org},
+              "active_organization_ids": active_orgs},
     "effective_identity": null,
     "resource": {"type": "org", "id": "r-new", "version": "1"},
     "action": "create",
@@ -1480,34 +1486,46 @@ bootstrap_input(kind, roles, active_org) := {
     "context": {"now": now, "classification_ceiling": null, "requires_delegation": false},
 }
 
-# 无 active org 的 USER（无任何绑定）→ allow
+# 无 active org 的 USER（无任何绑定）→ allow（首次 bootstrap）
 test_bootstrap_eligible_user_allowed if {
     data.zhiwei.authz.allow == true
-    with input as bootstrap_input("user", [], null)
+    with input as bootstrap_input("user", [], [])
 }
 
-# 已有 active org 的 USER → deny（即使该 org 绑定不在本次 input 中）
-test_bootstrap_user_with_active_org_denied if {
+# target 位于 active org 集合的 USER（无绑定）→ allow（既有目标的重放候选）
+test_bootstrap_replay_candidate_target_in_active_set_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as bootstrap_input("user", [], [org_id])
+}
+
+# 多 org 集合中 target 恰好在集合内 → allow（确定性集合成员判定，与排序无关）
+test_bootstrap_replay_candidate_multi_org_set_allowed if {
+    data.zhiwei.authz.allow == true
+    with input as bootstrap_input("user", [], [other_org, org_id])
+}
+
+# 已有 active org 但 target 不在集合内 → deny（禁止创建新组织）
+test_bootstrap_user_with_active_org_new_target_denied if {
     data.zhiwei.authz.allow != true
-    with input as bootstrap_input("user", [], org_id)
+    with input as bootstrap_input("user", [], [other_org])
 }
 
 # 带角色绑定的 USER（有成员身份）→ deny
 test_bootstrap_user_with_bindings_denied if {
     data.zhiwei.authz.allow != true
-    with input as bootstrap_input("user", [binding("member", "org")], null)
+    with input as bootstrap_input("user", [binding("member", "org")], [])
 }
 
 # service account → deny
 test_bootstrap_service_account_denied if {
     data.zhiwei.authz.allow != true
-    with input as bootstrap_input("service_account", [], null)
+    with input as bootstrap_input("service_account", [], [])
 }
 
 # agent identity（即使有有效主体）→ deny
 test_bootstrap_agent_identity_denied if {
     data.zhiwei.authz.allow != true
-    with input as bootstrap_input("agent_identity", [], null)
+    with input as bootstrap_input("agent_identity", [], [])
 }
 
 # org/manage 不因 bootstrap 规则放宽：无角色主体管理已有组织仍 deny
@@ -1517,7 +1535,7 @@ test_org_manage_roleless_denied if {
         "organization_id": org_id,
         "workspace_id": ws_id,
         "actor": {"principal_id": "u1", "kind": "user", "roles": [],
-                  "active_organization_id": null},
+                  "active_organization_ids": []},
         "effective_identity": null,
         "resource": {"type": "org", "id": "r1", "version": "v1"},
         "action": "manage",

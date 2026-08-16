@@ -1,12 +1,23 @@
-"""S1-T4-repair 二轮 RED：真实 OPA bootstrap 纵切（slow，docker + postgres）。
+"""S1-T4-repair 三轮 RED：真实 OPA bootstrap 纵切（slow，docker + postgres）。
 
 Mock IdP + create_app + 真实 OPA（compose opa 服务，profile identity）+ 真实
-PostgreSQL。bootstrap 的 PolicyInput 形状（action=create、actor 携带
-active_organization_id）已由 FakeOPA 版测试（tests/integration/rls/
-test_mutation_policy_audit.py）冻结；本文件证明真实 Rego 对 org/create 的判定：
+PostgreSQL。三轮修复目标：bootstrap 成功后的精确重放必须 200，而不是被二轮
+「已有 active org → deny」规则误杀；Rego 判定输入从单值 active_organization_id
+改为集合 active_organization_ids（PEP 从全部权威 memberships 解析、去重后稳定
+排序）。本文件冻结 org/create 的完整重放契约：
+
 - 无 active org 的 USER 创建首个组织 → 201，同一事务落 org + owner membership +
   allowed 审计（真实 decision_id/revision/reason）+ audit.decision outbox；
-- 已有 active org 的 USER bootstrap → 403 "policy denied"、业务零写入、零审计
+- 精确重放（同 key 同 body）→ 200，响应与首次逐字节一致，零新增 audit/outbox/
+  membership/idempotency 行；OPA 仍参与每次判定（停掉边车后重放必须 fail
+  closed 403，证明不存在 pre-policy 响应缓存旁路）；
+- 同 key 不同 digest → 409 idempotency_conflict（failed 审计、decision 元数据全
+  NULL、resource_version=0），业务零写入；
+- 非创建者成员重放创建者精确请求 → 403 "organization already exists"（幂等 scope
+  绑定 owner，不产生新 owner membership、无租户接管）；
+- 多 org 成员重放自建目标 org → 200，判定不依赖任何「第一个 org」的查询/排序
+  （目标 UUID 排在前面的反序情形也在其中）；
+- 目标 org 不在 active 集合 → 403 "policy denied"、业务零写入、零审计
   （pre-tenant 冻结例外：目标 org 不存在，无合法审计 FK scope）；
 - OPA 边车不可达 → 同样 403 "policy denied"、零写入、零审计（fail closed）；
 - authz_test.rego 交叉校验套件在真实 OPA 上全绿（opa test，bundle 由 entrypoint
@@ -16,10 +27,14 @@ test_mutation_policy_audit.py）冻结；本文件证明真实 Rego 对 org/crea
 还原 opa 服务，不动 postgres；无 docker 时跳过并给出明确理由（slow 显式运行，
 不算断言放宽）。
 
-RED 状态：今日 bootstrap 仍发 org/manage（真实 Rego 对无角色主体 deny），
-test_real_opa_bootstrap_201_same_transaction_four_tables 以 403 失败；
-authz.rego 尚无 org/create 规则，authz_test.rego 的新 bootstrap 用例在
-`opa test` 下失败，test_rego_suite_passes_against_real_opa 以非零退出失败。
+RED 状态（三轮）：sidecar 上仍是二轮 Rego——org/create 要求
+active_organization_id == null，主体一旦存在任一 active org 即 deny：
+- 精确重放 → 403 "policy denied" 而非 200；
+- 同 key 异 digest → 403 而非 409（策略层就挡住了，到不了幂等冲突判定）；
+- 非创建者重放 → 403 "policy denied" 而非 "organization already exists"；
+- 多 org 重放 → 403 而非 200。
+这四项失败就是本轮要修复的重放回归；每项断言里都钉死业务零新增行，防止
+GREEN 用「缓存/旁路」或「新写行」假过。
 """
 
 from __future__ import annotations
@@ -486,6 +501,20 @@ async def _perform_login(client: httpx.AsyncClient, idp: FakeIdP) -> str:
     return cookie
 
 
+async def _perform_login_as(client: httpx.AsyncClient, idp: FakeIdP, subject: str) -> str:
+    """同 _perform_login，但 id_token 的 sub 覆盖为指定外部身份（bob 等非默认主体）。"""
+    login = await client.get("/auth/login")
+    assert login.status_code == 302
+    idp.record_authorization(login.headers["location"])
+    state = parse_qs(urlparse(login.headers["location"]).query)["state"][0]
+    code = idp.issue_code(state, id_token_overrides={"sub": subject})
+    callback = await client.get(f"/auth/callback?code={code}&state={state}")
+    assert callback.status_code == 302
+    cookie = client.cookies.get(COOKIE)
+    assert cookie, "callback 必须签发 session cookie"
+    return cookie
+
+
 async def _csrf_token(client: httpx.AsyncClient) -> str:
     me = await client.get("/api/v1/me")
     assert me.status_code == 200
@@ -692,3 +721,344 @@ def test_rego_suite_passes_against_real_opa() -> None:
     )
     assert suite.returncode == 0, f"opa test 必须全绿:\n{suite.stdout}\n{suite.stderr}"
     assert "PASS: " in suite.stdout, "opa test 汇总行必须出现 PASS: N/M"
+
+
+# --------------------------------------------------------------------------- 三轮 RED：重放契约
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_bootstrap_exact_replay_returns_200_without_new_writes(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """三轮修复：bootstrap 成功后的精确重放必须 200 且零新增行，OPA 仍参与判定。
+
+    首建 201 后，alice 已是 org 的 owner member——二轮 Rego 因此对重放 deny
+    （403 policy denied），这正是被修复的回归。重放 200 必须来自 idempotency
+    精确重放（同 scope/key/digest），不得新写 audit/outbox/membership/claim，
+    也不得绕过策略层（停边车后重放必须 fail closed 403，证明无 pre-policy
+    响应缓存）。
+    """
+    _, client, idp = app_and_client
+    principal = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    org_id = uuid4()
+    key = "slow-bootstrap-replay-exact"
+
+    first = await _bootstrap_post(client, csrf_token, org_id, key)
+    assert first.status_code == 201
+    assert first.json() == {"id": str(org_id), "status": "active"}
+
+    replayed = await _bootstrap_post(client, csrf_token, org_id, key)
+    assert replayed.status_code == 200
+    assert replayed.json() == first.json()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_id)
+            == 1
+        )
+        member_rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1",
+            org_id,
+        )
+        assert len(member_rows) == 1
+        assert member_rows[0]["principal_id"] == principal
+        assert json.loads(member_rows[0]["role_bindings"]) == ["owner"]
+        audit_rows = await connection.fetch(
+            "SELECT result, action FROM audit_events WHERE organization_id = $1", org_id
+        )
+        assert len(audit_rows) == 1
+        assert audit_rows[0]["result"] == "allowed"
+        assert audit_rows[0]["action"] == "organization.create"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM outbox WHERE topic = 'audit.decision' "
+                "AND payload->>'resource_id' = $1",
+                str(org_id),
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_id,
+                key,
+            )
+            == 1
+        )
+    finally:
+        await connection.close()
+
+    # OPA 参与性证明：每次判定都真实求值边车（PolicyInput 的 trace_id 每请求
+    # 不同 → input digest 不同 → 有界决策缓存必然 miss）。停掉 OPA 后重放若
+    # 返回 200 就是 pre-policy 响应缓存旁路；必须 fail closed 403。
+    stopped = _run("stop", "opa")
+    assert stopped.returncode == 0, stopped.stderr
+    try:
+        denied = await _bootstrap_post(client, csrf_token, org_id, key)
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "policy denied"
+    finally:
+        _run("start", "opa")
+        _wait_healthy()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_id)
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1", org_id
+            )
+            == 1
+        )
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_id,
+                key,
+            )
+            == 1
+        )
+    finally:
+        await connection.close()
+
+    again = await _bootstrap_post(client, csrf_token, org_id, key)
+    assert again.status_code == 200
+    assert again.json() == first.json()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_bootstrap_same_key_different_digest_conflict_409(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """同 key 不同 body：409 idempotency_conflict + failed 审计，业务零写入。
+
+    预置一条 request_digest 与服务端对真实请求算出的 digest 必然不同的 claim
+    （sha256:00…0）。policy 放行（目标 org 在 active 集合）后必须由幂等冲突
+    判定拒绝；二轮 Rego 在策略层就 deny（403 policy denied），到不了该判定。
+    """
+    _, client, idp = app_and_client
+    principal = await _seed_principal("alice-oidc")
+    org_a = await _seed_org()
+    await _seed_membership(principal, org_a, ["owner"])
+    conflict_key = "slow-bootstrap-conflict"
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        await connection.execute(
+            "INSERT INTO idempotency_records "
+            "(id, organization_id, workspace_id, scope, idempotency_key, request_digest, "
+            "response, status, schema_version, created_at) "
+            "VALUES ($1, $2, NULL, $3, $4, $5, $6::jsonb, 'completed', 1, now())",
+            uuid4(),
+            org_a,
+            f"organization.create:{principal}",
+            conflict_key,
+            f"sha256:{'0' * 64}",
+            json.dumps({"id": str(org_a), "status": "active"}),
+        )
+    finally:
+        await connection.close()
+
+    await _perform_login(client, idp)
+    csrf_token = await _csrf_token(client)
+    response = await _bootstrap_post(client, csrf_token, org_a, conflict_key)
+    assert response.status_code == 409
+    assert response.json()["detail"] == "idempotency key was already used for another request"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+            == 1
+        )
+        member_rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1",
+            org_a,
+        )
+        assert len(member_rows) == 1
+        assert member_rows[0]["principal_id"] == principal
+        assert json.loads(member_rows[0]["role_bindings"]) == ["owner"]
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_a,
+                conflict_key,
+            )
+            == 1
+        ), "冲突请求不得新增幂等记录"
+        audit_rows = await connection.fetch(
+            "SELECT * FROM audit_events WHERE organization_id = $1 ORDER BY id", org_a
+        )
+        assert len(audit_rows) == 1
+        assert audit_rows[0]["result"] == "failed"
+        assert audit_rows[0]["decision_reason"] == "idempotency_conflict"
+        assert audit_rows[0]["decision_id"] is None
+        assert audit_rows[0]["resource_version"] == 0
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM outbox WHERE topic = 'audit.decision' "
+                "AND payload->>'resource_id' = $1",
+                str(org_a),
+            )
+            == 1
+        )
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_bootstrap_non_creator_replay_denied_no_takeover(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """非创建者成员重放创建者精确请求：403 organization already exists，无接管。
+
+    bob 与 alice 同属 org_a 但非创建者：policy 放行（目标在 active 集合）后，
+    幂等 scope 绑定 owner（organization.create:<creator pid>），bob 的 scope 查
+    不到 alice 的 claim → OrganizationExistsError。不得给 bob 写 owner
+    membership，不得新增 claim。
+    """
+    _, client, idp = app_and_client
+    alice_pid = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_alice = await _csrf_token(client)
+    org_a = uuid4()
+    key = "slow-bootstrap-takeover"
+    first = await _bootstrap_post(client, csrf_alice, org_a, key)
+    assert first.status_code == 201
+
+    bob_pid = await _seed_principal("bob-oidc")
+    await _seed_membership(bob_pid, org_a, ["member"])
+    await _perform_login_as(client, idp, "bob-oidc")
+    csrf_bob = await _csrf_token(client)
+
+    attempt = await _bootstrap_post(client, csrf_bob, org_a, key)
+    assert attempt.status_code == 403
+    assert attempt.json()["detail"] == "organization already exists"
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+            == 1
+        )
+        member_rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1 "
+            "ORDER BY principal_id",
+            org_a,
+        )
+        assert len(member_rows) == 2, "重放不得新增 membership（alice owner + bob member）"
+        owners = [r for r in member_rows if json.loads(r["role_bindings"]) == ["owner"]]
+        assert len(owners) == 1, "owner 必须仍只有 alice 一条，bob 不得接管"
+        assert owners[0]["principal_id"] == alice_pid
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_a,
+                key,
+            )
+            == 1
+        ), "只允许 alice 创建时的原始 claim，bob 重放不得新增"
+    finally:
+        await connection.close()
+
+
+@pytest.mark.slow
+@pytest.mark.asyncio
+async def test_real_opa_bootstrap_multi_org_replay_is_deterministic(
+    migrated_database: None,
+    opa_service: None,
+    app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+) -> None:
+    """多 org 成员重放自建目标 org 必须 200，判定不依赖 org 顺序。
+
+    alice 自建 org_a、bob 自建 org_b（UUID 排在 org_a 之前——「查询返回的第一个
+    org」式实现会选到 org_b 而误拒 org_a 重放）；alice 再加入 org_b 成为普通成员
+    后，重放 org_a 的创建请求必须仍 200。集合判定（org_a ∈ active set）与顺序
+    无关；二轮单值 active_organization_id 对该重放 deny（403 policy denied）。
+    """
+    _, client, idp = app_and_client
+    alice_pid = await _reset_alice()
+    await _perform_login(client, idp)
+    csrf_alice = await _csrf_token(client)
+    org_a = uuid4()
+    key_a = "slow-bootstrap-multi-a"
+    first_a = await _bootstrap_post(client, csrf_alice, org_a, key_a)
+    assert first_a.status_code == 201
+
+    org_b = uuid4()
+    while str(org_b) >= str(org_a):
+        org_b = uuid4()
+
+    bob_pid = await _seed_principal("bob-oidc")
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        # 本文件用例共享同一数据库（migrated_database 为 session 级）：先前用例
+        # 可能给 bob-oidc 留过 memberships，必须清空才能把 bob 当成「首登无 org」
+        # 的 bootstrap 主体（与 _reset_alice 同款机制）。
+        await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
+        await connection.execute(
+            "DELETE FROM workspace_memberships WHERE principal_id = $1", bob_pid
+        )
+    finally:
+        await connection.close()
+    await _perform_login_as(client, idp, "bob-oidc")
+    csrf_bob = await _csrf_token(client)
+    created_b = await _bootstrap_post(client, csrf_bob, org_b, "slow-bootstrap-multi-b")
+    assert created_b.status_code == 201
+
+    await _seed_membership(alice_pid, org_b, ["member"])
+    await _perform_login(client, idp)
+    csrf_alice2 = await _csrf_token(client)
+
+    replayed = await _bootstrap_post(client, csrf_alice2, org_a, key_a)
+    assert replayed.status_code == 200
+    assert replayed.json() == first_a.json()
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert (
+            await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+            == 1
+        )
+        member_rows = await connection.fetch(
+            "SELECT principal_id, role_bindings FROM memberships WHERE organization_id = $1",
+            org_a,
+        )
+        assert len(member_rows) == 1
+        assert member_rows[0]["principal_id"] == alice_pid
+        assert json.loads(member_rows[0]["role_bindings"]) == ["owner"]
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM audit_events WHERE organization_id = $1", org_a
+            )
+            == 1
+        ), "重放不得追加 allowed 审计"
+        assert (
+            await connection.fetchval(
+                "SELECT count(*) FROM idempotency_records WHERE organization_id = $1 "
+                "AND idempotency_key = $2",
+                org_a,
+                key_a,
+            )
+            == 1
+        )
+    finally:
+        await connection.close()

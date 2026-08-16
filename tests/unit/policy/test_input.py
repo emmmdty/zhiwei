@@ -344,22 +344,35 @@ class TestOrgCreateBootstrapInput:
                 principal_id=RES,
                 kind=PrincipalKind.USER,
                 roles=(),
-                active_organization_id=None,
+                active_organization_ids=(),
             ),
             resource=ResourceRef(type=ResourceType.ORG, id=RES, version="1"),
             action=Action.CREATE,
         )
         assert doc.action is Action.CREATE
 
-    def test_bootstrap_input_serializes_active_organization_id(self) -> None:
+    def test_bootstrap_input_serializes_active_organization_ids(self) -> None:
         doc = base_input(
             actor=Actor(
                 principal_id=RES,
                 kind=PrincipalKind.USER,
                 roles=(),
-                active_organization_id=None,
+                active_organization_ids=(RES, ORG),
             ),
             resource=ResourceRef(type=ResourceType.ORG, id=RES, version="1"),
             action=Action.CREATE,
         ).model_dump(mode="json")
-        assert doc["actor"]["active_organization_id"] is None
+        assert doc["actor"]["active_organization_ids"] == [str(ORG), str(RES)]
+
+    def test_bootstrap_input_empty_active_orgs_serializes_as_empty_list(self) -> None:
+        doc = base_input(
+            actor=Actor(
+                principal_id=RES,
+                kind=PrincipalKind.USER,
+                roles=(),
+                active_organization_ids=(),
+            ),
+            resource=ResourceRef(type=ResourceType.ORG, id=RES, version="1"),
+            action=Action.CREATE,
+        ).model_dump(mode="json")
+        assert doc["actor"]["active_organization_ids"] == []
