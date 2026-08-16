@@ -358,17 +358,33 @@ delegation_hop_covers(d) if {
     time.parse_rfc3339_ns(d.expires_at) > time.parse_rfc3339_ns(input.context.now)
 }
 
-# ---------- bootstrap：无 active org 的 USER 创建首个组织（S1-T4 二轮修复）----------
+# ---------- bootstrap：USER 首次创建 org / 既有目标重放候选（S1-T4 三轮修复）----------
 # 独立 org/create 动作，不向 org.manage 开放（矩阵不变，org_owner 专属）。
-# 仅 kind=user + 无 active org + 无任何角色绑定可进入；service account / agent
-# identity / 已有 active org（active_organization_id 非空）或携带绑定（roles 非空）
-# 的主体一律拒绝。active_organization_id 由 PEP 从权威 memberships 解析，非 caller 自述。
+# 仅 kind=user + 无任何角色绑定可进入，且满足其一：
+#   - active org 集合为空 → 首次 bootstrap（任意 target 可进入命令层）；
+#   - target organization_id ∈ active org 集合 → 既有目标的重放候选。
+# 候选 2 只允许进入 application command——精确重放（同 owner 幂等 scope + 同
+# request digest）由命令层判定，不复制幂等逻辑到 Rego。service account / agent
+# identity / 带绑定 / target 不在集合内的主体一律拒绝。
+# active_organization_ids 由 PEP 从权威 memberships 解析，非 caller 自述。
+# 集合字段缺失的原始 input（如 org/manage 直接请求）不得引发求值错误：
+# count(undefined) 本身是 undefined → 两个候选都未定义 → deny（fail closed）；
+# 候选 2 在 count>0 之后才做成员判定，绝不让 `x in undefined` 进入求值器。
 bootstrap_org_create if {
     input.resource.type == "org"
     input.action == "create"
     input.actor.kind == "user"
-    input.actor.active_organization_id == null
     count(input.actor.roles) == 0
+    count(input.actor.active_organization_ids) == 0
+}
+
+bootstrap_org_create if {
+    input.resource.type == "org"
+    input.action == "create"
+    input.actor.kind == "user"
+    count(input.actor.roles) == 0
+    count(input.actor.active_organization_ids) > 0
+    input.organization_id in input.actor.active_organization_ids
 }
 
 allow if {

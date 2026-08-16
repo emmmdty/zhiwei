@@ -97,6 +97,24 @@ def _sha256_hex(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def _active_organization_ids(memberships: list[dict[str, Any]]) -> tuple[UUID, ...]:
+    """从全部权威 memberships 行构造 active 组织 id 集合：去重后稳定排序。
+
+    同一 principal 可同时持 org 作用域与 workspace 作用域的绑定（同一 org 两行
+    status=active），二者都计、去重；返回确定性排序的 tuple，保证 PolicyInput
+    序列化稳定——重放候选判定（target ∈ 集合）与任何「第一个 org」的查询顺序无关。
+    """
+    return tuple(
+        sorted(
+            {
+                row["organization_id"]
+                for row in memberships
+                if row["organization_status"] == "active"
+            }
+        )
+    )
+
+
 def _session_aad(session_id: UUID, issuer: str, subject: str, session_version: int) -> bytes:
     return TokenAAD(
         purpose=_ENVELOPE_PURPOSE,
@@ -831,9 +849,10 @@ class SessionService:
         workspace 级绑定（repair addendum §3.2 provenance 裁决）：绝不携带其他 org
         的绑定，防止跨 org 遗留角色字符串在构造 PolicyInput 时按 fail closed 拒绝。
 
-        principal-only context（无 org 声明）也经权威 memberships 解析
-        active_organization_id（bootstrap 规则需要；不携带其他绑定数据，provenance
-        裁决不变）。
+        active_organization_ids 在两个分支都来自同一权威解析（全部 memberships 的
+        active 组织 id 集合，与声明的 org 无关）：principal-only context（无 org
+        声明）因此可携带完整集合供 bootstrap / 重放候选规则判定（不携带其他绑定
+        数据，provenance 裁决不变）。
         """
         from zhiwei.identity.domain import ActorContext, ActorRoleBinding
 
@@ -841,12 +860,10 @@ class SessionService:
             if workspace_id is not None:
                 raise MembershipScopeError("workspace context requires an organization")
             memberships = await self.memberships(principal_id)
-            active_org = next(
-                (row["organization_id"] for row in memberships
-                 if row["organization_status"] == "active"),
-                None,
+            return ActorContext(
+                principal_id=principal_id,
+                active_organization_ids=_active_organization_ids(memberships),
             )
-            return ActorContext(principal_id=principal_id, active_organization_id=active_org)
         try:
             org = UUID(organization_id)
         except (ValueError, AttributeError) as exc:
@@ -859,15 +876,7 @@ class SessionService:
         ]
         if not org_memberships:
             raise MembershipScopeError("principal is not a member of the organization")
-        active_organization_id = (
-            org
-            if any(
-                row["organization_status"] == "active"
-                for row in memberships
-                if row["organization_id"] == org
-            )
-            else None
-        )
+        active_organization_ids = _active_organization_ids(memberships)
         role_bindings = tuple(
             ActorRoleBinding(
                 name=role,
@@ -882,7 +891,7 @@ class SessionService:
                 principal_id=principal_id,
                 organization_id=org,
                 role_bindings=role_bindings,
-                active_organization_id=active_organization_id,
+                active_organization_ids=active_organization_ids,
             )
         try:
             workspace = UUID(workspace_id)
@@ -914,7 +923,7 @@ class SessionService:
             organization_id=org,
             workspace_id=workspace,
             role_bindings=role_bindings,
-            active_organization_id=active_organization_id,
+            active_organization_ids=active_organization_ids,
         )
 
 

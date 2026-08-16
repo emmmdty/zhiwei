@@ -107,6 +107,8 @@ def create_memberships_router(
     """policy_enforcer 是生产纵切（repair addendum §3.2）的必需注入：create_app 组合时
     提供，任何直连调用点都不得绕过；缺失在构造期抛 TypeError（fail closed）。不得在
     端点内复制 gate 逻辑。"""
+    if policy_enforcer is None:
+        raise TypeError("policy_enforcer must be provided (fail closed)")
 
     router = APIRouter(prefix="/api/v1", tags=["memberships"])
 

@@ -75,8 +75,14 @@ class Actor(BaseModel):
     principal_id: UUID
     kind: PrincipalKind
     roles: tuple[RoleBinding, ...] = ()
-    # 二轮修复：bootstrap 判定输入（PEP 从权威 memberships 解析；None = 无 active org）
-    active_organization_id: UUID | None = None
+    # 三轮修复：bootstrap / 重放候选判定输入（PEP 从全部权威 memberships 解析；
+    # 空集合 = 无 active org）。validator 再做去重排序归一，保证序列化确定。
+    active_organization_ids: tuple[UUID, ...] = ()
+
+    @field_validator("active_organization_ids")
+    @classmethod
+    def _dedupe_sort(cls, value: tuple[UUID, ...]) -> tuple[UUID, ...]:
+        return tuple(sorted(set(value)))
 
 
 class EffectiveIdentity(BaseModel):

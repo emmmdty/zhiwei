@@ -198,9 +198,10 @@ def _build_policy_input(
     """ActorContext → PolicyInput；未知角色名抛 ValueError（gate 捕获 → 本地拒绝）。
 
     角色绑定来自已验证 memberships（ActorContext.role_bindings，resolve_context 填充），
-    不信任 caller；S1 无 delegation → effective_identity=None。actor.active_organization_id
-    同样来自 resolve_context 的权威 memberships 解析（None = 无 active org），供 OPA
-    org/create bootstrap 规则判定。
+    不信任 caller；S1 无 delegation → effective_identity=None。actor.active_organization_ids
+    同样来自 resolve_context 对全部权威 memberships 的解析（去重、稳定排序；空集合 =
+    无 active org），供 OPA org/create bootstrap / 重放候选规则判定；该集合是权威事实，
+    绝不来自 caller 的 header/body 声明。
     """
     role_bindings = tuple(
         binding_from_membership(
@@ -216,7 +217,7 @@ def _build_policy_input(
             principal_id=actor.principal_id,
             kind=actor.kind,
             roles=role_bindings,
-            active_organization_id=actor.active_organization_id,
+            active_organization_ids=actor.active_organization_ids,
         ),
         effective_identity=None,
         organization_id=organization_id,
