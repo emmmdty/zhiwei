@@ -257,7 +257,8 @@ class Membership(Base):
 class OrganizationBootstrapClaim(Base):
     """identity-global bootstrap claim（S1-T4 四轮）：一个 principal 最多一个 bootstrap org。
 
-    不属于 tenant 数据面（0008）：无 RLS、无 org/ws 列，不给任何角色直接表权限——
+    不属于 tenant 数据面（0008）：无 RLS、无 org/ws 租户作用域语义，不给任何角色
+    直接表权限——
     只允许经窄 SECURITY DEFINER 函数 zhiwei_claim_organization_bootstrap 访问
     （principal 级 advisory lock 串行化 + UNIQUE 第二层防线）。membership 生命周期
     不影响 claim：成员资格被删除不能重置 bootstrap 资格。

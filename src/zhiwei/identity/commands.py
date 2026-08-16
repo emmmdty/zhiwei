@@ -283,8 +283,9 @@ async def create_organization(
     Owner membership（租户接管防护），只走只读幂等重放路径；仅本次确实创建新 org 时
     调用持久 bootstrap claim（S1-T4 四轮：一个 principal 最多 claim 一个 bootstrap
     org，membership 删除不重置资格）。claim=false（同一 principal 已 claim 不同
-    target）抛 BootstrapClaimConflict，使刚插入的 organization 整体回滚——API 层映射
-    403 且不写 failed 审计（loser target 无合法 audit FK scope，pre-tenant 例外）。
+    target）抛 BootstrapClaimConflict，调用方异常退出 tenant_session 后事务整体回滚
+    ——API 层映射 403 且不写 failed 审计（loser target 无合法 audit FK scope，
+    pre-tenant 例外）。
     """
     response = {"id": str(organization_id), "status": "active"}
     created, _ = await repository.create_organization(organization_id, status="active")

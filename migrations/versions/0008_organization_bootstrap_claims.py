@@ -10,7 +10,8 @@ Revises: 0007_audit_metadata_nonempty
 生命周期不影响 claim。
 
 - organization_bootstrap_claims：principal_id PRIMARY KEY（identity-global）、
-  organization_id UNIQUE。**不属于 tenant 数据面**：无 RLS、无 org/ws 列，不给
+  organization_id UNIQUE。**不属于 tenant 数据面**：无 RLS、无 org/ws 租户作用域
+  语义（organization_id 是 claim 目标值，不是作用域列），不给
   zhiwei_app / zhiwei_identity / PUBLIC 任何直接表权限（显式 REVOKE，防
   ALTER DEFAULT PRIVILEGES 残留，与 0003 同款纵深防御）——只能经窄函数访问；
 - zhiwei_claim_organization_bootstrap(principal_id uuid, organization_id uuid)

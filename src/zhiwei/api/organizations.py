@@ -206,9 +206,9 @@ def create_organizations_router(
                     )
             except BootstrapClaimConflict as error:
                 # 持久 claim 围栏拒绝（四轮）：同一 principal 已 bootstrap 过另一个
-                # org。事务已整体回滚（含刚插入的 org）；loser target 不存在，无合法
-                # audit FK scope → 沿用冻结的 pre-tenant 例外：不写 failed 审计、
-                # 零 audit/outbox（不得静默扩大该例外）。
+                # org。异常退出 tenant_session 后事务整体回滚（含刚插入的 org）；
+                # loser target 不存在，无合法 audit FK scope → 沿用冻结的 pre-tenant
+                # 例外：不写 failed 审计、零 audit/outbox（不得静默扩大该例外）。
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="bootstrap claim already used for another organization",

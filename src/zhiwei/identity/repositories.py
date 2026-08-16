@@ -323,7 +323,7 @@ class IdentityRepository:
         organization_bootstrap_claims 不给任何角色直接表权限（0008），本方法是唯一
         调用点：函数内部以 transaction-level advisory lock 按 principal 串行化，
         claim 已存在且 target 相同 → True；不同 → False；返回 False 时调用方必须
-        抛 BootstrapClaimConflict 并使整个事务回滚。
+        抛 BootstrapClaimConflict，异常退出 tenant_session 后事务整体回滚。
         """
         result = await self._session.execute(
             text(
