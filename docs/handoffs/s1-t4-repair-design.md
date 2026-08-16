@@ -47,7 +47,7 @@
    字符），缓存于 `request.state`，同一请求内 audit 与 policy 共用；**不从 body、cookie、header
    信任**；两次请求必不同。裁决：S1 无 tracing 传播（S2 起引入），缺失时**生成**而非 fail closed。
 4. **resource version 诚实表达**：`0` = 语义 `unknown`（mutation 未应用，常见于 denied/failed 路径；
-   PEP 不读目标租户、不猜版本）。allowed 路径写真实版本（create=1，update=当前+1）。`AuditRecord`
+   PEP 不读目标租户、不猜版本）。allowed 路径写真实版本（create=1；update 语义 S2 起，S1 无更新端点）。`AuditRecord`
    `resource_version` 边界从 `ge=1` 放宽为 `ge=0`；DB CHECK 同款（v2 行 `resource_version >= 0`）。
    禁止把 unknown 写成 1。
 5. **跨租户/猜测 ID**：gate 先做结构 scope 检查——mutation 目标 org ≠ actor org 时**不构造
@@ -74,15 +74,23 @@
    （`append_fail_closed_audit`），业务事务不开始。allowed → 同一 tenant 事务内
    `append_audit` + outbox（与业务同提交/同回滚；audit 写失败→整体 rollback）。
    审计写失败（deny 路径）→ 异常上抛（500），mutation 绝不执行。
-8. **幂等**：重放（同 key 同 digest）→ 返回原响应，**不追加新审计**（业务未发生第二次）；
-   幂等/名称/资源冲突等业务拒绝 → 独立事务写 `failed` 审计（NULL metadata，reason=固定码），
-   业务零写入。
+8. **幂等与审计控制流（独立审查 7.2 裁决，端点侧冻结）**：policy 在命令执行前求值，gate 无法
+   预知重放/冲突——allowed 审计**只在 `outcome.created == True` 时**在同一 tenant 事务内追加；
+   重放（created=False）不追加任何审计/outbox。命令抛业务拒绝（幂等/名称/资源冲突、
+   principal 状态）→ 端点捕获后在**独立事务**写 `failed` 审计（NULL metadata，reason=固定码），
+   业务零写入。任何路径都不得重复追加同一业务审计。
 9. **bootstrap（identity-global → tenant 边界）**：首登 principal（无 org）创建新 org 合法。
    policy input 的 org = **新建 org**（mutation 目标即 scope）；actor roles 为空
    （无绑定）→ 真实 Rego 对 org.manage 无绑定必 deny，**这是策略语义问题**（首登 bootstrap 授权
    规则属于 Rego 交付，S1 只冻结 PEP 纵切：policy 先于 mutation、deny 即拒绝+审计）。审计 scope =
    新建 org（org, NULL workspace）；actor_ref / effective_identity_ref =
    `user:<principal_id>`（S1 会话路径只产生 USER principal；delegation 形状 S2 起）。
+   **bootstrap 被拒审计例外（独立审查 7.1 裁决）**：`audit_events.organization_id` NOT NULL 且
+   FK → organizations.id，且 `append_fail_closed_audit` 要求非空 tenant context——被 OPA 拒绝的
+   bootstrap 目标 org 不存在，任何 scope 都无合法审计落点（identity-global 审计链不存在，另建
+   属越界）。裁决：**OPA 拒绝的 bootstrap → 403 `policy denied`、业务零写入、不写 denied 审计**
+   （schema 边界约束的冻结例外，其余所有 deny 均审计）；该例外必须由 RED 测试固定，不得静默扩大。
+   `organization_exists`（org 已存在）的 failed 审计仍写在该 org scope（FK 满足）。
 10. **PEP input 映射**（S1 冻结词汇无 workspace/group/membership 资源；用最接近的冻结锚点，
     语义校准随 S2 词汇扩展，本层只冻结编排）：
 
@@ -137,6 +145,9 @@
   镜像 policy.input.RoleBinding 形状但**不导入 policy 层**，防依赖环）。
 - `identity/sessions.py` `resolve_context`：从既有 memberships 查询结果填充 role_bindings
   （scope='organization' 行→org 绑定；scope='workspace' 行→workspace 绑定）。
+  **provenance 裁决（独立审查 7.3）**：`ActorContext.role_bindings` 只含**已解析 org** 的 org 级
+  绑定 + **已解析 workspace**（若存在）的 workspace 级绑定，绝不含其他 org 的绑定——防止跨 org
+  遗留角色字符串污染 `build_policy_input`（未知角色名 fail closed）。
 - `identity/audit.py`：`AuditRecord` 加 `payload_digest` 严格格式（`^sha256:[0-9a-f]{64}$`）、
   `resource_version ge=0`、决策配对/result 一致性 model_validator（与 0006 CHECK 逐条一致）。
 - `persistence/events.py` `AuditEventData`：v2 行加同款校验（payload_digest 格式、reason 非空、
@@ -158,7 +169,7 @@
 
 | 文件 | 修订 | 动机 |
 | --- | --- | --- |
-| `test_audit.py` `_record` | `payload_digest="a"*71` → `"sha256:"+"a"*64`（2 处，含 v1 行 `"b"*71` → `"sha256:"+"b"*64`） | 原 71 字符任意串不符合本 addendum §3.1.6 冻结的 digest 格式契约；断言语义（字段/链/原子性）不变 |
+| `test_audit.py` `_record` | `payload_digest="a"*71` → `"sha256:"+"a"*64`（2 处，含 v1 行 `"b"*71` → `"sha256:"+"b"*64`） | 原 71 字符任意串不符合本 addendum §3.1.6 冻结的 digest 格式契约；断言语义（字段/链/原子性）不变。v1 行的 `"b"*71` 修订非 0006 CHECK 所必需（v2 限定），但生产 v1 行 payload_digest 恒为真实 `sha256:` digest（`unit_of_work.py:365`），测试数据对齐生产形状 |
 | `test_audit.py` 篡改用例 | `("payload_digest", "f"*71)` → `"sha256:"+"f"*64` | 新 CHECK 会拒绝该 UPDATE（DB 错误而非 EventChainError）；换成格式合法但内容不同的 digest，断链断言语义不变 |
 | `test_settings.py` | `_full_auth_app_settings` 补 `ZHIWEI_OPA_BASE_URL`；`dropped` parametrize 补同名项 | 组合期新增必需输入（I6）；断言语义不变 |
 | `test_oidc.py` `_settings` | 补 `ZHIWEI_OPA_BASE_URL` | 同上；auth 流程不触发 policy 求值，无需 mock transport |
@@ -182,7 +193,8 @@
 `tests/security/tenancy/test_audit.py`（§3.3 机制修订）、`tests/unit/config/test_settings.py`、
 `tests/security/identity/test_oidc.py`（§3.3）。
 
-**文档**：本 addendum、`docs/handoffs/s1-t4.md`（交接单更新）。
+**文档**：本 addendum、`docs/handoffs/s1-t4.md`（交接单更新）、`.env.example`（补
+`ZHIWEI_OPA_BASE_URL` 登记，独立审查 7.4）。
 
 **禁止**：`src/zhiwei/policy/`、`policies/`、`evals/`、`migrations/versions/0001~0005`、
 `tests/security/tenancy/test_rls.py|test_pool.py|test_idor.py`、新增第三方依赖、
@@ -194,6 +206,7 @@
 | --- | --- | --- | --- | --- |
 | bootstrap 成功 | org+owner membership | v2 行+outbox 同现 | allowed+真实 decision/revision/request/trace | 同一 tenant 事务 |
 | bootstrap 审计写失败 | 全部回滚 | 无 | — | 整体 rollback |
+| **bootstrap 被 OPA 拒绝** | **零写入** | **无审计（§3.1.9 schema 边界例外）** | **—** | **业务事务不开始** |
 | 每次真实 mutation（ws/group/member） | 落库 | 自动追加 | allowed | 同一事务 |
 | 幂等重放 | 不变 | 不重复追加 | — | 零写入 |
 | 幂等冲突 | 不变 | failed 审计 | NULL+`idempotency_conflict` | 独立事务 |
