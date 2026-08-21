@@ -28,6 +28,16 @@ const OIDC_SUBJECT: Record<string, string> = {
   auditor: "auditor-oidc",
 };
 
+// 播种的 principal UUID（S1 e2e 种子：compose identity profile + DB seed 脚本）。
+// S1 后端 POST /members 以 principal_id (UUID) 邀请，无 externalId→UUID 解析端点。
+const PRINCIPAL_UUID: Record<string, string> = {
+  owner: "fd1b9dab-3f88-4b35-803d-f5ab19fae6a8",
+  builder: "3383f6a7-d17b-44c2-802c-d67c3974e13a",
+  approver: "4a3e5ad8-f81e-431d-937f-55b98def2bf2",
+  member: "f740acc5-03c3-486e-8384-2a9335fd4285",
+  auditor: "63d7ef96-75e0-4c47-8edb-10dd834c9f64",
+};
+
 // Keycloak 测试用户密码（compose identity profile 默认值）
 const KC_PASSWORD = process.env.KEYCLOAK_TEST_USER_PASSWORD ?? "s1-dev-user-password-only";
 
@@ -45,6 +55,31 @@ async function signIn(page: Page, role: string) {
   await expect(page.getByText(new RegExp(role, "i"))).toBeVisible();
 }
 
+// 播种的 org id（e2e DB 种子）
+const SEED_ORG_ID = "3a1a8d1c-a63f-4bed-87d1-b67948aea7ac";
+
+// server-enforced 探针：直接 API 调用必须带 session cookie（page.request 共享）、
+// CSRF、Idempotency-Key 与 tenant header，才能命中真实 PEP/RLS 判定。
+async function directApi(
+  page: Page,
+  method: string,
+  path: string,
+  body?: unknown
+) {
+  const me = await page.request.get("/api/v1/me");
+  const csrf = me.status() === 200 ? (await me.json()).csrf_token : "";
+  return page.request.fetch(path, {
+    method,
+    headers: {
+      "X-CSRF-Token": csrf,
+      "Idempotency-Key": crypto.randomUUID(),
+      "X-ZhiWei-Organization": SEED_ORG_ID,
+      "Content-Type": "application/json",
+    },
+    data: body === undefined ? undefined : JSON.stringify(body),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Owner journey：完整 tenancy 生命周期
 // ---------------------------------------------------------------------------
@@ -53,11 +88,10 @@ test.describe("Owner journey", () => {
   test("creates organization, workspace, invites 4 roles, assigns workspace roles", async ({ page }) => {
     await signIn(page, "owner");
 
-    // 创建 Organization
+    // 创建 Organization（S1 bootstrap 只接受 organization_id，无 org name）
     await page.getByRole("button", { name: /create organization/i }).click();
-    await page.getByLabel(/organization name/i).fill("Acme Corp");
     await page.getByRole("button", { name: /confirm/i }).click();
-    await expect(page.getByText("Acme Corp")).toBeVisible();
+    await expect(page.getByRole("heading", { name: /workspaces/i })).toBeVisible();
 
     // 创建 Workspace
     await page.getByRole("button", { name: /create workspace/i }).click();
@@ -65,13 +99,13 @@ test.describe("Owner journey", () => {
     await page.getByRole("button", { name: /confirm/i }).click();
     await expect(page.getByText("Engineering")).toBeVisible();
 
-    // 邀请 Member / Builder / Approver / Auditor（逐角色 assign role）
+    // 邀请 Member / Builder / Approver / Auditor（逐角色 assign role，按 principal UUID）
     for (const role of ["member", "builder", "approver", "auditor"]) {
       await page.getByRole("button", { name: /invite member/i }).click();
-      await page.getByLabel(/external id/i).fill(OIDC_SUBJECT[role]);
+      await page.getByLabel(/principal id/i).fill(PRINCIPAL_UUID[role]);
       await page.getByLabel(/role/i).selectOption(role);
       await page.getByRole("button", { name: /send invite/i }).click();
-      await expect(page.getByText(OIDC_SUBJECT[role])).toBeVisible();
+      await expect(page.getByText(PRINCIPAL_UUID[role])).toBeVisible();
     }
 
     // 创建 Group 并分配 workspace role
@@ -83,10 +117,10 @@ test.describe("Owner journey", () => {
 
   test("removes a member and sees membership list update", async ({ page }) => {
     await signIn(page, "owner");
-    await page.getByText(OIDC_SUBJECT.member).click();
+    await page.getByText(PRINCIPAL_UUID.member).click();
     await page.getByRole("button", { name: /remove member/i }).click();
     await page.getByRole("button", { name: /confirm removal/i }).click();
-    await expect(page.getByText(OIDC_SUBJECT.member)).toHaveCount(0);
+    await expect(page.getByText(PRINCIPAL_UUID.member)).toHaveCount(0);
   });
 });
 
@@ -105,11 +139,13 @@ test.describe("Agent Builder journey", () => {
     await signIn(page, "builder");
     // 导航隐藏：invite 按钮不可见
     await expect(page.getByRole("button", { name: /invite member/i })).toHaveCount(0);
-    // 直接 API 仍由 server 拒绝（前端不硬判 403）
-    const api = page.request.post("/api/v1/organizations", {
-      data: { organization_id: "00000000-0000-0000-0000-000000000001" },
-    });
-    const resp = await api;
+    // 直接 API 仍由 server 拒绝（前端不硬判 403）：builder 不能 manage members
+    const resp = await directApi(
+      page,
+      "POST",
+      `/api/v1/organizations/${SEED_ORG_ID}/members`,
+      { principal_id: PRINCIPAL_UUID.member, role_bindings: ["member"] }
+    );
     expect(resp.status()).toBe(403);
   });
 });
@@ -129,9 +165,12 @@ test.describe("Member journey", () => {
   test("cannot create workspace — button hidden, direct API 403", async ({ page }) => {
     await signIn(page, "member");
     await expect(page.getByRole("button", { name: /create workspace/i })).toHaveCount(0);
-    const resp = await page.request.post("/api/v1/workspaces", {
-      data: { name: "rogue" },
-    });
+    const resp = await directApi(
+      page,
+      "POST",
+      `/api/v1/organizations/${SEED_ORG_ID}/workspaces`,
+      { workspace_id: crypto.randomUUID(), name: "rogue" }
+    );
     expect(resp.status()).toBe(403);
   });
 });
@@ -180,25 +219,30 @@ test.describe("UI states", () => {
   });
 
   test("shows error message on API failure", async ({ page }) => {
+    // 诱导 API 失败：路由拦截 organizations GET → 500，前端展示 error 状态
+    await page.route("**/api/v1/organizations", (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: "{}" })
+    );
     await signIn(page, "owner");
-    // 模拟后端不可达：前端展示 error 状态（非空白页 / 非 crash）
     await expect(page.getByText(/something went wrong|error/i)).toBeVisible();
   });
 
   test("403 is server-driven, not frontend hard-coded", async ({ page }) => {
     await signIn(page, "member");
-    // 前端不硬判 403：实际由 API 返回
-    const resp = await page.request.delete(
-      "/api/v1/organizations/00000000-0000-0000-0000-000000000002/memberships/00000000-0000-0000-0000-000000000003"
+    // 前端不硬判 403：实际由 API 返回（member 不能 remove member）
+    const resp = await directApi(
+      page,
+      "DELETE",
+      `/api/v1/organizations/${SEED_ORG_ID}/members/${PRINCIPAL_UUID.member}`
     );
     expect(resp.status()).toBe(403);
   });
 
   test("revoked session redirects to login (401)", async ({ page }) => {
     await signIn(page, "owner");
-    // session 被 revoke（disable principal）：下次请求 401 → 重定向登录
+    // 模拟 revoked：清空 cookie → 下次请求 401
+    await page.context().clearCookies();
     const resp = await page.request.get("/api/v1/me");
-    // 401 或重定向到 /auth/login（session 失效）
-    expect([401, 302]).toContain(resp.status());
+    expect(resp.status()).toBe(401);
   });
 });
