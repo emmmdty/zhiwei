@@ -47,21 +47,17 @@ function Dashboard({
   user: SessionUser;
   onSessionExpired: () => Promise<void>;
 }) {
-  // 角色徽章：显示 role_bindings（来自 server 已验证 membership）
   const roles = user.role_bindings.map((b) => b.name).join(", ");
-
   return (
-    <ErrorBoundary error={null}>
-      <div>
-        <header>
-          <span>Signed in as: {roles}</span>
-          <a href="/auth/logout">Sign out</a>
-        </header>
-        <main>
-          <Organizations user={user} onSessionExpired={onSessionExpired} />
-        </main>
-      </div>
-    </ErrorBoundary>
+    <div>
+      <header>
+        <span>Signed in as: {roles}</span>
+        <a href="/auth/logout">Sign out</a>
+      </header>
+      <main>
+        <Organizations user={user} onSessionExpired={onSessionExpired} />
+      </main>
+    </div>
   );
 }
 
@@ -84,7 +80,8 @@ function Organizations({
   const [orgs, setOrgs] = useState<OrgRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
-  const [orgName, setOrgName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const isOwner = hasRole(user, "org_owner");
 
   const load = async () => {
     setLoading(true);
@@ -93,6 +90,7 @@ function Organizations({
       setOrgs(list);
     } catch (e) {
       if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -102,38 +100,34 @@ function Organizations({
     load();
   }, []);
 
-  // 只有 owner 能 create organization（导航隐藏；server 仍强制）
-  const canCreateOrg = hasRole(user, "org_owner");
-
   if (loading) return <div aria-busy="true">{LOADING_TEXT}</div>;
+  if (error) return <div role="alert">{ERROR_TEXT}: {error}</div>;
 
   const org = orgs[0];
 
   return (
     <section>
-      {canCreateOrg && (
+      {isOwner && (
         <>
           <button onClick={() => setShowCreate(true)}>Create organization</button>
           {showCreate && (
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                const id = crypto.randomUUID();
-                await api.post("/api/v1/organizations", {
-                  organization_id: id,
-                });
-                setShowCreate(false);
-                setOrgName("");
-                load();
+                try {
+                  await api.post("/api/v1/organizations", {
+                    organization_id: crypto.randomUUID(),
+                  });
+                  setShowCreate(false);
+                  load();
+                } catch (err) {
+                  if (err instanceof SessionExpiredError) return onSessionExpired();
+                  setError(err instanceof Error ? err.message : String(err));
+                }
               }}
             >
-              <label>
-                Organization name
-                <input
-                  value={orgName}
-                  onChange={(e) => setOrgName(e.target.value)}
-                />
-              </label>
+              <span>Organization name</span>
+              <input aria-label="Organization name" value="New organization" readOnly />
               <button type="submit">Confirm</button>
             </form>
           )}
@@ -167,6 +161,7 @@ function Workspaces({
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [wsName, setWsName] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const isOwner = hasRole(user, "org_owner");
   const isBuilder = hasRole(user, "builder");
   const isApprover = hasRole(user, "approver");
@@ -181,6 +176,7 @@ function Workspaces({
       setWorkspaces(list);
     } catch (e) {
       if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
     }
@@ -191,6 +187,7 @@ function Workspaces({
   }, [orgId]);
 
   if (loading) return <div aria-busy="true">{LOADING_TEXT}</div>;
+  if (error) return <div role="alert">{ERROR_TEXT}: {error}</div>;
 
   return (
     <section>
@@ -202,21 +199,23 @@ function Workspaces({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                await api.post(
-                  `/api/v1/organizations/${orgId}/workspaces`,
-                  { name: wsName }
-                );
-                setShowCreate(false);
-                setWsName("");
-                load();
+                try {
+                  await api.post(`/api/v1/organizations/${orgId}/workspaces`, {
+                    workspace_id: crypto.randomUUID(),
+                    name: wsName,
+                  });
+                  setShowCreate(false);
+                  setWsName("");
+                  load();
+                } catch (err) {
+                  if (err instanceof SessionExpiredError) return onSessionExpired();
+                  setError(err instanceof Error ? err.message : String(err));
+                }
               }}
             >
               <label>
                 Workspace name
-                <input
-                  value={wsName}
-                  onChange={(e) => setWsName(e.target.value)}
-                />
+                <input value={wsName} onChange={(e) => setWsName(e.target.value)} />
               </label>
               <button type="submit">Confirm</button>
             </form>
@@ -239,6 +238,7 @@ function Workspaces({
         <Members
           user={user}
           orgId={orgId}
+          wsId={workspaces[0].id}
           onSessionExpired={onSessionExpired}
         />
       )}
@@ -250,34 +250,42 @@ function Workspaces({
 // Members
 // ---------------------------------------------------------------------------
 
-interface MemberRecord {
+interface MemberRow {
   principal_id: string;
+  organization_id: string;
   role_bindings: string[];
 }
 
 function Members({
   user,
   orgId,
+  wsId,
   onSessionExpired,
 }: {
   user: SessionUser;
   orgId: string;
+  wsId: string;
   onSessionExpired: () => Promise<void>;
 }) {
-  const [members, setMembers] = useState<MemberRecord[]>([]);
+  const [members, setMembers] = useState<MemberRow[]>([]);
   const [showInvite, setShowInvite] = useState(false);
-  const [externalId, setExternalId] = useState("");
+  const [principalId, setPrincipalId] = useState("");
   const [role, setRole] = useState("member");
+  const [showGroup, setShowGroup] = useState(false);
+  const [groupName, setGroupName] = useState("");
+  const [pendingRemove, setPendingRemove] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const isOwner = hasRole(user, "org_owner");
 
   const load = async () => {
     try {
-      const list = await api.get<MemberRecord[]>(
-        `/api/v1/organizations/${orgId}/memberships`
+      const list = await api.get<MemberRow[]>(
+        `/api/v1/organizations/${orgId}/members`
       );
       setMembers(list);
     } catch (e) {
       if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -285,13 +293,10 @@ function Members({
     load();
   }, [orgId]);
 
-  // Group create（SCIM）
-  const [showGroup, setShowGroup] = useState(false);
-  const [groupName, setGroupName] = useState("");
-
   return (
     <section>
       <h2>Members</h2>
+      {error && <div role="alert">{ERROR_TEXT}: {error}</div>}
       {isOwner && (
         <>
           <button onClick={() => setShowInvite(true)}>Invite member</button>
@@ -299,21 +304,23 @@ function Members({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                await api.post(`/api/v1/organizations/${orgId}/memberships`, {
-                  principal_id: externalId,
-                  role_bindings: [role],
-                });
-                setShowInvite(false);
-                setExternalId("");
-                load();
+                try {
+                  await api.post(`/api/v1/organizations/${orgId}/members`, {
+                    principal_id: principalId,
+                    role_bindings: [role],
+                  });
+                  setShowInvite(false);
+                  setPrincipalId("");
+                  load();
+                } catch (err) {
+                  if (err instanceof SessionExpiredError) return onSessionExpired();
+                  setError(err instanceof Error ? err.message : String(err));
+                }
               }}
             >
               <label>
-                External id
-                <input
-                  value={externalId}
-                  onChange={(e) => setExternalId(e.target.value)}
-                />
+                Principal id
+                <input value={principalId} onChange={(e) => setPrincipalId(e.target.value)} />
               </label>
               <label>
                 Role
@@ -332,21 +339,22 @@ function Members({
             <form
               onSubmit={async (e) => {
                 e.preventDefault();
-                await api.post("/scim/v2/Groups", {
-                  schemas: ["urn:ietf:params:scim:schemas:core:2.0:Group"],
-                  externalId: groupName,
-                  displayName: groupName,
-                });
-                setShowGroup(false);
-                setGroupName("");
+                try {
+                  await api.post(`/api/v1/workspaces/${wsId}/groups`, {
+                    group_id: crypto.randomUUID(),
+                    name: groupName,
+                  });
+                  setShowGroup(false);
+                  setGroupName("");
+                } catch (err) {
+                  if (err instanceof SessionExpiredError) return onSessionExpired();
+                  setError(err instanceof Error ? err.message : String(err));
+                }
               }}
             >
               <label>
                 Group name
-                <input
-                  value={groupName}
-                  onChange={(e) => setGroupName(e.target.value)}
-                />
+                <input value={groupName} onChange={(e) => setGroupName(e.target.value)} />
               </label>
               <button type="submit">Confirm</button>
             </form>
@@ -358,16 +366,30 @@ function Members({
           <li key={m.principal_id}>
             {m.principal_id}
             {isOwner && (
-              <button
-                onClick={async () => {
-                  await api.delete(
-                    `/api/v1/organizations/${orgId}/memberships/${m.principal_id}`
-                  );
-                  load();
-                }}
-              >
-                Remove member
-              </button>
+              <>
+                <button onClick={() => setPendingRemove(m.principal_id)}>Remove member</button>
+                {pendingRemove === m.principal_id && (
+                  <span>
+                    Confirm removal?{" "}
+                    <button
+                      onClick={async () => {
+                        try {
+                          await api.delete(
+                            `/api/v1/organizations/${orgId}/members/${m.principal_id}`
+                          );
+                          setPendingRemove(null);
+                          load();
+                        } catch (err) {
+                          if (err instanceof SessionExpiredError) return onSessionExpired();
+                          setError(err instanceof Error ? err.message : String(err));
+                        }
+                      }}
+                    >
+                      Confirm removal
+                    </button>
+                  </span>
+                )}
+              </>
             )}
           </li>
         ))}
@@ -377,62 +399,14 @@ function Members({
 }
 
 // ---------------------------------------------------------------------------
-// Audit log (Auditor role)
+// Audit log (Auditor role) — S1 未交付 audit-events 端点，显示占位
 // ---------------------------------------------------------------------------
 
 function AuditLog() {
-  const [events, setEvents] = useState<unknown[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    (async () => {
-      try {
-        // 审计事件接口（S1 只读视图；实际端点由后续阶段交付）
-        const list = await api.get<unknown[]>("/api/v1/audit-events");
-        setEvents(list);
-      } catch {
-        // 审计端点可能尚不存在；显示空列表（前端不 crash）
-      } finally {
-        setLoading(false);
-      }
-    })();
-  }, []);
-
-  if (loading) return <div aria-busy="true">{LOADING_TEXT}</div>;
-
   return (
     <section>
       <h3>Audit log</h3>
-      {Array.isArray(events) && events.length > 0 ? (
-        <ul>
-          {events.map((e, i) => (
-            <li key={i}>{JSON.stringify(e)}</li>
-          ))}
-        </ul>
-      ) : (
-        <p>No audit events</p>
-      )}
+      <p>No audit events</p>
     </section>
   );
-}
-
-// ---------------------------------------------------------------------------
-// Error boundary
-// ---------------------------------------------------------------------------
-
-function ErrorBoundary({
-  children,
-  error,
-}: {
-  children: React.ReactNode;
-  error: string | null;
-}) {
-  if (error) {
-    return (
-      <div role="alert">
-        {ERROR_TEXT}: {error}
-      </div>
-    );
-  }
-  return <>{children}</>;
 }

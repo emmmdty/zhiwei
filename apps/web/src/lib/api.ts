@@ -1,6 +1,8 @@
-// S1-T6 same-origin API client：cookie-based session + CSRF。
+// S1-T6 same-origin API client：cookie-based session + CSRF + tenant context。
 // 所有请求同源（Vite proxy / 生产同源部署），credentials: "include" 携带 cookie。
-// 401 → 上抛 SessionExpired 供调用方重定向登录；403 透传（server-driven，前端不硬判）。
+// - mutation（POST/PUT/PATCH/DELETE）必须带非空 Idempotency-Key（server PEP 要求）
+// - tenant context（X-ZhiWei-Organization / X-ZhiWei-Workspace）由 session 解析后全局注入
+// - 401 → SessionExpiredError（重定向登录）；403 透传（server-driven，前端不硬判）
 
 export class SessionExpiredError extends Error {
   constructor() {
@@ -20,13 +22,19 @@ export class ApiError extends Error {
 }
 
 let _csrfToken: string | null = null;
+let _tenantHeaders: Record<string, string> = {};
 
-export function setCsrfToken(token: string | null) {
-  _csrfToken = token;
+export function setSessionMeta(csrfToken: string | null, tenantHeaders: Record<string, string>) {
+  _csrfToken = csrfToken;
+  _tenantHeaders = tenantHeaders;
 }
 
 export function getCsrfToken() {
   return _csrfToken;
+}
+
+export function generateIdempotencyKey() {
+  return crypto.randomUUID();
 }
 
 async function request<T>(
@@ -34,13 +42,13 @@ async function request<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ..._tenantHeaders };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
-  const csrf = getCsrfToken();
-  if (csrf && method !== "GET") {
-    headers["X-CSRF-Token"] = csrf;
+  if (method !== "GET") {
+    headers["X-CSRF-Token"] = _csrfToken ?? "";
+    headers["Idempotency-Key"] = generateIdempotencyKey();
   }
   const resp = await fetch(path, {
     method,

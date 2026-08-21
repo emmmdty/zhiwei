@@ -1,6 +1,8 @@
-// S1-T6 session context：fetch /api/v1/me 获取 authenticated principal + CSRF。
-// 401 → unauthenticated（显示 Sign in）；200 → authenticated（显示角色 + 导航）。
-// principal.role_bindings 来自 membership resolver（已验证，不信任前端声明）。
+// S1-T6 session context：fetch /api/v1/me 获取 principal + organizations +
+// context + CSRF；再经 GET /organizations/{org}/members 解析当前用户的
+// role_bindings（/me 不返回角色，成员列表是唯一权威角色来源）。
+// 401 → unauthenticated（Sign in）；200 → authenticated（角色 + 导航）。
+// 角色判定只做导航隐藏，权限由 server PEP/RLS 强制（§4 最后一段）。
 
 import {
   createContext,
@@ -9,7 +11,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, setCsrfToken, SessionExpiredError } from "./api";
+import { api, setSessionMeta } from "./api";
 
 export interface RoleBinding {
   name: string;
@@ -20,8 +22,20 @@ export interface SessionUser {
   principal_id: string;
   organization_id: string | null;
   workspace_id: string | null;
-  csrf_token: string;
   role_bindings: RoleBinding[];
+}
+
+interface MembershipRow {
+  principal_id: string;
+  organization_id: string;
+  role_bindings: string[];
+}
+
+interface MeResponse {
+  principal: { id: string };
+  organizations: { id: string; status: string }[];
+  context: { organization_id: string | null; workspace_id: string | null };
+  csrf_token: string;
 }
 
 export type SessionState =
@@ -42,15 +56,43 @@ export function SessionProvider({ children }: { children: ReactNode }) {
 
   const refresh = async () => {
     try {
-      const user = await api.get<SessionUser>("/api/v1/me");
-      setCsrfToken(user.csrf_token);
-      setState({ status: "authenticated", user });
-    } catch (e) {
-      if (e instanceof SessionExpiredError) {
-        setState({ status: "unauthenticated" });
-      } else {
-        setState({ status: "unauthenticated" });
+      const me = await api.get<MeResponse>("/api/v1/me");
+      setSessionMeta(me.csrf_token, {
+        ...(me.context.organization_id
+          ? { "X-ZhiWei-Organization": me.context.organization_id }
+          : {}),
+        ...(me.context.workspace_id
+          ? { "X-ZhiWei-Workspace": me.context.workspace_id }
+          : {}),
+      });
+      let role_bindings: RoleBinding[] = [];
+      if (me.context.organization_id) {
+        try {
+          const members = await api.get<MembershipRow[]>(
+            `/api/v1/organizations/${me.context.organization_id}/members`
+          );
+          const mine = members.find(
+            (m) => m.principal_id === me.principal.id
+          );
+          role_bindings = (mine?.role_bindings ?? []).map((name) => ({
+            name,
+            scope: "org" as const,
+          }));
+        } catch {
+          role_bindings = [];
+        }
       }
+      setState({
+        status: "authenticated",
+        user: {
+          principal_id: me.principal.id,
+          organization_id: me.context.organization_id,
+          workspace_id: me.context.workspace_id,
+          role_bindings,
+        },
+      });
+    } catch (e) {
+      setState({ status: "unauthenticated" });
     }
   };
 
@@ -69,12 +111,7 @@ export function useSession() {
   return useContext(SessionContext);
 }
 
-// 角色判定：role_bindings 来自 server（PEP/RLS 已验证），前端只做导航隐藏，
-// 不做权限决策——403/401 由 API 实际返回驱动（§4 最后一段）。
-export function hasRole(
-  user: SessionUser | null,
-  role: string
-): boolean {
+export function hasRole(user: SessionUser | null, role: string): boolean {
   if (!user) return false;
   return user.role_bindings.some((b) => b.name === role);
 }
