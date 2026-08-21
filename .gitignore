@@ -46,3 +46,8 @@ apps/web/dist/
 .idea/
 .vscode/
 *.swp
+
+# S1-T6 Playwright artifacts
+apps/web/playwright-report/
+apps/web/test-results/
+apps/web/tsconfig.tsbuildinfo

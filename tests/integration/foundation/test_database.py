@@ -105,7 +105,9 @@ TENANT_COLUMN_FREE_TABLES = IDENTITY_GLOBAL_TABLES - {"organization_bootstrap_cl
 # S1-T2：zhiwei_app 对这些表无任何直接 SELECT/INSERT（权限在 0003 撤销/从不授予）
 APP_DENIED_TABLES = IDENTITY_GLOBAL_TABLES
 TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
-DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships"}
+# zhiwei_app 的 DELETE 授权集合：memberships/workspace_memberships（T1 生命周期）+
+# group_members（T5 SCIM reconciliation 的 remove 方向，0009 GRANT DELETE）
+DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships", "group_members"}
 MUTABLE_COLUMNS = {
     "agent_definitions": {"lifecycle", "name"},
     "canonical_projections": {

@@ -742,7 +742,7 @@ async def test_scim_user_create_writes_principal_identity_and_audit(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -802,7 +802,7 @@ async def test_scim_user_duplicate_external_id_conflict_409(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -850,7 +850,7 @@ async def test_scim_user_concurrent_duplicate_external_id_one_wins(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -884,7 +884,7 @@ async def test_scim_user_get_by_id_and_unknown_404(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -1016,7 +1016,7 @@ async def test_scim_user_put_username_mismatch_is_400(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -1044,7 +1044,7 @@ async def test_scim_group_reconciliation_idempotent_and_bidirectional(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     ws = await _seed_workspace(org)
@@ -1100,7 +1100,9 @@ async def test_scim_group_reconciliation_idempotent_and_bidirectional(
         for row in await _read_audit_rows(org, ws)
         if row["action"] == "scim.group.reconcile" and row["result"] == "allowed"
     ]
-    assert len(reconcile_audit) == 1
+    # 设计 §9：PUT /Groups 成员 diff 非空（changed）→ scim.group.reconcile
+    # allowed 审计。首次 [a]（空→{a}）与 [a,b]（{a}→{a,b}）diff 均非空，各写一条。
+    assert len(reconcile_audit) == 2
     assert reconcile_audit[0]["resource_id"] == group_id
     assert reconcile_audit[0]["decision_id"] == opa.ALLOW_DECISION_ID
 
@@ -1143,7 +1145,7 @@ async def test_scim_group_duplicate_external_id_conflict_409(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     ws = await _seed_workspace(org)
@@ -1182,7 +1184,7 @@ async def test_scim_group_unsupported_operations_and_validation(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     ws = await _seed_workspace(org)
@@ -1233,7 +1235,7 @@ async def test_scim_group_cross_tenant_idor_404(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    app, client, idp, _opa = app_and_client
     owner_a = await _reset_alice()
     org_a = await _seed_org()
     ws_a = await _seed_workspace(org_a, name="a")
@@ -1284,7 +1286,7 @@ async def test_scim_reads_and_mutations_are_policy_gated(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, opa = app_and_client
     member_id = await _seed_principal("member-oidc")
     org = await _seed_org()
     await _seed_membership(member_id, org, ["member"])
@@ -1339,14 +1341,17 @@ async def test_scim_opa_unavailable_fails_closed(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    _app, client, idp, opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
     await _perform_login(client, idp)
     csrf = await _csrf_token(client)
 
-    opa.fail = RuntimeError("opa sidecar down")
+    # httpx.ConnectError 是 httpx.HTTPError 子类，OPAClient._evaluate_remote 只
+    # catch httpx.HTTPError → opa_unavailable；RuntimeError 不被捕获会落入
+    # PolicyEnforcer 的 enforcement_internal_error（对照 T4 line 1277 同款）。
+    opa.fail = httpx.ConnectError("opa sidecar down")
     _assert_scim_error(
         await client.post(
             "/scim/v2/Users",
@@ -1370,7 +1375,7 @@ async def test_scim_session_and_csrf_enforcement(
     migrated_database: None,
     app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
 ) -> None:
-    app, client, idp, opa = app_and_client
+    app, client, idp, _opa = app_and_client
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -1414,7 +1419,7 @@ async def test_slow_scim_owner_create_with_real_opa(
     migrated_database: None,
     app_and_client_real_opa: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
 ) -> None:
-    app, client, idp = app_and_client_real_opa
+    _app, client, idp = app_and_client_real_opa
     owner_id = await _reset_alice()
     org = await _seed_org()
     await _seed_membership(owner_id, org, ["org_owner"])
@@ -1447,7 +1452,7 @@ async def test_slow_scim_member_denied_with_real_opa(
     migrated_database: None,
     app_and_client_real_opa: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
 ) -> None:
-    app, client, idp = app_and_client_real_opa
+    _app, client, idp = app_and_client_real_opa
     member_id = await _seed_principal("slow-member-oidc")
     org = await _seed_org()
     await _seed_membership(member_id, org, ["member"])

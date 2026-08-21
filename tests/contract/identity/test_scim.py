@@ -28,7 +28,7 @@ import pytest
 from fastapi import FastAPI
 from fixtures.policy_fake import FakePolicyEnforcer
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from zhiwei.identity.domain import ActorContext
 
@@ -128,7 +128,8 @@ def test_composition_requires_mandatory_injections() -> None:
             actor_dependency=_org_actor,
             sessions=async_sessionmaker(),
             identity_sessions=async_sessionmaker(),
-            policy_enforcer=None,
+            policy_enforcer=None,  # type: ignore[arg-type]  # 测试 None 拒绝
+            issuer=_TEST_ISSUER,
         )
     with pytest.raises(TypeError):
         create_scim_router(  # type: ignore[call-arg]

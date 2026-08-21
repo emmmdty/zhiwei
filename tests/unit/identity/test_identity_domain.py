@@ -298,6 +298,21 @@ class FakeIdentityRepository:
         self.group_members[key] = member
         return member
 
+    async def remove_group_member(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
+    ) -> bool:
+        return self.group_members.pop((group_id, principal_id), None) is not None
+
+    async def set_principal_status(
+        self, principal_id: UUID, status: PrincipalStatus
+    ) -> Principal | None:
+        principal = self.principals.get(principal_id)
+        if principal is None:
+            return None
+        updated = principal.model_copy(update={"status": status})
+        self.principals[principal_id] = updated
+        return updated
+
     async def get_group_member(
         self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
     ) -> GroupMember | None:
