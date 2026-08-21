@@ -50,4 +50,6 @@ apps/web/dist/
 # S1-T6 Playwright artifacts
 apps/web/playwright-report/
 apps/web/test-results/
+
+# tsc -b build info
 apps/web/tsconfig.tsbuildinfo
