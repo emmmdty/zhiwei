@@ -63,7 +63,9 @@ __all__ = [
     "create_user",
     "create_workspace",
     "disable_principal",
+    "remove_group_member",
     "remove_org_membership",
+    "set_principal_status",
 ]
 
 
@@ -194,17 +196,38 @@ class IdentityRepositoryProtocol(Protocol):
         principal_id: UUID,
     ) -> GroupMember: ...
 
+    async def remove_group_member(
+        self,
+        *,
+        group_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        principal_id: UUID,
+    ) -> bool: ...
+
+    async def set_principal_status(
+        self, principal_id: UUID, status: PrincipalStatus
+    ) -> Principal | None: ...
+
 
 async def create_user(
-    repository: IdentityRepositoryProtocol, *, issuer: str, subject: str
+    repository: IdentityRepositoryProtocol,
+    *,
+    issuer: str,
+    subject: str,
+    principal_id: UUID | None = None,
 ) -> Principal:
-    """创建 User 主体并绑定 OIDC 外部身份；(issuer, subject) 已被占用时冲突。"""
+    """创建 User 主体并绑定 OIDC 外部身份；(issuer, subject) 已被占用时冲突。
+
+    principal_id 可选：SCIM 服务预生成 id 供 PEP 先于事务的 resource_id 使用
+    （S1-T5 设计裁决 §7）；缺省沿用原 uuid4 语义，T1 既有调用点不变。
+    """
     if await repository.get_external_identity(issuer=issuer, subject=subject) is not None:
         raise ExternalIdentityConflictError(
             "external identity is already bound to another principal"
         )
     principal = await repository.create_principal(
-        uuid4(), kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
+        principal_id or uuid4(), kind=PrincipalKind.USER, status=PrincipalStatus.ACTIVE
     )
     await repository.bind_external_identity(
         issuer=issuer, subject=subject, principal_id=principal.id
@@ -223,6 +246,28 @@ async def disable_principal(
     if disabled is None:
         raise PrincipalNotFoundError("principal not found")
     return disabled
+
+
+async def set_principal_status(
+    repository: IdentityRepositoryProtocol,
+    principal_id: UUID,
+    status: PrincipalStatus,
+) -> tuple[Principal, bool]:
+    """切换 principal 状态（SCIM enable/disable 双向；S1-T5）。
+
+    目标状态与当前一致 → (principal, False) 零写入（幂等）；不一致才 UPDATE 并
+    返回 (principal, True)，供 api 层判定是否写 allowed 审计（changed 语义与 T4
+    幂等重放一致）。identity 引擎事务内完成，单写者幂等值替换无并发校验需求。
+    """
+    principal = await repository.get_principal(principal_id)
+    if principal is None:
+        raise PrincipalNotFoundError("principal not found")
+    if principal.status is status:
+        return principal, False
+    updated = await repository.set_principal_status(principal_id, status)
+    if updated is None:
+        raise PrincipalNotFoundError("principal not found")
+    return updated, True
 
 
 async def _require_active(
@@ -536,6 +581,28 @@ async def add_group_member(
     """加入分组；重复执行幂等（返回既有成员行）。"""
     await _require_active(repository, principal_id)
     return await repository.add_group_member(
+        group_id=group_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        principal_id=principal_id,
+    )
+
+
+async def remove_group_member(
+    repository: IdentityRepositoryProtocol,
+    *,
+    group_id: UUID,
+    organization_id: UUID,
+    workspace_id: UUID,
+    principal_id: UUID,
+) -> bool:
+    """移除 Group 成员（SCIM reconciliation 的 remove 方向；S1-T5）。
+
+    不做 _require_active：清理语义与 remove_org_membership 一致——disabled 成员
+    必须可被移出分组。无幂等 claim（SCIM 无 Idempotency-Key，diff 语义天然幂等：
+    重复 remove 返回 False 且零副作用）。
+    """
+    return await repository.remove_group_member(
         group_id=group_id,
         organization_id=organization_id,
         workspace_id=workspace_id,

@@ -129,6 +129,40 @@ class IdentityStore:
         row = await self._session.get(ExternalIdentityRow, {"issuer": issuer, "subject": subject})
         return None if row is None else self._to_external_identity(row)
 
+    async def set_principal_status(
+        self, principal_id: UUID, status: PrincipalStatus
+    ) -> Principal | None:
+        """状态切换（SCIM enable/disable 双向；S1-T5）。既有列级授权 UPDATE(status)
+        覆盖（0003 zhiwei_identity）；disable_principal 保持不动（T1 冻结路径）。"""
+        row = (
+            await self._session.execute(
+                update(PrincipalRow)
+                .where(PrincipalRow.id == principal_id)
+                .values(status=status.value)
+                .returning(PrincipalRow)
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_principal(row)
+
+    async def get_external_identity_by_principal(
+        self, principal_id: UUID
+    ) -> ExternalIdentity | None:
+        """按 principal 读外部身份绑定（GET /Users/{id} 的 userName；S1-T5）。
+
+        principal_id 非唯一键（schema 未建索引），确定性取 issuer,subject 排序
+        首行；S1 SCIM 每 principal 只绑定一条。仅 SELECT，zhiwei_identity 既有
+        表级 SELECT 授权覆盖。
+        """
+        row = (
+            await self._session.execute(
+                select(ExternalIdentityRow)
+                .where(ExternalIdentityRow.principal_id == principal_id)
+                .order_by(ExternalIdentityRow.issuer, ExternalIdentityRow.subject)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        return None if row is None else self._to_external_identity(row)
+
     @staticmethod
     def _to_principal(row: PrincipalRow) -> Principal:
         return Principal(
@@ -200,6 +234,13 @@ class IdentityRepository:
     async def disable_principal(self, principal_id: UUID) -> Principal | None:
         raise NotImplementedError(
             "zhiwei_app cannot disable principals; use IdentityStore on the identity engine"
+        )
+
+    async def set_principal_status(
+        self, principal_id: UUID, status: PrincipalStatus
+    ) -> Principal | None:
+        raise NotImplementedError(
+            "zhiwei_app cannot set principal status; use IdentityStore on the identity engine"
         )
 
     async def bind_external_identity(
@@ -616,6 +657,29 @@ class IdentityRepository:
             .order_by(GroupMemberRow.principal_id)
         )
         return [self._to_group_member(row) for row in rows.scalars()]
+
+    async def remove_group_member(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
+    ) -> bool:
+        """移除 Group 成员（SCIM reconciliation remove 方向；S1-T5）。
+
+        tenant guard 与 add_group_member 同款；重复 remove 返回 False（diff 语义
+        幂等）。DELETE 授权由 0009 补授（0002 只给 SELECT, INSERT）。
+        """
+        context = self._require_context()
+        self._require_organization(organization_id, context)
+        self._require_workspace(workspace_id, context)
+        result = await self._session.execute(
+            delete(GroupMemberRow)
+            .where(
+                GroupMemberRow.group_id == group_id,
+                GroupMemberRow.organization_id == organization_id,
+                GroupMemberRow.workspace_id == workspace_id,
+                GroupMemberRow.principal_id == principal_id,
+            )
+            .returning(GroupMemberRow.principal_id)
+        )
+        return result.scalar_one_or_none() is not None
 
     # ------------------------------------------------------------------ guards
 

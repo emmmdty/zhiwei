@@ -27,6 +27,7 @@ from zhiwei.api.auth import (
 )
 from zhiwei.api.memberships import create_memberships_router
 from zhiwei.api.organizations import create_organizations_router
+from zhiwei.api.scim import create_scim_router
 from zhiwei.api.workspaces import create_workspaces_router
 from zhiwei.config.settings import Settings
 from zhiwei.identity.oidc import OIDCService
@@ -161,6 +162,15 @@ def create_app(
             actor_dependency=session_actor,
             sessions=app_sessions,
             policy_enforcer=policy_enforcer,
+        )
+    )
+    app.include_router(
+        create_scim_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            identity_sessions=identity_sessions,
+            policy_enforcer=policy_enforcer,
+            issuer=oidc_issuer,
         )
     )
 
