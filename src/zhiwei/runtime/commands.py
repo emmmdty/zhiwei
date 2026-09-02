@@ -1,0 +1,81 @@
+"""S2 runtime: typed commands that trigger workflow actions.
+
+Commands are pure Pydantic models — no DB/Temporal imports.
+Each command carries a run_id and derives a deterministic workflow_id for Temporal dispatch.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum
+from typing import Any
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from zhiwei.contracts.identifiers import new_id
+
+
+class CommandKind(StrEnum):
+    START_RUN = "start_run"
+    CANCEL_RUN = "cancel_run"
+    SIGNAL_RUN = "signal_run"
+    PAUSE_RUN = "pause_run"
+    RESUME_RUN = "resume_run"
+
+
+class CommandBase(BaseModel):
+    """Base class for all outbox commands.
+
+    Each command is frozen, carries a unique event_id for idempotency,
+    and derives a deterministic workflow_id from its run_id.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    run_id: UUID
+    kind: CommandKind
+    event_id: UUID = Field(default_factory=new_id)
+
+    @property
+    def workflow_id(self) -> str:
+        return f"run-{self.run_id}"
+
+
+class StartRun(CommandBase):
+    """Command to start a new agent run workflow."""
+
+    kind: CommandKind = CommandKind.START_RUN
+    task_queue: str
+    max_attempts: int = Field(default=3, ge=1)
+    graph: dict[str, Any] | None = None
+
+
+class CancelRun(CommandBase):
+    """Command to cancel a running workflow."""
+
+    kind: CommandKind = CommandKind.CANCEL_RUN
+    reason: str | None = None
+
+
+class SignalRun(CommandBase):
+    """Command to send an arbitrary signal to a running workflow."""
+
+    kind: CommandKind = CommandKind.SIGNAL_RUN
+    signal_name: str = Field(min_length=1)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class PauseRun(CommandBase):
+    """Command to pause a running workflow."""
+
+    kind: CommandKind = CommandKind.PAUSE_RUN
+    reason: str | None = None
+
+
+class ResumeRun(CommandBase):
+    """Command to resume a paused workflow."""
+
+    kind: CommandKind = CommandKind.RESUME_RUN
+
+
+CommandUnion = StartRun | CancelRun | SignalRun | PauseRun | ResumeRun
