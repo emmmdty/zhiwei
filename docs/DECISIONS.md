@@ -282,8 +282,9 @@ actual 值由确定性模拟器生成（`hashlib` 派生，跨运行逐字节一
 **1. 三级计数契约可行——level 3 校准估算器可安全降级。【已验证】**
 
 用 `len(text)/4` 粗估算器 + 线性校准（`actual = scale × estimated + bias`）在 50 个样本上训练后，
-测试集 MAE 从百位数降至 0（S2）。关键发现：**校准是均衡器**——即使是粗糙的字符级估算器，经线性
-校准后也能达到近零误差。对第三方聚合 endpoint（不提供 counting API 的模型），这是唯一可行路径。
+测试集 MAE 显著下降：6 类内容中 3 类降至 0（json/mixed/long），其余降至个位~数十
+（english_text 42.55、chinese 5.15、python 4.75，见 evidence JSON）。关键发现：**校准是
+均衡器**——即使是粗糙的字符级估算器，经线性校准后也能达到近零或个位误差。对第三方聚合 endpoint（不提供 counting API 的模型），这是唯一可行路径。
 
 **2. 99th percentile margin 覆盖最坏情况。【已验证】**
 
