@@ -1,7 +1,13 @@
-"""S2 runtime: outbox handlers that bridge outbox messages to workflow signals.
+"""S2 runtime: outbox handlers that bridge outbox messages to workflow signals。
+
+事实源：specs/s2-agent-runtime.md §4、S2-T4 plan、ADR（outbox 桥接）。
 
 Handlers process OutboxDelivery messages, parse them into typed commands,
-and dispatch via a WorkflowSignalSender port. No Temporal SDK dependency.
+and dispatch via an async WorkflowSignalSender port（真实绑定见
+zhiwei/workers/temporal_sender.py；本模块保持 domain 纯度，不导入 Temporal SDK）。
+
+幂等来自 deterministic workflow id + 同 command_event_id 的信号去重，不依赖进程内
+内存状态（dispatcher 重启后重复投递仍然安全）。
 """
 
 from __future__ import annotations
@@ -35,21 +41,29 @@ class WorkflowNotFoundError(OutboxHandlerError):
     """Raised when the target workflow has not started yet."""
 
 
-class WorkflowSignalSender(Protocol):
-    """Port for sending signals to workflow instances."""
+class WorkflowDuplicateStart(OutboxHandlerError):
+    """Raised when a start command targets an already-running workflow."""
 
-    def start_workflow(
+
+class WorkflowSignalSender(Protocol):
+    """Port for starting/signaling workflows (async: binds a real Temporal client)."""
+
+    async def start_workflow(
         self,
+        *,
         workflow_id: str,
         workflow_type: str,
         input: dict[str, Any],
+        organization_id: UUID,
+        workspace_id: UUID,
     ) -> None: ...
 
-    def signal_workflow(
+    async def signal_workflow(
         self,
+        *,
         workflow_id: str,
         signal_name: str,
-        payload: Any,
+        payload: dict[str, Any],
     ) -> None: ...
 
 
@@ -72,7 +86,6 @@ _COMMAND_KIND_MAP: dict[str, type[CommandUnion]] = {
 
 _SIGNAL_NAME_MAP: dict[CommandKind, str] = {
     CommandKind.CANCEL_RUN: "cancel",
-    CommandKind.SIGNAL_RUN: "",  # uses signal_name from the command
     CommandKind.PAUSE_RUN: "pause",
     CommandKind.RESUME_RUN: "resume",
 }
@@ -83,14 +96,13 @@ class OutboxSignalHandler:
 
     Handles:
     - Parsing outbox payloads into typed commands
-    - Idempotent dispatch (duplicate deliveries are no-ops)
-    - Signal-before-worker scenarios (workflow not yet started)
-    - Poison message detection (unparseable payloads)
+    - Duplicate start (already-running workflow) is a delivered no-op
+    - Signal-before-worker scenarios (workflow not started yet → retryable)
+    - Poison message detection (unparseable payloads → dead-letter)
     """
 
     def __init__(self, sender: WorkflowSignalSender) -> None:
         self._sender = sender
-        self._delivered: set[UUID] = set()
 
     @staticmethod
     def parse_command(event_key: str, payload: dict[str, Any]) -> CommandUnion:
@@ -103,69 +115,76 @@ class OutboxSignalHandler:
         except Exception as exc:
             raise CommandParseError(f"invalid payload for {event_key}: {exc}") from exc
 
-    def handle(self, delivery: OutboxDelivery) -> HandleResult:
+    async def handle(self, delivery: OutboxDelivery) -> HandleResult:
         """Process a single outbox delivery.
 
         Returns HandleResult with status:
-        - 'delivered': command dispatched successfully
-        - 'duplicate': delivery already processed (idempotent no-op)
-        - 'signal_before_worker': workflow not started yet, signal dropped
+        - 'delivered': command dispatched successfully (or duplicate start)
+        - 'signal_before_worker': workflow not started yet, retry later
         - 'poison': unparseable payload, should be dead-lettered
         """
-        if delivery.id in self._delivered:
-            return HandleResult(status="duplicate")
-
         try:
             command = self.parse_command(delivery.event_key, delivery.payload)
         except CommandParseError as exc:
             return HandleResult(status="poison", error=str(exc))
 
         try:
-            self._dispatch(command)
+            await self._dispatch(delivery, command)
         except WorkflowNotFoundError:
             return HandleResult(command=command, status="signal_before_worker")
+        except WorkflowDuplicateStart:
+            # deterministic workflow id 下的重复 start = 已投递（幂等 no-op）
+            return HandleResult(command=command, status="delivered")
         except OutboxHandlerError:
             raise
         except Exception as exc:
             raise OutboxHandlerError(str(exc)) from exc
 
-        self._delivered.add(delivery.id)
         return HandleResult(command=command, status="delivered")
 
-    def _dispatch(self, command: CommandBase) -> None:
-        """Dispatch a parsed command to the appropriate workflow signal.
+    async def _dispatch(self, delivery: OutboxDelivery, command: CommandBase) -> None:
+        """Dispatch a parsed command to the appropriate workflow action."""
+        if delivery.organization_id is None or delivery.workspace_id is None:
+            raise OutboxHandlerError("runtime command delivery requires tenant scope")
 
-        Raises WorkflowNotFoundError if the workflow is not running.
-        Raises OutboxHandlerError on other failures.
-        """
         if isinstance(command, StartRun):
+            if not command.graph:
+                raise OutboxHandlerError("start_run command requires a graph payload")
             try:
-                self._sender.start_workflow(
+                await self._sender.start_workflow(
                     workflow_id=command.workflow_id,
-                    workflow_type="AgentRun",
-                    input=command.model_dump(mode="json"),
+                    workflow_type="agent-run",
+                    input={
+                        "graph": command.graph,
+                        "task_queue": command.task_queue,
+                        "max_task_attempts": command.max_attempts,
+                    },
+                    organization_id=delivery.organization_id,
+                    workspace_id=delivery.workspace_id,
                 )
             except WorkflowNotFoundError:
+                raise
+            except WorkflowDuplicateStart:
                 raise
             except Exception as exc:
                 raise OutboxHandlerError(f"failed to start workflow: {exc}") from exc
             return
 
-        signal_name = _SIGNAL_NAME_MAP.get(command.kind)
-        if signal_name is None:
-            raise OutboxHandlerError(f"no signal mapping for {command.kind}")
-
         if isinstance(command, SignalRun):
             signal_name = command.signal_name
+        else:
+            signal_name = _SIGNAL_NAME_MAP.get(command.kind)
+            if signal_name is None:
+                raise OutboxHandlerError(f"no signal mapping for {command.kind}")
 
-        payload: dict[str, Any] = {}
-        if isinstance(command, CancelRun):
-            payload = {"reason": command.reason} if command.reason else {}
-        elif isinstance(command, SignalRun):
-            payload = command.payload
+        payload: dict[str, Any] = {"command_event_id": str(command.event_id)}
+        if isinstance(command, SignalRun):
+            payload.update(command.payload)
+        elif isinstance(command, (CancelRun, PauseRun)) and command.reason:
+            payload["reason"] = command.reason
 
         try:
-            self._sender.signal_workflow(
+            await self._sender.signal_workflow(
                 workflow_id=command.workflow_id,
                 signal_name=signal_name,
                 payload=payload,
