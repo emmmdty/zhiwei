@@ -23,6 +23,7 @@ POST /runs 的 body workspace_id 必须经成员校验（客户端声明不是�
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -235,6 +236,61 @@ def _target(stack: dict) -> str:
     """从 WorkflowEnvironment 提取前端地址（私有能力，测试专用）。"""
     client = stack["env"].client
     return str(client.config()["service_client"].config.target_host)
+
+
+@pytest_asyncio.fixture
+async def redis_stream() -> AsyncIterator[Any]:
+    """真实 redis-server（与 tests/integration/runtime/conftest.py 同款守卫）。
+
+    H-4（event_sink 接线）的端到端契约需要真实 Redis 实例；二进制缺失时
+    skip（构建路径见 docs/handoffs/s2.md §8）。
+    """
+    import shutil
+    import socket
+    import subprocess
+    import time
+    from pathlib import Path
+
+    from tests.integration.runtime.conftest import REDIS_BIN_CANDIDATES
+
+    binary = next((c for c in REDIS_BIN_CANDIDATES if c.exists()), None)
+    if binary is None and shutil.which("redis-server"):
+        binary = Path(str(shutil.which("redis-server")))
+    if binary is None:
+        pytest.skip("redis-server binary unavailable (build via docs/handoffs/s2.md §8)")
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    proc = subprocess.Popen(
+        [str(binary), "--port", str(port), "--save", "", "--appendonly", "no",
+         "--bind", "127.0.0.1", "--daemonize", "no"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                if proc.poll() is not None:
+                    raise RuntimeError("redis-server exited immediately") from None
+                time.sleep(0.05)
+        else:
+            raise RuntimeError("redis-server did not become ready")
+
+        from zhiwei.telemetry.redis_streams import RedisEventStream
+
+        stream = await RedisEventStream.connect(f"redis://127.0.0.1:{port}/0")
+        try:
+            yield stream
+        finally:
+            await stream.close()
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
 
 
 class TestRunJourney:
@@ -450,3 +506,194 @@ class TestValidationAndTenancy:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(f"/api/v1/runs/{run_id}")
             assert response.status_code == 404
+
+
+class TestApprovalAtomicity:
+    """S2 修复轮批次 B RED（H-3）：决策落账与信号投递的原子性 + 归属校验前置。
+
+    spec §4（2026-09-03 增补）：「审批决策信号同样经 outbox 原子入列：决策落账
+    与 approval_decided 信号必须在同一事务提交」——两事务分离 = 崩溃窗口内
+    决策已生效而 workflow 永久等待（ADR-012 反例）。
+    """
+
+    async def _create_approval_run(self, stack, client) -> tuple[str, str]:
+        context = stack["context"]
+        created = await client.post(
+            "/api/v1/runs",
+            json={"template": "approval-chain", "workspace_id": str(context.workspace_id)},
+        )
+        assert created.status_code == 201, created.text
+        run_id = created.json()["run_id"]
+        deadline = asyncio.get_event_loop().time() + 30
+        approvals = []
+        while asyncio.get_event_loop().time() < deadline:
+            listing = await client.get(f"/api/v1/runs/{run_id}/approvals")
+            approvals = listing.json()
+            if approvals:
+                break
+            await asyncio.sleep(0.2)
+        assert approvals, "pending approval never surfaced via REST"
+        return run_id, approvals[0]["request_id"]
+
+    async def test_mismatched_run_id_leaves_approval_pending(self, stack) -> None:
+        """路径 run_id 与请求归属不符 → 404 且目标审批保持 pending。
+
+        修复前：决策先提交（txn1）、归属检查在后——错 run_id 的请求把决策
+        永久应用到目标 run（404 后无法重试，workflow 永等）。
+        """
+        creator, approver = uuid4(), uuid4()
+        sessions = stack["sessions"]
+        context = stack["context"]
+        await _grant_workspace_membership(stack["identity_sessions"], sessions, context, creator)
+        await _grant_workspace_membership(stack["identity_sessions"], sessions, context, approver)
+        app = _runs_app(stack, _actor(context, creator))
+        approver_app = _runs_app(stack, _actor(context, approver))
+        transport = ASGITransport(app=app)
+        approver_transport = ASGITransport(app=approver_app)
+        async with stack["worker"], AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as creating, AsyncClient(
+            transport=approver_transport, base_url="http://test"
+        ) as deciding:
+            run_id, request_id = await self._create_approval_run(stack, creating)
+            wrong_run = str(uuid4())
+            response = await deciding.post(
+                f"/api/v1/runs/{wrong_run}/approvals/{request_id}/decision",
+                json={"decision": "approved", "reason": "mismatched path"},
+            )
+            assert response.status_code == 404, response.text
+
+            # 归属不符的请求不得污染目标审批：仍 pending
+            approvals = (await deciding.get(f"/api/v1/runs/{run_id}/approvals")).json()
+            matching = [a for a in approvals if a["request_id"] == request_id]
+            assert matching and matching[0]["status"] == "pending", approvals
+
+    async def test_decision_and_signal_commit_atomically(self, stack) -> None:
+        """信号 outbox 写失败 → 决策整体回滚（同事务，全有或全无）。
+
+        用 PG 触发器 sabotage approval_decided 信号的 outbox INSERT：两事务
+        实现下决策已提交（txn1）而信号丢失；同事务实现下两者一并回滚。
+        """
+        import asyncpg
+
+        creator, approver = uuid4(), uuid4()
+        sessions = stack["sessions"]
+        context = stack["context"]
+        await _grant_workspace_membership(stack["identity_sessions"], sessions, context, creator)
+        await _grant_workspace_membership(stack["identity_sessions"], sessions, context, approver)
+        app = _runs_app(stack, _actor(context, creator))
+        approver_app = _runs_app(stack, _actor(context, approver))
+        transport = ASGITransport(app=app)
+        approver_transport = ASGITransport(app=approver_app)
+
+        admin_dsn = (
+            __import__("os")
+            .environ.get(
+                "ZHIWEI_TEST_ADMIN_DSN",
+                "postgresql://zhiwei_migrator@127.0.0.1:55432/zhiwei_test",
+            )
+        )
+        trigger_name = f"sabotage_approval_signal_{uuid4().hex[:8]}"
+        admin = await asyncpg.connect(admin_dsn)
+        try:
+            await admin.execute(
+                f"""
+                CREATE OR REPLACE FUNCTION {trigger_name}() RETURNS trigger AS $$
+                BEGIN
+                    IF (NEW.payload ->> 'signal_name') = 'approval_decided' THEN
+                        RAISE EXCEPTION 'sabotaged approval signal insert';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                """
+            )
+            await admin.execute(
+                f"CREATE TRIGGER {trigger_name}_tr BEFORE INSERT ON outbox "
+                f"FOR EACH ROW EXECUTE FUNCTION {trigger_name}();"
+            )
+        finally:
+            await admin.close()
+
+        try:
+            async with stack["worker"], AsyncClient(
+                transport=transport, base_url="http://test"
+            ) as creating, AsyncClient(
+                transport=approver_transport, base_url="http://test"
+            ) as deciding:
+                run_id, request_id = await self._create_approval_run(stack, creating)
+                # 信号入列失败：端点报错（事务回滚），决策不得单独生效
+                # sabotage 触发的 DB 异常按实现可表现为 500/连接错误
+                with contextlib.suppress(Exception):
+                    await deciding.post(
+                        f"/api/v1/runs/{run_id}/approvals/{request_id}/decision",
+                        json={"decision": "approved", "reason": "atomicity probe"},
+                    )
+                approvals = (await deciding.get(f"/api/v1/runs/{run_id}/approvals")).json()
+                matching = [a for a in approvals if a["request_id"] == request_id]
+                assert matching and matching[0]["status"] == "pending", (
+                    "决策与信号必须同事务：信号失败时决策不得提交",
+                    approvals,
+                )
+        finally:
+            admin = await asyncpg.connect(admin_dsn)
+            try:
+                await admin.execute(f"DROP TRIGGER IF EXISTS {trigger_name}_tr ON outbox")
+                await admin.execute(f"DROP FUNCTION IF EXISTS {trigger_name}()")
+            finally:
+                await admin.close()
+
+
+class TestRedisEventSinkWiring:
+    """S2 修复轮批次 B RED（H-4）：Redis event_sink 生产组装接线。
+
+    spec §4（2026-09-03 增补）：「Redis event_stream 必须在生产组装中接线为
+    outbox event_sink」——未接线时 canonical.event.committed 直接标 delivered，
+    Redis 恒空，加速通道为死代码（ADR-012 反例，交接单【已验证】声明不实）。
+    """
+
+    async def test_run_events_reach_redis_stream(self, stack, redis_stream) -> None:
+        creator = uuid4()
+        await _grant_workspace_membership(
+            stack["identity_sessions"], stack["sessions"], stack["context"], creator
+        )
+        context = stack["context"]
+        sessions = stack["sessions"]
+
+        def sessions_factory(actor, workspace_id):
+            return sessions
+
+        app = FastAPI()
+        app.include_router(
+            create_runs_router(
+                actor_dependency=lambda: _actor(context, creator),
+                sessions_factory=sessions_factory,
+                temporal_target=_target(stack),
+                task_queue=stack["task_queue"],
+                workspace_authorizer=_table_backed_authorizer(sessions),
+                event_sink=redis_stream,
+            )
+        )
+        transport = ASGITransport(app=app)
+        async with stack["worker"], AsyncClient(
+            transport=transport, base_url="http://test"
+        ) as client:
+            created = await client.post(
+                "/api/v1/runs",
+                json={"template": "single-fixture", "workspace_id": str(context.workspace_id)},
+            )
+            assert created.status_code == 201, created.text
+            run_id = created.json()["run_id"]
+
+            deadline = asyncio.get_event_loop().time() + 30
+            detail = None
+            while asyncio.get_event_loop().time() < deadline:
+                detail = (await client.get(f"/api/v1/runs/{run_id}")).json()
+                if detail["status"] in {"completed", "failed", "cancelled"}:
+                    break
+                await asyncio.sleep(0.2)
+            assert detail is not None and detail["status"] == "completed", detail
+
+        # 事件通知必须真实到达 Redis 流（经 outbox event_sink，而非测试手工 publish）
+        notices = await redis_stream.read_since(run_id, "0-0")
+        assert notices, "canonical 事件未发布到 Redis——event_sink 未接线"

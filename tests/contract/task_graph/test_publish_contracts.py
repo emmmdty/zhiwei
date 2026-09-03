@@ -14,7 +14,11 @@ from zhiwei.agents.task_graph import (
     TaskGraph,
     TaskGraphNode,
 )
-from zhiwei.agents.versions import AgentVersionManager, VersionStateError
+from zhiwei.agents.versions import (
+    AgentVersionManager,
+    PackVersionManager,
+    VersionStateError,
+)
 
 
 def _node(task_id: str, *, deps: tuple[str, ...] = (), parallel: bool = False,
@@ -125,3 +129,79 @@ class TestGraphSchemaContracts:
         )
         with pytest.raises(ValueError, match="dependencies mismatch"):
             graph.validate_dag()
+
+
+class TestDelegationBoundary:
+    """S2 修复轮批次 B RED（H-7）：委托终止界的发布期执行（ADR-008 可判定化增补）。
+
+    委托依赖图（delegate 依赖 + agent-as-tool 引用 + SolutionPack 依赖）必须为
+    DAG；任何环在发布边界被拒。此前发布边界只做单图 DAG/merge 校验——跨
+    AgentVersion 的委托环（A→B→A、经 tool provider 交替）完全不设防
+    （ADR-012 反例 3）。
+    """
+
+    def _draft(self, manager: AgentVersionManager, name: str):
+        return manager.create_draft(name, "delegation boundary probe", ("fixture",))
+
+    def test_delegate_cycle_rejected_at_publish(self) -> None:
+        """A→B（delegate）+ B→A（delegate）= 环：promote 被拒。"""
+        manager = AgentVersionManager()
+        a = self._draft(manager, "agent-a")
+        b = self._draft(manager, "agent-b")
+        manager.set_delegation(a.id, delegate_dependencies=(b.id,))
+        manager.set_delegation(b.id, delegate_dependencies=(a.id,))
+        with pytest.raises(VersionStateError, match="delegation"):
+            manager.promote_to_sandbox(a.id)
+
+    def test_agent_as_tool_alternate_cycle_rejected_at_publish(self) -> None:
+        """A→B（delegate）+ B→A（agent-as-tool 引用）交替成环：promote 被拒。
+
+        交替使用两条委托路径绕过界正是 ADR-008 明令禁止的形态。
+        """
+        manager = AgentVersionManager()
+        a = self._draft(manager, "agent-a")
+        b = self._draft(manager, "agent-b")
+        manager.set_delegation(a.id, delegate_dependencies=(b.id,))
+        manager.set_delegation(b.id, tool_agent_refs=(a.id,))
+        with pytest.raises(VersionStateError, match="delegation"):
+            manager.promote_to_sandbox(b.id)
+
+    def test_self_delegation_requires_declared_depth_cap(self) -> None:
+        """自委托必须显式声明深度上限；声明后发布放行。"""
+        manager = AgentVersionManager()
+        a = self._draft(manager, "agent-a")
+        manager.set_delegation(a.id, delegate_dependencies=(a.id,))
+        with pytest.raises(VersionStateError, match="self-delegation"):
+            manager.promote_to_sandbox(a.id)
+
+        manager2 = AgentVersionManager()
+        declared = self._draft(manager2, "agent-a")
+        manager2.set_delegation(
+            declared.id,
+            delegate_dependencies=(declared.id,),
+            self_delegation_depth_cap=2,
+        )
+        promoted = manager2.promote_to_sandbox(declared.id)
+        assert promoted.status.value == "sandbox"
+
+    def test_pack_dependency_cycle_rejected_at_publish(self) -> None:
+        """A 的 solution pack 依赖 B 的 pack（B→A）+ A delegate 到 B（A→B）= 跨实体环。"""
+        agents = AgentVersionManager()
+        packs = PackVersionManager()
+        agents.bind_pack_manager(packs)
+        packs.bind_agent_manager(agents)
+
+        a = self._draft(agents, "agent-a")
+        b = self._draft(agents, "agent-b")
+        pack_a = packs.create_draft("pack-a", a.id, {})
+        pack_b = packs.create_draft("pack-b", b.id, {}, depends_on=(pack_a.id,))
+        agents.promote_to_sandbox(a.id)
+        packs.promote_to_sandbox(pack_a.id)
+        packs.promote_to_published(pack_a.id)
+        packs.promote_to_sandbox(pack_b.id)
+        packs.promote_to_published(pack_b.id)
+
+        # a delegate 到 b（a→b）；b 的 pack 依赖 a 的 pack（b→a）→ 环
+        agents.set_delegation(a.id, delegate_dependencies=(b.id,))
+        with pytest.raises(VersionStateError, match="delegation"):
+            agents.promote_to_sandbox(b.id)

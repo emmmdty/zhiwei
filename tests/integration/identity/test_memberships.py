@@ -20,6 +20,7 @@ import json
 import os
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -2111,3 +2112,62 @@ async def test_api_conflicting_member_replay_is_side_effect_free(
         ) == 3
     finally:
         await connection.close()
+
+
+class TestMembershipGrantDigestStability:
+    """S2 修复轮批次 B RED（A2-1）：授予请求 digest 必须与序列化顺序无关。
+
+    批次 A-2 验收反例：role_bindings 为 frozenset 时，model_dump 的数组序
+    取决于进程哈希种子——重启/滚动发布后同 key 同 body 的合法重放会得到
+    假 409（fail closed 方向，但违反「同 key 同 body → 200」契约）。
+    """
+
+    PATH = "/api/v1/workspaces/00000000-0000-0000-0000-0000000000ff/memberships"
+    PRINCIPAL = uuid4()
+
+    def _request(self) -> Any:
+        from zhiwei.api.workspaces import GrantWorkspaceMembershipRequest
+
+        return GrantWorkspaceMembershipRequest(
+            principal_id=self.PRINCIPAL,
+            role_bindings=frozenset({"agent_builder", "workspace_admin"}),
+        )
+
+    def test_digest_is_construction_order_independent(self) -> None:
+        from zhiwei.api.workspaces import _membership_grant_digest
+
+        first = _membership_grant_digest(self.PATH, self._request())
+        second = _membership_grant_digest(self.PATH, self._request())
+        assert first == second
+
+    def test_digest_is_hash_seed_independent(self) -> None:
+        """跨进程（不同 PYTHONHASHSEED）的 digest 必须逐字节一致。"""
+        import subprocess
+        import sys
+
+        from zhiwei.api.workspaces import _membership_grant_digest
+
+        expected = _membership_grant_digest(self.PATH, self._request())
+        code = (
+            "from uuid import UUID; "
+            "from zhiwei.api.workspaces import ("
+            "GrantWorkspaceMembershipRequest, _membership_grant_digest); "
+            "req = GrantWorkspaceMembershipRequest("
+            f"principal_id=UUID('{self.PRINCIPAL}'), "
+            "role_bindings=frozenset({'agent_builder', 'workspace_admin'})); "
+            f"print(_membership_grant_digest('{self.PATH}', req))"
+        )
+        for seed in ("0", "1", "12345"):
+            env = {**os.environ, "PYTHONHASHSEED": seed}
+            result = subprocess.run(
+                [sys.executable, "-c", code],
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=str(Path(__file__).resolve().parents[3]),
+                timeout=120,
+            )
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == expected, (
+                f"PYTHONHASHSEED={seed} 产生不同 digest（frozenset 序泄漏）"
+            )

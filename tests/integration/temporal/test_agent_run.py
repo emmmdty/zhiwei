@@ -624,3 +624,152 @@ class TestFirstTransactionFailure:
             started_at = types.index("TaskStarted")
             failed_at = types.index("TaskFailed")
             assert scheduled_at < attempt_at < started_at < failed_at
+
+    async def test_task_failed_records_attempt_aborted(
+        self, temporal_env, database
+    ) -> None:
+        """S2 修复轮批次 B RED（D-3）：首事务失败路径的 attempt 终态对称。
+
+        execute_task 失败路径与 record_approval_outcome 都落 attempt 级终态
+        （AttemptAborted/AttemptCommitted）；record_task_failed 只补生命周期
+        不落 attempt 终态时，attempt 投影永远停留 pending——eval 的 attempt
+        状态断言（aborted/committed 集合精确相等）会漏掉该路径。
+        """
+        from temporalio import activity
+        from temporalio.worker import Worker
+
+        from zhiwei.workflows.activities.runtime import RuntimeActivities
+
+        _, sessions, context = database
+        graph = _graph(task_types={"t1": "Fixture"})
+        run_id = await _submit_run(sessions, context, graph)
+
+        class _InfraBrokenActivities(RuntimeActivities):
+            @activity.defn
+            async def execute_task(self, input):  # type: ignore[override]
+                raise RuntimeError("simulated infra failure: first transaction never committed")
+
+        activities = _InfraBrokenActivities(sessions, TaskHandlerRegistry())
+        worker = Worker(
+            temporal_env.client,
+            task_queue=DEFAULT_TASK_QUEUE,
+            workflows=[AgentRunWorkflow],
+            activities=[
+                activities.start_run,
+                activities.execute_task,
+                activities.create_approval,
+                activities.record_approval_outcome,
+                activities.record_run_terminal,
+                activities.record_task_skipped,
+                activities.record_task_failed,
+            ],
+        )
+        async with worker:
+            client = temporal_env.client
+            handle = await client.start_workflow(
+                AgentRunWorkflow.run,
+                AgentRunWorkflowInput(
+                    run_id=run_id,
+                    organization_id=str(context.organization_id),
+                    workspace_id=str(context.workspace_id),
+                    graph=graph.model_dump(mode="json"),
+                    task_queue=DEFAULT_TASK_QUEUE,
+                ),
+                id=f"run-{run_id}",
+                task_queue=DEFAULT_TASK_QUEUE,
+            )
+            result = await asyncio.wait_for(handle.result(), timeout=60)
+            assert result.status == "failed"
+
+        async with tenant_session(sessions, context) as session:
+            store = RuntimeEventStore(session, context)
+            state = await store.reduce_state(uuid_module.UUID(run_id))
+            task = state.tasks["t1"]
+            assert task.attempts, "attempt 投影不得为空"
+            attempt_statuses = {a.status for a in task.attempts.values()}
+            assert attempt_statuses == {"aborted"}, attempt_statuses
+
+
+class TestApprovalExpiry:
+    """S2 修复轮批次 B RED（H-3）：审批 expiry 必设 + 等待有上界。
+
+    spec §4（2026-09-03 增补）：「审批必须设置 expiry，workflow 等待有上界或由
+    过期信号解除」——无 expiry 的 pending 审批使 run 可永久挂起（三条路径：
+    崩溃窗口/错 run_id/CAN 间隙丢信号，ADR-012 反例）。
+    """
+
+    def _approval_graph(self) -> TaskGraph:
+        return _graph(
+            task_types={"review": "RequestApproval"},
+        )
+
+    async def test_create_approval_sets_expiry(self, temporal_env, worker_stack) -> None:
+        """create_approval 落库的请求必须携带 expires_at（None = 永久挂起面）。"""
+        _, sessions, context, _registry = worker_stack
+        graph = self._approval_graph()
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                requested_by="alice",
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        from zhiwei.persistence.approvals import ApprovalRequestStore
+
+        deadline = asyncio.get_event_loop().time() + 30
+        approvals: list = []
+        while asyncio.get_event_loop().time() < deadline:
+            async with tenant_session(sessions, context) as session:
+                approvals = await ApprovalRequestStore(session, context).list_for_run(
+                    uuid_module.UUID(run_id)
+                )
+            if approvals:
+                break
+            await asyncio.sleep(0.1)
+        assert approvals, "create_approval activity never recorded a request"
+        assert approvals[0].expires_at is not None, (
+            "审批请求必须设置 expiry——None 使 run 可永久挂起（spec §4 增补）"
+        )
+        # 清理：cancel 让 workflow 结束（本测试只验证 expiry 落库）
+        await handle.signal("cancel", {"command_event_id": str(new_id())})
+        await asyncio.wait_for(handle.result(), timeout=60)
+
+    async def test_approval_expiry_fails_run(self, temporal_env, worker_stack) -> None:
+        """expiry 到期且无决策 → run 以 failed（approval expired）终态，不挂起。"""
+        _, sessions, context, _registry = worker_stack
+        graph = self._approval_graph()
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                requested_by="alice",
+                approval_expiry_seconds=1,
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        # 不发决策信号：等待上界必须把 run 推向终态（无上界 = 永久挂起 → 超时红）
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "failed", (
+            f"过期审批必须使 run failed，实际 {result.status}"
+        )
+        async with tenant_session(sessions, context) as session:
+            state = await RuntimeEventStore(session, context).reduce_state(
+                uuid_module.UUID(run_id)
+            )
+            assert state.status == "failed"
+            assert state.tasks["review"].status == "failed"
