@@ -180,3 +180,25 @@ async def worker_stack(
     )
     async with worker:
         yield worker, sessions, context, registry
+
+
+class EffectUnknownFixtureHandler(TaskHandler):
+    """Handler whose side-effect state is unknown after an exception.
+
+    effect_unknown 语义（spec §4 增补）：副作用已可能发生，重试会造成重复
+    副作用——workflow 侧禁止自动重试。抛出的异常类型来自
+    zhiwei.runtime.handlers.base（EffectUnknownError，S2 修复轮批次 C 契约）。
+    """
+
+    @property
+    def primitive_type(self) -> str:
+        return "EffectUnknownFixture"
+
+    @property
+    def handler_version(self) -> int:
+        return 1
+
+    def execute(self, input: TaskInput) -> TaskOutput:
+        from zhiwei.runtime.handlers.base import EffectUnknownError
+
+        raise EffectUnknownError(f"effect state unknown for {input.task_id}")

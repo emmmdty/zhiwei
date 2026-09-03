@@ -102,31 +102,7 @@ class TestSchemaRegistry:
 
 
 class TestArchitectureBoundary:
-    def test_src_zhiwei_agents_does_not_import_app_modules(self) -> None:
-        """src/zhiwei must not import from apps/ solution-packs modules."""
-        import importlib
-        import pkgutil
-
-        import zhiwei.agents
-
-        package_path = zhiwei.agents.__path__
-        forbidden_prefixes = ("zhiwei.apps",)
-
-        for _importer, modname, _ispkg in pkgutil.walk_packages(
-            package_path, prefix="zhiwei.agents."
-        ):
-            try:
-                mod = importlib.import_module(modname)
-                for attr_name in dir(mod):
-                    attr = getattr(mod, attr_name, None)
-                    if attr is None:
-                        continue
-                    if hasattr(attr, "__module__") and attr.__module__:
-                        for prefix in forbidden_prefixes:
-                            if attr.__module__.startswith(prefix):
-                                pytest.fail(
-                                    f"{modname} imports from {attr.__module__} "
-                                    f"which starts with forbidden prefix {prefix}"
-                                )
-            except ImportError:
-                pass
+    """2026-09-03 修订：原断言的 zhiwei.apps 前缀在代码树中不存在（恒真）且
+    ImportError 被吞（fail-open）——由 test_core_boundary.py 的真实模块遍历
+    + fail-closed 重写取代（ADR-012：恒真断言与 except-pass 不满足
+    spec §6 架构边界条目）。本类保留占位以记录替换关系。"""

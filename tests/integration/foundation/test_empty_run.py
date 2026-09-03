@@ -581,3 +581,64 @@ async def test_record_outcome_and_seal_serialize_on_the_eval_run_lock(
     assert eval_run is not None and eval_run.status == "sealed"
     assert sample is not None and sample.status == "failed"
     assert manifest is not None and manifest.owner_resource_id == created.eval_run_id
+
+
+@pytest.mark.asyncio
+async def test_seal_refuses_when_dataset_object_tampered_after_freeze(
+    database: tuple[
+        AsyncEngine,
+        async_sessionmaker[AsyncSession],
+        TenantContext,
+        PosixObjectStore,
+    ],
+) -> None:
+    """S2 修复轮批次 C RED（S0 不变量，ADR-12 复审）：seal 前复验 dataset 对象。
+
+    specs/s0 §4：artifact digest mismatch / missing object 不得 seal。_seal 此前
+    只信 dataset_version.content_digest（DB 信任链），不读对象字节——create 与
+    seal 之间对象被篡改/删除时仍会 sealed。
+    """
+    _, sessions, context, store = database
+    units = (RegisteredUnit(sample_id="s1", unit_id="u1"),)
+    create = CreateEvalRunCommand(
+        mode=EvalMode.FIXTURE,
+        registered_units=units,
+        dataset_payload={"samples": ["s1"]},
+        code_digest=digest_bytes(b"code"),
+        config_digest=digest_bytes(b"config"),
+        schema_digest=digest_bytes(b"schema"),
+    )
+    async with tenant_session(sessions, context) as session:
+        created = await EvalFoundationService(session, context, store).create(create)
+        await EvalFoundationService(session, context, store).record_outcome(
+            created.eval_run_id,
+            SampleOutcome(
+                unit=units[0],
+                status=SampleStatus.COMPLETED,
+                result={"ok": True},
+            ),
+        )
+
+    # create 与 seal 之间篡改已冻结的 dataset 对象
+    async with tenant_session(sessions, context) as session:
+        manifest = await session.scalar(
+            select(ArtifactManifest).where(
+                ArtifactManifest.owner_resource_type == "dataset_version",
+                ArtifactManifest.owner_resource_id == created.dataset_version_id,
+            )
+        )
+    assert manifest is not None
+    store.debug_replace_immutable(_namespace(context), manifest.object_key, b"tampered")
+
+    with pytest.raises(ArtifactVerificationError):
+        async with tenant_session(sessions, context) as session:
+            await EvalFoundationService(session, context, store).seal(
+                created.eval_run_id,
+                migration_revision="0011_approval_requests",
+                test_report={"status": "ok"},
+            )
+
+    # seal 被拒后 eval run 不得处于 sealed 态
+    async with tenant_session(sessions, context) as session:
+        eval_run = await session.get(EvalRun, created.eval_run_id)
+    assert eval_run is not None and eval_run.status != "sealed"

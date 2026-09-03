@@ -697,3 +697,26 @@ class TestRedisEventSinkWiring:
         # 事件通知必须真实到达 Redis 流（经 outbox event_sink，而非测试手工 publish）
         notices = await redis_stream.read_since(run_id, "0-0")
         assert notices, "canonical 事件未发布到 Redis——event_sink 未接线"
+
+
+class TestDecideValidation:
+    """S2 修复轮批次 C RED（批次 B 验收缺陷 ①）：未知/跨租户 request_id → 404。
+
+    H-3 修复引入的回归：store.get 对不存在/跨租户 request 抛 ApprovalError
+    未捕获 → 500（旧路径经 decide 返回 409）。防枚举语义：与「不属于本 run」
+    一致为 404。
+    """
+
+    async def test_unknown_request_id_is_404_not_500(self, stack) -> None:
+        creator = uuid4()
+        await _grant_workspace_membership(
+            stack["identity_sessions"], stack["sessions"], stack["context"], creator
+        )
+        app = _runs_app(stack, _actor(stack["context"], creator))
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post(
+                f"/api/v1/runs/{uuid4()}/approvals/{uuid4()}/decision",
+                json={"decision": "approved", "reason": "unknown request"},
+            )
+            assert response.status_code == 404, response.text

@@ -773,3 +773,246 @@ class TestApprovalExpiry:
             )
             assert state.status == "failed"
             assert state.tasks["review"].status == "failed"
+
+
+class TestBatchCRepairContracts:
+    """S2 修复轮批次 C RED：spec §3/§4 增补的剩余接线级契约。
+
+    - ② expired 路径回查权威审批行（决策已落账但信号迟到 → 不误判 expired）
+    - ③ effect_unknown 禁自动重试（workflow _interpret 门）
+    - ④ RunPaused/RunResumed 落账（PG 真相与暂停状态一致）
+    - ⑤ missing handler 在 Run 事件落账前失败（registry 预检）
+    - ⑥ 审批 digest 绑定节点内容（非 run/task 身份常量）
+    - ⑧ ConflictDetected 作为 canonical event 落账 + ⑨ Synthesize 降级门
+    """
+
+    async def _start(self, temporal_env, sessions, context, graph, **kwargs):
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                **kwargs,
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        return run_id, handle
+
+    async def _wait_approval(self, sessions, context, run_id):
+        from zhiwei.persistence.approvals import ApprovalRequestStore
+
+        deadline = asyncio.get_event_loop().time() + 30
+        approvals: list = []
+        while asyncio.get_event_loop().time() < deadline:
+            async with tenant_session(sessions, context) as session:
+                approvals = await ApprovalRequestStore(session, context).list_for_run(
+                    uuid_module.UUID(run_id)
+                )
+            if approvals:
+                return approvals
+            await asyncio.sleep(0.1)
+        raise AssertionError("pending approval never surfaced")
+
+    async def test_expired_path_uses_authoritative_decision(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """决策已落账但信号迟到：expired 路径必须回查权威行，不误判 expired。"""
+        _, sessions, context, _registry = worker_stack
+        graph = _graph(task_types={"review": "RequestApproval"})
+        run_id, handle = await self._start(
+            temporal_env, sessions, context, graph,
+            requested_by="alice", approval_expiry_seconds=1,
+        )
+        approvals = await self._wait_approval(sessions, context, run_id)
+        request = approvals[0]
+
+        # 决策经 store 直接落账（模拟信号投递延迟 > timer 的窄窗口）
+        from zhiwei.persistence.approvals import ApprovalRequestStore
+
+        async with tenant_session(sessions, context) as session:
+            await ApprovalRequestStore(session, context).decide(
+                request_id=request.request_id,
+                decision="approved",
+                approver="someone-else",
+                reason="decided before timer",
+            )
+        # 不发 approval_decided 信号：timer 到期后 workflow 必须以权威行为准
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "completed", (
+            f"决策已落账时不得误判 expired（实际 {result.status}）"
+        )
+        assert "review" in result.completed_tasks
+
+    async def test_effect_unknown_failure_is_not_retried(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """effect_unknown 失败禁自动重试：单次 attempt 即终态（spec §4 增补）。"""
+        from tests.integration.temporal.conftest import (
+            EffectUnknownFixtureHandler,
+        )
+
+        _, sessions, context, registry = worker_stack
+        registry.register(EffectUnknownFixtureHandler())
+        graph = _graph(task_types={"t1": "EffectUnknownFixture"})
+        run_id, handle = await self._start(temporal_env, sessions, context, graph)
+
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "failed"
+
+        async with tenant_session(sessions, context) as session:
+            events = await RuntimeEventStore(session, context).load_events(
+                uuid_module.UUID(run_id)
+            )
+        attempts = [e for e in events if type(e).__name__ == "AttemptCreated"]
+        assert len(attempts) == 1, (
+            f"effect_unknown 不得自动重试（实际 {len(attempts)} 次 attempt）"
+        )
+
+    async def test_pause_resume_lands_canonical_events(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """pause/resume 信号必须落 RunPaused/RunResumed（PG 真相含暂停态）。"""
+        from tests.integration.temporal.conftest import SlowFixtureHandler
+
+        _, sessions, context, registry = worker_stack
+        registry.register(SlowFixtureHandler(sleep_seconds=1.0))
+        graph = _graph(
+            task_types={"t1": "SlowFixture", "t2": "SlowFixture"},
+            deps={"t2": ["t1"]},
+        )
+        run_id, handle = await self._start(temporal_env, sessions, context, graph)
+
+        await asyncio.sleep(0.3)
+        await handle.signal("pause", {"command_event_id": str(new_id())})
+        await asyncio.sleep(0.5)
+
+        async with tenant_session(sessions, context) as session:
+            state = await RuntimeEventStore(session, context).reduce_state(
+                uuid_module.UUID(run_id)
+            )
+            assert state.status == "paused", (
+                f"暂停期间 PG 真相必须为 paused（实际 {state.status}）"
+            )
+
+        await handle.signal("resume", {"command_event_id": str(new_id())})
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "completed"
+
+        async with tenant_session(sessions, context) as session:
+            events = await RuntimeEventStore(session, context).load_events(
+                uuid_module.UUID(run_id)
+            )
+        types = [type(e).__name__ for e in events]
+        assert "RunPaused" in types and "RunResumed" in types, types
+
+    async def test_missing_handler_fails_before_run_events(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """图含未注册 task type：Run 事件落账前失败（registry 预检，spec §3）。"""
+        _, sessions, context, _registry = worker_stack
+        graph = _graph(task_types={"t1": "NoSuchHandlerType"})
+        run_id, handle = await self._start(temporal_env, sessions, context, graph)
+
+        from temporalio.client import WorkflowFailureError
+
+        with pytest.raises(WorkflowFailureError):
+            await asyncio.wait_for(handle.result(), timeout=60)
+
+        async with tenant_session(sessions, context) as session:
+            events = await RuntimeEventStore(session, context).load_events(
+                uuid_module.UUID(run_id)
+            )
+        assert events == [], (
+            f"missing handler 必须在 Run 事件落账前失败（实际落了 {len(events)} 条）"
+        )
+
+    async def test_approval_digest_binds_node_content(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """审批 digest 绑定审批节点的声明内容，非 run/task 身份常量。"""
+        _, sessions, context, _registry = worker_stack
+        graph_a = _graph(
+            task_types={"pre": "Fixture", "review": "RequestApproval"},
+            deps={"review": ["pre"]},
+        )
+        graph_b = _graph(task_types={"review": "RequestApproval"})
+        graph_c = _graph(task_types={"review": "RequestApproval"})
+        run_a, handle_a = await self._start(
+            temporal_env, sessions, context, graph_a, requested_by="alice"
+        )
+        run_b, handle_b = await self._start(
+            temporal_env, sessions, context, graph_b, requested_by="alice"
+        )
+        run_c, handle_c = await self._start(
+            temporal_env, sessions, context, graph_c, requested_by="alice"
+        )
+        approvals_a = await self._wait_approval(sessions, context, run_a)
+        approvals_b = await self._wait_approval(sessions, context, run_b)
+        approvals_c = await self._wait_approval(sessions, context, run_c)
+        # 同内容（b/c）必须同 digest：身份（run_id）派生的 digest 使 swap 检测
+        # 结构上不可触发——内容绑定是 spec §4 增补的契约
+        assert approvals_b[0].input_digest == approvals_c[0].input_digest, (
+            "同节点内容必须产生相同 digest（当前为 run 身份派生）"
+        )
+        assert approvals_a[0].input_digest != approvals_b[0].input_digest, (
+            "digest 必须随节点声明内容变化"
+        )
+        for handle in (handle_a, handle_b, handle_c):
+            await handle.signal("cancel", {"command_event_id": str(new_id())})
+            await asyncio.wait_for(handle.result(), timeout=60)
+
+    async def test_conflict_lands_as_event_and_synthesize_degrades(
+        self, temporal_env, worker_stack
+    ) -> None:
+        """K-1 并行冲突：ConflictDetected 落 canonical event；Synthesize 降级。"""
+        from zhiwei.agents.task_graph import MergeStrategy
+
+        def _conflict_node(task_id: str) -> TaskGraphNode:
+            return TaskGraphNode(
+                task_id=task_id,
+                task_type="Fixture",
+                dependencies=(),
+                parallel_safe=True,
+                required_capability="fixture",
+                output_schema={"decision": {"type": "string"}},
+                output_merge_strategies={"decision": MergeStrategy.CONFLICT_PRESERVING},
+            )
+
+        graph = TaskGraph(
+            nodes={
+                "a": _conflict_node("a"),
+                "b": _conflict_node("b"),
+                "synth": TaskGraphNode(
+                    task_id="synth",
+                    task_type="Synthesize",
+                    dependencies=("a", "b"),
+                    parallel_safe=False,
+                    required_capability="fixture",
+                ),
+            },
+            edges={"synth": ["a", "b"]},
+        )
+        _, sessions, context, _registry = worker_stack
+        run_id, handle = await self._start(temporal_env, sessions, context, graph)
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "completed"
+
+        async with tenant_session(sessions, context) as session:
+            store = RuntimeEventStore(session, context)
+            state = await store.reduce_state(uuid_module.UUID(run_id))
+            events = await store.load_events(uuid_module.UUID(run_id))
+        types = [type(e).__name__ for e in events]
+        assert "ConflictDetected" in types, (
+            "冲突必须作为 canonical event 落账（重放后仍在，spec §3 增补）"
+        )
+        assert len(state.conflicts) >= 1
+        synth_output = state.tasks["synth"].output_values
+        assert synth_output.get("synthesize_downgraded") is True, (
+            f"存在未解决冲突时 Synthesize 必须降级（实际输出 {synth_output}）"
+        )

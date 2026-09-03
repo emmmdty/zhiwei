@@ -206,3 +206,28 @@ class TestDelegationBoundary:
         agents.set_delegation(a.id, delegate_dependencies=(b.id,))
         with pytest.raises(VersionStateError, match="delegation"):
             agents.promote_to_sandbox(b.id)
+
+
+class TestSingleSidedMergeDeclaration:
+    """S2 修复轮批次 C RED（ADR-005 增补：单边声明 = 拒绝）。
+
+    字段被 K 个可能并行的节点写入时，K 个节点都必须声明 merge 策略——
+    「至少一方声明即放行」会让未声明写者在运行时走静默覆盖路径。
+    """
+
+    def test_single_sided_declaration_rejected_at_publish(self) -> None:
+        graph = TaskGraph(
+            nodes={
+                "a": _node(
+                    "a", parallel=True,
+                    merge={"decision": MergeStrategy.CONFLICT_PRESERVING},
+                    outputs={"decision": "x"},
+                ),
+                "b": _node("b", parallel=True, outputs={"decision": "x"}),
+            },
+            edges={},
+        )
+        manager = AgentVersionManager()
+        manager.create_draft("single-sided", "desc", ("fixture",), graph=graph)
+        with pytest.raises(ValueError, match="merge"):
+            graph.validate_dag()
