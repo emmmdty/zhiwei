@@ -52,11 +52,17 @@ class TestPublishBoundaryValidation:
             manager.promote_to_sandbox(agent.id)
 
     def test_declared_parallel_write_passes_promotion(self) -> None:
+        """2026-09-03 修订（ADR-005 增补）：双边声明才放行。
+
+        原契约只让 a 声明、b 裸写即放行——正是增补后明确拒绝的「单边声明」
+        （未声明写者在运行时走静默覆盖）。反例见 TestSingleSidedMergeDeclaration。
+        """
         graph = TaskGraph(
             nodes={
                 "a": _node("a", parallel=True, merge={"decision": MergeStrategy.CONFLICT_PRESERVING},
                            outputs={"decision": "x"}),
-                "b": _node("b", parallel=True, outputs={"decision": "x"}),
+                "b": _node("b", parallel=True, merge={"decision": MergeStrategy.CONFLICT_PRESERVING},
+                           outputs={"decision": "x"}),
             },
             edges={},
         )
