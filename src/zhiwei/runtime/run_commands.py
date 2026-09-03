@@ -50,6 +50,8 @@ class RunCommandService:
         graph: dict[str, object],
         task_queue: str,
         max_task_attempts: int = 3,
+        continue_as_new_after: int = 1000,
+        activity_timeout_seconds: int = 60,
     ) -> None:
         """Create the Run row and the start_run command in one transaction."""
 
@@ -80,6 +82,8 @@ class RunCommandService:
             task_queue=task_queue,
             max_attempts=max_task_attempts,
             graph=dict(graph),
+            continue_as_new_after=continue_as_new_after,
+            activity_timeout_seconds=activity_timeout_seconds,
         )
         self._add_command(command)
         await self._session.flush()

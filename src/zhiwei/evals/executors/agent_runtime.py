@@ -282,6 +282,7 @@ class AgentRuntimeExecutor:
                 graph=scenario.graph.model_dump(mode="json"),
                 task_queue=DEFAULT_TASK_QUEUE,
                 max_task_attempts=scenario.max_task_attempts,
+                continue_as_new_after=scenario.continue_as_new_after,
             )
 
         # 2. dispatch start（等待投递完成）
@@ -308,10 +309,17 @@ class AgentRuntimeExecutor:
         # 4. 等待终态（真相在 PG）
         state = await self._wait_terminal(run_id)
 
-        # 5. invariants
+        # 5. invariants（附 CAN 可观测证据：同 workflow id 的 execution 数）
         async with tenant_session(self._sessions, self._context) as session:
             store = RuntimeEventStore(session, self._context)
             events = await store.load_events(run_id)
+        executions = [
+            e
+            async for e in self._environment.client.list_workflows(
+                f"WorkflowId = 'run-{run_id}'"
+            )
+        ]
+        state = state.model_copy(update={"_execution_count": len(executions)})
         errors = check_invariant(scenario.invariant, state, events)
 
         result = {

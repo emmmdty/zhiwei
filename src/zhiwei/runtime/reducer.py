@@ -286,12 +286,17 @@ def _handle_event(state: RunState, event: RuntimeEvent) -> RunState:
             return state
         new_status = _transition_task_status(task.status, "started")
         attempts = dict(task.attempts)
-        attempt_state = AttemptState(
-            id=event.attempt_id,
-            task_id=event.task_id,
-            attempt_number=len(attempts) + 1,
-        )
-        attempts[event.attempt_id] = attempt_state
+        # AttemptCreated 先行携带权威序号；TaskStarted 只补登 attempt（重试/直接
+        # start 两种事件序下序号都不得被 len(attempts)+1 覆盖——生产事件序恒为
+        # TaskScheduled → AttemptCreated(n) → TaskStarted）
+        existing = attempts.get(event.attempt_id)
+        if existing is None:
+            existing = AttemptState(
+                id=event.attempt_id,
+                task_id=event.task_id,
+                attempt_number=len(attempts) + 1,
+            )
+        attempts[event.attempt_id] = existing
         tasks[event.task_id] = task.model_copy(update={
             "status": new_status,
             "current_attempt_id": event.attempt_id,

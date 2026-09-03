@@ -186,7 +186,7 @@ def _continue_as_new() -> RuntimeContractScenario:
         unit=RUNTIME_CONTRACT_UNITS[5],
         graph=graph,
         continue_as_new_after=2,
-        invariant="all_tasks_completed_run_completed",
+        invariant="continue_as_new_occurred_and_completed",
     )
 
 
@@ -244,6 +244,21 @@ def _errors_all_completed(state: RunState, events: list[Any]) -> list[str]:
     for task_id, task in state.tasks.items():
         if task.status != "completed":
             errors.append(f"task {task_id!r} status {task.status!r} != 'completed'")
+    return errors
+
+
+def _errors_continue_as_new(state: RunState, events: list[Any]) -> list[str]:
+    """CAN 契约：状态完备 + Continue-As-New 真实发生（由 executor 侧附加
+    execution_count 证据——多 run 链是 CAN 的唯一可观测痕迹）。"""
+    errors = _errors_all_completed(state, events)
+    execution_count = getattr(state, "_execution_count", None)
+    if execution_count is None:
+        # fallback：executor 未附证据时跳过计数断言（向后兼容单测直调）
+        return errors
+    if execution_count < 2:
+        errors.append(
+            f"continue-as-new must actually occur (executions={execution_count})"
+        )
     return errors
 
 
@@ -310,6 +325,7 @@ def _errors_k_conflicts(state: RunState, events: list[Any]) -> list[str]:
 
 _INVARIANTS: dict[str, Callable[[RunState, list[Any]], list[str]]] = {
     "all_tasks_completed_run_completed": _errors_all_completed,
+    "continue_as_new_occurred_and_completed": _errors_continue_as_new,
     "append_merge_contains_all_branches": _errors_append_merge,
     "failed_attempt_reopened_and_completed": _errors_retry_reopened,
     "dependency_failure_skips_downstream_run_failed": _errors_dependency_skip,

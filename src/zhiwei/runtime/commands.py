@@ -48,6 +48,10 @@ class StartRun(CommandBase):
     task_queue: str
     max_attempts: int = Field(default=3, ge=1)
     graph: dict[str, Any] | None = None
+    # workflow 编排参数随命令走（场景驱动的 CAN 阈值/超时必须能从命令侧传达，
+    # 否则 eval 场景声称的契约在生产路径上被默认值静默替换）
+    continue_as_new_after: int = Field(default=1000, ge=1)
+    activity_timeout_seconds: int = Field(default=60, ge=1)
 
 
 class CancelRun(CommandBase):

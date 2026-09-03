@@ -32,16 +32,19 @@ from zhiwei.workflows.activities.base import (
 with workflow.unsafe.imports_passed_through():
     from zhiwei.agents.task_graph import FailurePolicy, TaskGraph
 
-# 基础设施失败（DB 抖动等）重试；确定性业务拒绝（Run 缺失、schema 未知、
-# 幂等冲突）不重试——重试同样的输入只会得到同样的拒绝。
+# 基础设施失败（DB 抖动等）重试；确定性业务拒绝（Run 缺失、schema 未知）不
+# 重试——重试同样的输入只会得到同样的拒绝。错误类型名是异常类裸名
+# （temporalio 默认 failure converter 以 __class__.__name__ 上报）。
+# EventIdempotencyConflict 不列入：并发重复执行下同键不同时间戳的冲突是良性
+# 竞态，重试后 has_event 命中已提交行即收敛（改为 non-retryable 会把健康
+# task 误判失败）。
 _INFRA_RETRY_POLICY = RetryPolicy(
     maximum_attempts=5,
     initial_interval=timedelta(milliseconds=200),
     maximum_interval=timedelta(seconds=2),
     non_retryable_error_types=[
-        "zhiwei.persistence.unit_of_work.RunNotFound",
-        "zhiwei.runtime.persistence.RuntimeEventSchemaError",
-        "zhiwei.persistence.unit_of_work.EventIdempotencyConflict",
+        "RunNotFound",
+        "RuntimeEventSchemaError",
         "ValueError",
     ],
 )
@@ -63,13 +66,18 @@ class AgentRunWorkflowInput:
     continue_as_new_after: int = 1000
     activity_timeout_seconds: int = 60
     actor_ref: str = "agent-runtime:worker"
-    # continue-as-new carried state
+    # continue-as-new carried state（含信号状态：cancel/pause 意图与已见命令 id
+    # 必须跨 CAN 存活，否则 CANCEL policy/operator cancel 在 CAN 边界被静默吞掉）
     started: bool = False
     completed_tasks: list[str] = field(default_factory=list)
     failed_tasks: list[str] = field(default_factory=list)
     skipped_tasks: list[str] = field(default_factory=list)
     attempt_counts: dict[str, int] = field(default_factory=dict)
     dispatched_total: int = 0
+    cancel_requested: bool = False
+    cancel_reason: str | None = None
+    paused: bool = False
+    seen_signal_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -106,6 +114,10 @@ class AgentRunWorkflow:
         self._skipped = set(input.skipped_tasks)
         self._attempt_counts = dict(input.attempt_counts)
         self._dispatched_total = input.dispatched_total
+        self._cancel_requested = input.cancel_requested
+        self._cancel_reason = input.cancel_reason
+        self._paused = input.paused
+        self._seen_signal_ids = set(input.seen_signal_ids)
 
         if not input.started:
             await workflow.execute_activity(
@@ -190,8 +202,13 @@ class AgentRunWorkflow:
                     await self._await_and_interpret(input, graph, task_id, handles[task_id])
 
             self._dispatched_total += len(serial) + len(parallel)
+            # cancel/pause 意图优先于 CAN：有未决信号时直接留在本 run 处理，
+            # 不把信号语义交给 CAN 边界（Temporal 在 CAN 间隙到达的信号会被
+            # server 丢弃且 RPC 已成功）。
             if (
                 input.continue_as_new_after > 0
+                and not self._cancel_requested
+                and not self._paused
                 and self._dispatched_total >= input.continue_as_new_after
                 and not set(graph.nodes) <= self._terminal_set()
             ):
@@ -286,6 +303,10 @@ class AgentRunWorkflow:
             skipped_tasks=sorted(self._skipped),
             attempt_counts=dict(self._attempt_counts),
             dispatched_total=self._dispatched_total,
+            cancel_requested=self._cancel_requested,
+            cancel_reason=self._cancel_reason,
+            paused=self._paused,
+            seen_signal_ids=sorted(self._seen_signal_ids),
         )
 
     def _skip_unreachable(

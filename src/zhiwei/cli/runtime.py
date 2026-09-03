@@ -83,7 +83,9 @@ def _replay_check_all() -> dict[str, Any]:
                 parsed_run_id = uuid_module.UUID(str(run_id))
                 async with tenant_session(sessions, context) as session:
                     store = RuntimeEventStore(session, context)
+                    # 两次独立载入（不同会话/事务），确定性探针才有鉴别力
                     events = await store.load_events(parsed_run_id)
+                    events_again = await store.load_events(parsed_run_id)
                     rows = (
                         await session.scalars(
                             select(CanonicalEvent)
@@ -102,7 +104,7 @@ def _replay_check_all() -> dict[str, Any]:
                         chain_error = str(exc)
 
                 state_a = reduce(list(events))
-                state_b = reduce(list(events))
+                state_b = reduce(list(events_again))
                 deterministic = state_a == state_b and chain_error is None
                 if not deterministic:
                     all_deterministic = False

@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -173,13 +172,3 @@ def _decode_event(event_type: str, payload: dict[str, Any]) -> RuntimeEvent:
             f"unknown canonical event type: {event_type!r}"
         ) from exc
     return event_cls.model_validate(payload)
-
-
-class RuntimeEventProbe(BaseModel):
-    """Summary of a committed event used by tests and diagnostics."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    event_type: str
-    sequence_no: int
-    idempotency_key: str

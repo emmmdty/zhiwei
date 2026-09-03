@@ -158,6 +158,8 @@ class OutboxSignalHandler:
                         "graph": command.graph,
                         "task_queue": command.task_queue,
                         "max_task_attempts": command.max_attempts,
+                        "continue_as_new_after": command.continue_as_new_after,
+                        "activity_timeout_seconds": command.activity_timeout_seconds,
                     },
                     organization_id=delivery.organization_id,
                     workspace_id=delivery.workspace_id,
