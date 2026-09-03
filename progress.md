@@ -68,13 +68,6 @@
 - 产出 `docs/DEV_ALLOCATION.md`：86 个 Task 按 A/B/C 三档逐个分配，含两工具流水并行模型、
   可并行组、交接单模板与三层验收协议。
 
-## 待办
-
-- 从 S0 开始开发，逐 checkbox 推进，不跳 Gate，不自动调用 live 模型。
-- 本地 `.env` 沿用 `OPENAI_API_KEY/BASE_URL/MODEL`；`OPENAI_BASE_URL` 需设为已登记 endpoint 的
-  `base_url`（当前为 `https://opencode.ai/zen/go/v1`），否则环境基线测试会红。
-- wire capture 与 token estimator 两个 P0 spike 可在 S0 之前独立执行。
-
 ## 2026-08-12：实现就绪收口
 
 - 静态检查通过：12 个 spec/plan 一一对应，86 个 Task，Markdown 本地链接无断链，活动文档无旧单用户/
@@ -85,3 +78,33 @@
   handlers；S4 独立 Capability Runner；Node 22/npm Gates；CLI command ownership；external unavailable artifact。
 - 最终复核进一步修正首次 OIDC 无组织 session、Approval/Admission 聚合职责分离和 S9 artifact 路径。
 - 本轮未实现 `src/`、未调用真实 LLM、未读取 `.env`、未运行 GPU。
+
+## 2026-09-03：S2 修复轮（ADR-012 驱动的规格修订 + 三批次代码回补）
+
+- **ADR-012 规格修订**（`fb6d973`）：S0–S2 五路并行代码审查暴露 9 条反例（Critical 1 / High 4
+  / Medium 3 / Low 1），以 ADR-012 形式回写 specs/s0–s2 + AGENTS.md（含测试层级契约/Gate 例外/
+  Fake 边界/读路径授权/Gate deselect 规则）；ADR-005 增补（append 保序消歧、单边拒绝、运行时 fail
+  closed、ConflictDetected 落账）；ADR-008 增补（第三层静态证明可判定化：DAG 环检测 + 共享计数
+  构造性论证）。
+- **Batch A**（C-1 backfill / H-1 SoD 穿透 / H-2 workspace 策略死锁 / H-6 body 校验 + A-2
+  读路径授权/幂等/digest 排序）：`2d0e104` GREEN，独立 subagent 验收通过。
+- **Batch B**（H-3 审批原子性+expiry / H-4 Redis 接线 / H-5 探针独立事务 / H-7 委托界发布期
+  + 命令层硬上界 / D-3 AttemptAborted / A2-1 digest 排序）：`71b2cd4` GREEN，独立 subagent
+  验收通过（缺陷① decide 404 回归延至 Batch C）。
+- **Batch C**（① decide 404 / ② expired 权威行回查 / ③ effect_unknown 门 / ④ Pause/Resume
+  落账 / ⑤ registry 预检 / ⑥ digest 绑定节点 / ⑦ merge 单边拒绝 / ⑧ ConflictDetected
+  canonical event + 冗余去重 / ⑨ Synthesize 降级 / ⑩ S0 JSONB 值域 + seal 复验 / ⑪ 架构
+  测试重写）：`33eee3a` GREEN，全量 Gate 全绿（1214 passed / 0 failed / 0 errors）。
+- **全量 Gate 状态**：pytest 1214 passed/20 deselected、ruff/pyright 0、evals 110、
+  determinism 逐字节一致、replay-check 7/7、eval seal 7/7、handoff-check 干净（基线
+  `aa88313`）。交接文档见 `docs/handoffs/s2-repair-round.md`。
+
+## 待办
+
+- 从 S0 开始开发，逐 checkbox 推进，不跳 Gate，不自动调用 live 模型。
+- S3 Models/Context 阶段：35 个 Task 待执行（`specs/s3-models-context.md`）。
+- S2 修复轮登记的开放债务（详见 `docs/handoffs/s2-repair-round.md` §7）：SCIM group
+  审计同事务、Child-run delegation 集成测试、SSE 心跳/游标下推、Web SSE 客户端等。
+- wire capture 与 token estimator 两个 P0 spike 可在 S0 之前独立执行。
+- 委托集成测试：S3 Delegate handler 实现后必须补 integration 级委托链 + 环检测端到端 + 两路径
+  共用计数验证。
