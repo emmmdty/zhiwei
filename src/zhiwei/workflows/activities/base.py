@@ -81,6 +81,9 @@ class CreateApprovalInput:
     task_id: str
     requested_by: str
     actor_ref: str = _DEFAULT_ACTOR_REF
+    # 审批 expiry（秒）：pending 请求的等待上界（spec §4 2026-09-03 增补——
+    # 无 expiry 的审批使 run 可永久挂起，ADR-012 反例）
+    approval_expiry_seconds: int = 3600
 
 
 @dataclass

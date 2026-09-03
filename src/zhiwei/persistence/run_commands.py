@@ -53,13 +53,24 @@ class RunCommandService:
         continue_as_new_after: int = 1000,
         activity_timeout_seconds: int = 60,
         requested_by: str = "system",
+        delegation_chain: tuple[str, ...] = (),
     ) -> None:
-        """Create the Run row and the start_run command in one transaction."""
+        """Create the Run row and the start_run command in one transaction.
 
+        delegation_chain 是 ADR-008 第②层的纵深防御：发布期环检测之外的
+        运行时硬上界——超链在 Run 行写入前拒绝（fail closed），防发布校验
+        被绕过或图在发布后被篡改。
+        """
         from sqlalchemy import select
 
         from zhiwei.persistence.models import Workspace
+        from zhiwei.runtime.delegation import MAX_DELEGATION_DEPTH
 
+        if len(delegation_chain) > MAX_DELEGATION_DEPTH:
+            raise RunCommandError(
+                f"delegation chain length {len(delegation_chain)} exceeds hard "
+                f"depth cap {MAX_DELEGATION_DEPTH} (ADR-008 layer 2)"
+            )
         workspace_exists = await self._session.scalar(
             select(Workspace).where(
                 Workspace.organization_id == self._context.organization_id,
@@ -86,6 +97,7 @@ class RunCommandService:
             continue_as_new_after=continue_as_new_after,
             activity_timeout_seconds=activity_timeout_seconds,
             requested_by=requested_by,
+            delegation_chain=tuple(delegation_chain),
         )
         self._add_command(command)
         await self._session.flush()

@@ -267,6 +267,11 @@ class RuntimeActivities:
             if any(r.task_id == input.task_id for r in existing):
                 return ActivityEventAck(run_id=input.run_id, created_events=0)
             requester = input.requested_by or "system"
+            # expiry 必设（spec §4 2026-09-03 增补）：pending 审批的等待上界，
+            # 过期由 store.decide 拒绝 + workflow 等待超时双路解除
+            from datetime import timedelta
+
+            expires_at = utc_now() + timedelta(seconds=input.approval_expiry_seconds)
             # exact input digest：S2 fixture 的任务输入即 task_id 绑定的确定值；
             # digest 绑定沿用域语义（swap 检测在域层 CAS/唯一键处收口）
             await store.create(
@@ -278,6 +283,7 @@ class RuntimeActivities:
                 requester=requester,
                 agent_identity="agent-runtime:fixture",
                 requested_by=requester,
+                expires_at=expires_at,
             )
         return ActivityEventAck(run_id=input.run_id, created_events=1)
 
@@ -355,12 +361,18 @@ class RuntimeActivities:
                     idempotency_key=key,
                 )
             else:
+                # rejected（审批人拒绝）或 expired（等待上界到期，spec §4 增补）
+                error = (
+                    "rejected by approver"
+                    if input.decision == "rejected"
+                    else "approval expired"
+                )
                 await store.append(
                     TaskFailed(
                         run_id=run_id,
                         timestamp=now,
                         task_id=input.task_id,
-                        error="rejected by approver",
+                        error=error,
                         attempt_id=attempt_id,
                     ),
                     actor_ref=input.actor_ref,
@@ -504,6 +516,24 @@ class RuntimeActivities:
                 actor_ref=input.actor_ref,
                 idempotency_key=key,
             )
+            # attempt 级终态对称（D-3）：execute_task 失败路径与审批路径都落
+            # AttemptAborted/AttemptCommitted——缺它时 attempt 投影停留 pending
+            if not await store.has_event(
+                run_id,
+                attempt_terminal_key(input.run_id, input.task_id, input.attempt_no),
+            ):
+                await store.append(
+                    AttemptAborted(
+                        run_id=run_id,
+                        timestamp=now,
+                        task_id=input.task_id,
+                        attempt_id=attempt_id,
+                    ),
+                    actor_ref=input.actor_ref,
+                    idempotency_key=attempt_terminal_key(
+                        input.run_id, input.task_id, input.attempt_no
+                    ),
+                )
         return ActivityEventAck(run_id=input.run_id, created_events=1)
 
 

@@ -62,6 +62,11 @@ class AgentDefinition(_FrozenModel):
     """An agent definition with name, description, version, capabilities, and task graph schema.
 
     Immutable once published: version field cannot be modified after publish.
+
+    委托依赖（ADR-008 可判定化增补）：delegate_dependencies 是本 agent 经
+    Delegate 原语委托的目标 agent；tool_agent_refs 是经 agent-as-tool 形式
+    引用的 provider agent——两类边进入同一张委托依赖图，发布期做环检测。
+    自委托必须显式声明 self_delegation_depth_cap。
     """
 
     id: UUID
@@ -72,6 +77,9 @@ class AgentDefinition(_FrozenModel):
     task_graph_schema: TaskGraphSchema
     status: AgentDefinitionStatus = AgentDefinitionStatus.DRAFT
     parent_id: UUID | None = None
+    delegate_dependencies: tuple[UUID, ...] = ()
+    tool_agent_refs: tuple[UUID, ...] = ()
+    self_delegation_depth_cap: int | None = Field(default=None, ge=1)
     created_at: datetime
     updated_at: datetime
     schema_version: int = 1

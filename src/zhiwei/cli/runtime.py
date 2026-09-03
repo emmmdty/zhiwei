@@ -30,6 +30,31 @@ def _emit_json(payload: dict[str, Any]) -> None:
     click.echo(json.dumps(payload, ensure_ascii=False))
 
 
+async def load_events_twice_independently(
+    sessions: Any,
+    context: Any,
+    run_id: UUID,
+    *,
+    between: Any = None,
+) -> tuple[list[Any], list[Any]]:
+    """两次事件载入使用独立事务/会话（H-5，ADR-012 反例 7）。
+
+    同一事务内的两次 SELECT 共享快照——「双次载入」退化为恒真探针。独立
+    事务下，第二次载入观察得到载入间隙的并发写入（这正是确定性探针的
+    鉴别力来源）。`between` 钩子供测试注入并发写（生产路径不使用）。
+    """
+    from zhiwei.persistence.runtime_events import RuntimeEventStore
+    from zhiwei.persistence.tenant import tenant_session
+
+    async with tenant_session(sessions, context) as session:
+        events_a = await RuntimeEventStore(session, context).load_events(run_id)
+    if between is not None:
+        await between()
+    async with tenant_session(sessions, context) as session:
+        events_b = await RuntimeEventStore(session, context).load_events(run_id)
+    return list(events_a), list(events_b)
+
+
 def _fail(message: str) -> NoReturn:
     click.echo(message, err=True)
     raise typer.Exit(1)
@@ -44,7 +69,6 @@ def _replay_check_all() -> dict[str, Any]:
     from zhiwei.evals.runtime_contracts import RUNTIME_CONTRACT_UNITS
     from zhiwei.persistence.events import event_data_from_row, verify_event_chain
     from zhiwei.persistence.models import CanonicalEvent
-    from zhiwei.persistence.runtime_events import RuntimeEventStore
     from zhiwei.persistence.tenant import tenant_session
 
     _, _, _, _, sessions = _settings_runtime()
@@ -82,11 +106,12 @@ def _replay_check_all() -> dict[str, Any]:
                 import uuid as uuid_module
 
                 parsed_run_id = uuid_module.UUID(str(run_id))
+                # 两次独立载入（不同事务/会话）：确定性探针才有鉴别力——
+                # 同事务双 SELECT 共享快照，恒真（ADR-012 反例 7 / H-5）
+                events, events_again = await load_events_twice_independently(
+                    sessions, context, parsed_run_id
+                )
                 async with tenant_session(sessions, context) as session:
-                    store = RuntimeEventStore(session, context)
-                    # 两次独立载入（不同会话/事务），确定性探针才有鉴别力
-                    events = await store.load_events(parsed_run_id)
-                    events_again = await store.load_events(parsed_run_id)
                     rows = (
                         await session.scalars(
                             select(CanonicalEvent)

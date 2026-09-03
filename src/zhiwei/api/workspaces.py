@@ -501,9 +501,7 @@ def create_workspaces_router(
         context = TenantContext(
             organization_id=actor.organization_id, workspace_id=workspace_id
         )
-        request_digest = canonical_request_digest(
-            "POST", request_scope.url.path, request.model_dump(mode="json")
-        )
+        request_digest = _membership_grant_digest(request_scope.url.path, request)
         async with tenant_session(sessions, context) as session:
             repository = IdentityRepository(session, context)
             # 幂等消费（D-2）：同 key 同 digest 重放原结果；同 key 异 digest 409，
@@ -617,3 +615,22 @@ def _membership_view(membership: WorkspaceMembership) -> dict[str, object]:
         "workspace_id": str(membership.workspace_id),
         "role_bindings": sorted(membership.role_bindings),
     }
+
+
+def _membership_grant_digest(
+    path: str, request: GrantWorkspaceMembershipRequest
+) -> str:
+    """授予请求的幂等 digest（A2-1）：逻辑请求的纯函数。
+
+    role_bindings 是 frozenset——model_dump 的数组序取决于进程哈希种子，
+    重启/滚动发布后同 key 同 body 的合法重放会得到假 409。digest 输入
+    先排序，与序列化顺序无关（跨 PYTHONHASHSEED 逐字节一致）。
+    """
+    return canonical_request_digest(
+        "POST",
+        path,
+        {
+            "principal_id": str(request.principal_id),
+            "role_bindings": sorted(request.role_bindings),
+        },
+    )

@@ -55,6 +55,9 @@ class StartRun(CommandBase):
     # 触发 run 的 human principal（SoD 事实源：审批 requester 必须是真实主体，
     # 不得在 activity 内退化为常量——ADR-012 反例 1）。空值仅在 eval/内部路径允许。
     requested_by: str = ""
+    # ADR-008 第②层：委托链（ Delegate 与 agent-as-tool 共用计数）。发布期
+    # 环检测之外的运行时硬上界，命令提交侧 fail closed。
+    delegation_chain: tuple[str, ...] = ()
 
 
 class CancelRun(CommandBase):

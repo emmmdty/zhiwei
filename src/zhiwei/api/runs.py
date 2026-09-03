@@ -17,7 +17,7 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict
@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from zhiwei.identity.domain import ActorContext
 from zhiwei.identity.sessions import MembershipScopeError
 from zhiwei.persistence.approvals import ApprovalRequestStore
+from zhiwei.persistence.outbox import OutboxSink
 from zhiwei.persistence.run_commands import RunCommandError, RunCommandService
 from zhiwei.persistence.runtime_events import RuntimeEventStore
 from zhiwei.persistence.tenant import TenantContext, tenant_session
@@ -128,6 +129,7 @@ def create_runs_router(
     dispatch_inline: bool = True,
     task_queue: str = DEFAULT_TASK_QUEUE,
     workspace_authorizer: WorkspaceAuthorizer,
+    event_sink: OutboxSink | None = None,
 ) -> APIRouter:
     """Run API router。
 
@@ -136,7 +138,9 @@ def create_runs_router(
     dispatch_inline：命令提交后在同一请求内跑一轮 dispatcher poll（S2 单进程
     形态，见 docstring）；
     workspace_authorizer：POST /runs 的 body workspace 成员校验（fail closed，
-    缺失在构造期拒绝——客户端声明不是授权事实，ADR-012）。
+    缺失在构造期拒绝——客户端声明不是授权事实，ADR-012）；
+    event_sink：canonical 事件的增量通道（Redis；生产组装必须接线，否则
+    「加速通道」为死代码、SSE 退化为纯轮询——spec §4 增补，ADR-012 反例）。
     """
     if workspace_authorizer is None:
         raise TypeError("workspace_authorizer must be provided (fail closed)")
@@ -160,6 +164,7 @@ def create_runs_router(
                 max_attempts=5,
                 base_delay=timedelta_safe(),
             ),
+            event_sink=event_sink,
         )
 
     async def _dispatch(session_factory, context: TenantContext) -> None:
@@ -352,6 +357,12 @@ def create_runs_router(
         request: ApprovalDecisionRequest,
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> DecisionResult:
+        """审批决策：归属校验前置 + 决策与信号同事务提交（H-3，spec §4 增补）。
+
+        决策落账与 approval_decided 信号的 outbox 行在同一事务：信号入列失败
+        时决策一并回滚（全有或全无）——两事务分离会在崩溃窗口留下「决策已
+        生效但 workflow 永远等不到信号」的挂起面（ADR-012 反例）。
+        """
         context = _tenant(actor)
         if request.decision not in {"approved", "rejected"}:
             raise HTTPException(
@@ -362,6 +373,14 @@ def create_runs_router(
         sessions = sessions_factory(actor, context.workspace_id)
         async with tenant_session(sessions, context) as session:
             store = ApprovalRequestStore(session, context)
+            # 归属校验先于决策：错 run_id 的请求不得污染目标审批（此前依赖
+            # 异常隐式回滚兜底——显式化，防未来重构破坏该不变量）
+            record = await store.get(request_id)
+            if record.run_id != run_id:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="approval request does not belong to this run",
+                )
             try:
                 record = await store.decide(
                     request_id=request_id,
@@ -373,15 +392,7 @@ def create_runs_router(
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT, detail=str(exc)
                 ) from exc
-            if record.run_id != run_id:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="approval request does not belong to this run",
-                )
-        # 决策经生产命令路径投递给 workflow（cancel 同款信号通道）
-        async with tenant_session(sessions, context) as session:
-            from uuid import uuid4
-
+            # 决策 + 信号 outbox 行：同一事务（上方 tenant_session 块内）
             from zhiwei.contracts.identifiers import new_id
             from zhiwei.contracts.time import utc_now
             from zhiwei.persistence.models import OutboxMessage

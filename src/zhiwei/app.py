@@ -219,6 +219,18 @@ def create_app(
     if settings.temporal_target is not None:
         temporal_target = settings.temporal_target
 
+        from zhiwei.telemetry.redis_streams import RedisEventStream
+
+        # REDIS_URL 缺失 → SSE 走 PG 轮询（增量通道是可选加速，丢失零影响）。
+        # event_sink 必须先于 runs router 构造：内联 dispatcher 的
+        # canonical.event.committed 经它发布（未接线 = 加速通道死代码，
+        # spec §4 2026-09-03 增补 / ADR-012 反例）。
+        redis_stream = (
+            RedisEventStream.connect_lazy(settings.redis_url)
+            if settings.redis_url is not None
+            else None
+        )
+
         def _runs_sessions(
             actor: ActorContext, workspace_id: Any
         ) -> Any:
@@ -241,17 +253,10 @@ def create_app(
                 sessions_factory=_runs_sessions,
                 temporal_target=temporal_target,
                 workspace_authorizer=_runs_workspace_authorizer,
+                event_sink=redis_stream,
             )
         )
 
-        from zhiwei.telemetry.redis_streams import RedisEventStream
-
-        # REDIS_URL 缺失 → SSE 走 PG 轮询（增量通道是可选加速，丢失零影响）
-        redis_stream = (
-            RedisEventStream.connect_lazy(settings.redis_url)
-            if settings.redis_url is not None
-            else None
-        )
         app.include_router(
             create_events_router(
                 actor_dependency=session_actor,

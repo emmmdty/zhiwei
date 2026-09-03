@@ -82,6 +82,9 @@ class AgentRunWorkflowInput:
     seen_signal_ids: list[str] = field(default_factory=list)
     requested_by: str = ""
     approval_decisions: dict[str, str] = field(default_factory=dict)
+    # 审批等待上界（秒，spec §4 2026-09-03 增补）：expiry 到期且无决策 →
+    # run 以 failed（approval expired）终态，不挂起。默认 1 小时。
+    approval_expiry_seconds: int = 3600
 
 
 @dataclass
@@ -215,15 +218,27 @@ class AgentRunWorkflow:
                         task_id=task_id,
                         requested_by=input.requested_by or "system",
                         actor_ref=input.actor_ref,
+                        approval_expiry_seconds=input.approval_expiry_seconds,
                     ),
                     schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
                     retry_policy=_INFRA_RETRY_POLICY,
                     task_queue=input.task_queue,
                 )
-                # 等待决策信号；cancel 可中断等待
-                await workflow.wait_condition(
-                    lambda: _decided() or self._cancel_requested
-                )
+                # 等待决策信号；cancel 可中断等待；expiry 到期未决 → failed
+                # 终态（spec §4 增补：无上界的等待是永久挂起面）。timer 是
+                # history 事件，重放安全；+1s 容差让 store 侧先按 expires_at
+                # 拒绝迟到的决策（双路解除语义一致）。
+
+                try:
+                    await workflow.wait_condition(
+                        lambda: _decided() or self._cancel_requested,
+                        timeout=timedelta(
+                            seconds=input.approval_expiry_seconds + 1
+                        ),
+                    )
+                except TimeoutError:
+                    if not self._cancel_requested and not _decided():
+                        self._approval_decisions[task_id] = "expired"
                 if self._cancel_requested:
                     continue
                 decision = self._approval_decisions[task_id]
@@ -362,6 +377,7 @@ class AgentRunWorkflow:
             seen_signal_ids=sorted(self._seen_signal_ids),
             requested_by=input.requested_by,
             approval_decisions=dict(self._approval_decisions),
+            approval_expiry_seconds=input.approval_expiry_seconds,
         )
 
     def _skip_unreachable(
