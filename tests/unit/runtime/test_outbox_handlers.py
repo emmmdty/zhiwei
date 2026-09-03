@@ -32,14 +32,33 @@ from zhiwei.workers.outbox_dispatcher import (
 
 
 class StubWorkflowSignalSender:
-    """Records signals sent via the WorkflowSignalSender port."""
+    """Records signals sent via the async WorkflowSignalSender port."""
 
     def __init__(self) -> None:
         self.signals: list[dict[str, Any]] = []
         self.failures: dict[tuple[str, str], Exception] = {}
 
-    def send_signal(
+    async def start_workflow(
         self,
+        *,
+        workflow_id: str,
+        workflow_type: str,
+        input: dict[str, Any],
+        organization_id: UUID,
+        workspace_id: UUID,
+    ) -> None:
+        key = (workflow_id, "start_workflow")
+        if key in self.failures:
+            raise self.failures[key]
+        self.signals.append({
+            "workflow_id": workflow_id,
+            "signal_name": "start_workflow",
+            "payload": input,
+        })
+
+    async def signal_workflow(
+        self,
+        *,
         workflow_id: str,
         signal_name: str,
         payload: dict[str, Any],
@@ -52,29 +71,6 @@ class StubWorkflowSignalSender:
             "signal_name": signal_name,
             "payload": payload,
         })
-
-    def start_workflow(
-        self,
-        workflow_id: str,
-        workflow_type: str,
-        input: dict[str, Any],
-    ) -> None:
-        key = (workflow_id, "start_workflow")
-        if key in self.failures:
-            raise self.failures[key]
-        self.signals.append({
-            "workflow_id": workflow_id,
-            "signal_name": "start_workflow",
-            "payload": input,
-        })
-
-    def signal_workflow(
-        self,
-        workflow_id: str,
-        signal_name: str,
-        payload: Any,
-    ) -> None:
-        self.send_signal(workflow_id, signal_name, payload if isinstance(payload, dict) else {})
 
 
 class StubOutboxMessageTracker:
@@ -97,7 +93,7 @@ class StubOutboxMessageTracker:
 
 def _make_delivery(
     *,
-    topic: str = "runtime.commands",
+    topic: str = "runtime.command",
     event_key: str = "start_run",
     payload: dict[str, Any] | None = None,
     message_id: UUID | None = None,
@@ -107,7 +103,7 @@ def _make_delivery(
     return OutboxDelivery(
         id=message_id or new_id(),
         organization_id=new_id(),
-        workspace_id=None,
+        workspace_id=new_id(),
         topic=topic,
         event_key=event_key,
         payload=payload or {"run_id": str(new_id()), "kind": "start_run", "task_queue": "q"},
@@ -120,11 +116,24 @@ def _make_delivery(
     )
 
 
+_MINIMAL_GRAPH: dict[str, Any] = {
+    "nodes": {
+        "t1": {
+            "task_id": "t1",
+            "task_type": "Fixture",
+            "required_capability": "fixture",
+        }
+    },
+    "edges": {},
+}
+
+
 def _start_run_payload(*, run_id: UUID | None = None) -> dict[str, Any]:
     return {
         "run_id": str(run_id or new_id()),
         "kind": "start_run",
         "task_queue": "q",
+        "graph": _MINIMAL_GRAPH,
     }
 
 
@@ -204,8 +213,9 @@ class TestCommandParsing:
             OutboxSignalHandler.parse_command("start_run", {"not_a_uuid": True})
 
 
+@pytest.mark.asyncio
 class TestHandleStartRun:
-    def test_start_run_sends_start_workflow(self) -> None:
+    async def test_start_run_sends_start_workflow(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -213,13 +223,24 @@ class TestHandleStartRun:
             event_key="start_run",
             payload=_start_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
+        await handler.handle(delivery)
         assert len(sender.signals) == 1
         sig = sender.signals[0]
         assert sig["workflow_id"] == f"run-{run_id}"
         assert sig["signal_name"] == "start_workflow"
+        assert sig["payload"]["graph"] == _MINIMAL_GRAPH
 
-    def test_start_run_workflow_failure_raises(self) -> None:
+    async def test_start_run_without_graph_is_rejected(self) -> None:
+        sender = StubWorkflowSignalSender()
+        handler = OutboxSignalHandler(sender=sender)
+        delivery = _make_delivery(
+            event_key="start_run",
+            payload={"run_id": str(new_id()), "kind": "start_run", "task_queue": "q"},
+        )
+        with pytest.raises(OutboxHandlerError, match="graph"):
+            await handler.handle(delivery)
+
+    async def test_start_run_workflow_failure_raises(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         sender.failures[(f"run-{run_id}", "start_workflow")] = RuntimeError("temporal down")
@@ -229,11 +250,12 @@ class TestHandleStartRun:
             payload=_start_run_payload(run_id=run_id),
         )
         with pytest.raises(OutboxHandlerError, match="temporal down"):
-            handler.handle(delivery)
+            await handler.handle(delivery)
 
 
+@pytest.mark.asyncio
 class TestHandleCancelRun:
-    def test_cancel_run_sends_signal(self) -> None:
+    async def test_cancel_run_sends_signal(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -241,15 +263,17 @@ class TestHandleCancelRun:
             event_key="cancel_run",
             payload=_cancel_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
+        await handler.handle(delivery)
         assert len(sender.signals) == 1
         sig = sender.signals[0]
         assert sig["workflow_id"] == f"run-{run_id}"
         assert sig["signal_name"] == "cancel"
+        assert "command_event_id" in sig["payload"]
 
 
+@pytest.mark.asyncio
 class TestHandleSignalRun:
-    def test_signal_run_sends_signal_with_payload(self) -> None:
+    async def test_signal_run_sends_signal_with_payload(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -257,15 +281,16 @@ class TestHandleSignalRun:
             event_key="signal_run",
             payload=_signal_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
+        await handler.handle(delivery)
         assert len(sender.signals) == 1
         sig = sender.signals[0]
         assert sig["workflow_id"] == f"run-{run_id}"
         assert sig["signal_name"] == "heartbeat"
 
 
+@pytest.mark.asyncio
 class TestHandlePauseResume:
-    def test_pause_run_sends_signal(self) -> None:
+    async def test_pause_run_sends_signal(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -273,11 +298,11 @@ class TestHandlePauseResume:
             event_key="pause_run",
             payload=_pause_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
+        await handler.handle(delivery)
         assert len(sender.signals) == 1
         assert sender.signals[0]["signal_name"] == "pause"
 
-    def test_resume_run_sends_signal(self) -> None:
+    async def test_resume_run_sends_signal(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -285,39 +310,56 @@ class TestHandlePauseResume:
             event_key="resume_run",
             payload=_resume_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
+        await handler.handle(delivery)
         assert len(sender.signals) == 1
         assert sender.signals[0]["signal_name"] == "resume"
 
 
+@pytest.mark.asyncio
 class TestDuplicateDispatch:
-    def test_duplicate_start_run_is_idempotent(self) -> None:
+    async def test_duplicate_start_maps_to_delivered(self) -> None:
+        """重复 start 由 sender 层的 deterministic-id 冲突映射为幂等 delivered。
+
+        T4 原语义（handler 进程内 _delivered 集合去重）存在机制缺陷：dispatcher 重启
+        后集合丢失，重复投递会二次 start。修订后的去重点 = deterministic workflow id +
+        WorkflowDuplicateStart → delivered（worker 重启安全）。
+        """
+        from zhiwei.runtime.outbox_handlers import WorkflowDuplicateStart
+
         run_id = new_id()
         sender = StubWorkflowSignalSender()
+        sender.failures[(f"run-{run_id}", "start_workflow")] = WorkflowDuplicateStart(
+            "already started"
+        )
         handler = OutboxSignalHandler(sender=sender)
         delivery = _make_delivery(
             event_key="start_run",
             payload=_start_run_payload(run_id=run_id),
         )
-        handler.handle(delivery)
-        handler.handle(delivery)
-        assert len(sender.signals) == 1
+        result = await handler.handle(delivery)
+        assert result.status == "delivered"
 
-    def test_duplicate_cancel_run_is_idempotent(self) -> None:
+    async def test_duplicate_cancel_signal_carries_same_command_id(self) -> None:
+        """同一命令的重复投递转发同一 command_event_id，由 workflow 幂等去重。"""
         run_id = new_id()
+        command_event_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
-        delivery = _make_delivery(
-            event_key="cancel_run",
-            payload=_cancel_run_payload(run_id=run_id),
-        )
-        handler.handle(delivery)
-        handler.handle(delivery)
-        assert len(sender.signals) == 1
+        payload = _cancel_run_payload(run_id=run_id)
+        payload["event_id"] = str(command_event_id)
+        delivery = _make_delivery(event_key="cancel_run", payload=payload)
+        await handler.handle(delivery)
+        await handler.handle(delivery)
+        # handler 每次都转发（真相在 workflow 的 seen-signal 去重），
+        # 但两次转发的 command_event_id 必须一致（同一条 outbox 命令）
+        assert len(sender.signals) == 2
+        assert sender.signals[0]["payload"] == sender.signals[1]["payload"]
+        assert sender.signals[0]["payload"]["command_event_id"] == str(command_event_id)
 
 
+@pytest.mark.asyncio
 class TestSignalBeforeWorker:
-    def test_signal_before_start_returns_pending(self) -> None:
+    async def test_signal_before_start_returns_pending(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         sender.failures[(f"run-{run_id}", "cancel")] = WorkflowNotFoundError(
@@ -328,25 +370,27 @@ class TestSignalBeforeWorker:
             event_key="cancel_run",
             payload=_cancel_run_payload(run_id=run_id),
         )
-        result = handler.handle(delivery)
+        result = await handler.handle(delivery)
         assert result.status == "signal_before_worker"
 
 
+@pytest.mark.asyncio
 class TestPoisonMessage:
-    def test_unparseable_payload_is_poison(self) -> None:
+    async def test_unparseable_payload_is_poison(self) -> None:
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
         delivery = _make_delivery(
             event_key="start_run",
             payload={"garbage": True},
         )
-        result = handler.handle(delivery)
+        result = await handler.handle(delivery)
         assert result.status == "poison"
         assert result.error is not None
 
 
+@pytest.mark.asyncio
 class TestWorkflowIdDeterminism:
-    def test_all_commands_use_run_id_based_workflow_id(self) -> None:
+    async def test_all_commands_use_run_id_based_workflow_id(self) -> None:
         run_id = new_id()
         sender = StubWorkflowSignalSender()
         handler = OutboxSignalHandler(sender=sender)
@@ -359,7 +403,7 @@ class TestWorkflowIdDeterminism:
             ("resume_run", _resume_run_payload),
         ]:
             delivery = _make_delivery(event_key=key, payload=payload_fn(run_id=run_id))
-            handler.handle(delivery)
+            await handler.handle(delivery)
             expected_workflow_id = f"run-{run_id}"
             assert sender.signals[-1]["workflow_id"] == expected_workflow_id
 

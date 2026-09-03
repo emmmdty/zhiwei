@@ -143,6 +143,14 @@ class TestSelfDelegation:
                 task_id="t1", run_id=new_id(), is_self_delegation=True, self_delegation_limit=2
             )
 
+    def test_self_delegation_without_limit_raises(self) -> None:
+        chain = DelegationChain()
+        chain = chain.append(task_id="t1", run_id=new_id())
+        with pytest.raises(DelegationError, match="explicit depth limit"):
+            chain.append(
+                task_id="t1", run_id=new_id(), is_self_delegation=True
+            )
+
 
 class TestDelegationChainCAS:
     """Delegation chain CAS for concurrent child creation."""

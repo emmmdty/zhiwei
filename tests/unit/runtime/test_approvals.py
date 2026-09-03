@@ -221,6 +221,34 @@ class TestExpiryAndRevoke:
         with pytest.raises(ApprovalError, match="expired"):
             mgr.approve(req.id, approver="charlie")
 
+    def test_expired_request_cannot_be_rejected(self) -> None:
+        mgr = _make_manager()
+        req = mgr.create(
+            run_id=new_id(),
+            task_id="t1",
+            input_digest="aaa",
+            requester="alice",
+            input_modifier="alice",
+            agent_identity="agent-v1",
+            expires_at=_past_expiry(),
+        )
+        with pytest.raises(ApprovalError, match="expired"):
+            mgr.reject(req.id, approver="charlie", reason="no")
+
+    def test_expired_request_cannot_be_revoked(self) -> None:
+        mgr = _make_manager()
+        req = mgr.create(
+            run_id=new_id(),
+            task_id="t1",
+            input_digest="aaa",
+            requester="alice",
+            input_modifier="alice",
+            agent_identity="agent-v1",
+            expires_at=_past_expiry(),
+        )
+        with pytest.raises(ApprovalError, match="expired"):
+            mgr.revoke(req.id, revoked_by="alice")
+
     def test_revoke_sets_status(self) -> None:
         mgr = _make_manager()
         req = mgr.create(
