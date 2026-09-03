@@ -145,6 +145,8 @@ class ApprovalRequestManager:
         req = self.get(request_id)
         if req.status != ApprovalStatus.PENDING:
             raise ApprovalError(f"Request already in status '{req.status}'")
+        if req.expires_at is not None and req.expires_at < datetime.now(UTC):
+            raise ApprovalError("Approval request has expired")
         if approver == req.requester or approver == req.last_input_modifier:
             raise ApprovalError(
                 "Approver must be a different human principal from requester/modifier"
@@ -164,6 +166,8 @@ class ApprovalRequestManager:
             raise ApprovalError(
                 f"Cannot revoke request in status '{req.status}'"
             )
+        if req.expires_at is not None and req.expires_at < datetime.now(UTC):
+            raise ApprovalError("Approval request has expired")
         updated = req.model_copy(update={
             "status": ApprovalStatus.REVOKED,
             "resolved_at": datetime.now(UTC),

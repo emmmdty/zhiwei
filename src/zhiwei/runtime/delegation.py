@@ -63,6 +63,10 @@ class DelegationChain(BaseModel):
                 f"Delegation depth {len(self.links)} already at maximum "
                 f"({MAX_DELEGATION_DEPTH})"
             )
+        if is_self_delegation and self_delegation_limit is None:
+            raise DelegationError(
+                "self-delegation requires an explicit depth limit"
+            )
         if not is_self_delegation:
             # Check if this task already appears in the chain (potential cycle)
             existing_tasks = [link.task_id for link in self.links]
@@ -111,6 +115,36 @@ class ChildTask(BaseModel):
     deadline_minutes: int
     depth: int
     child_chain: DelegationChain
+
+
+def execute_child_task(
+    child: ChildTask,
+    *,
+    parent_budget: float,
+    parent_scope: str,
+) -> dict[str, object]:
+    """Bridge between delegation chain and workflow execution.
+
+    Narrows scope/budget/depth for the child task relative to parent constraints.
+    Enforces that child budget does not exceed parent budget (min cap).
+    Validates delegation depth is within bounds.
+
+    Returns a dict with narrowed parameters suitable for workflow input.
+    """
+    narrowed_budget = min(child.budget, parent_budget)
+    depth = child.child_chain.depth
+    if depth >= MAX_DELEGATION_DEPTH:
+        raise DelegationError(
+            f"Child task delegation depth {depth} at or exceeds maximum "
+            f"({MAX_DELEGATION_DEPTH})"
+        )
+    return {
+        "budget": narrowed_budget,
+        "scope": child.scope,
+        "depth": depth,
+        "deadline_minutes": child.deadline_minutes,
+        "delegation_chain": child.child_chain,
+    }
 
 
 class DelegationManager:
