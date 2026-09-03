@@ -65,6 +65,8 @@ REQUIRED_TABLES = {
     "workspace_memberships",
     "workspaces",
     "organization_bootstrap_claims",
+    # S2-T7（0011）：审批旅程持久层（FORCE RLS、org+ws 作用域）
+    "approval_requests",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -80,6 +82,8 @@ WORKSPACE_TABLES = {
     "groups",
     "runs",
     "workspace_memberships",
+    # S2-T7（0011）：审批请求是 workspace 作用域租户数据（org+ws GUC RLS）
+    "approval_requests",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
@@ -110,6 +114,8 @@ TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
 DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships", "group_members"}
 MUTABLE_COLUMNS = {
     "agent_definitions": {"lifecycle", "name"},
+    # S2-T7（0011）：审批决策 CAS 只允许这四列（列级 UPDATE，无表级授权）
+    "approval_requests": {"decided_at", "decided_by", "decision_reason", "status"},
     "canonical_projections": {
         "head_event_digest",
         "sequence_no",

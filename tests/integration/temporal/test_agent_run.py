@@ -9,15 +9,16 @@ timeout/retry、worker kill/restart、signal duplicate、replay、Continue-As-Ne
 from __future__ import annotations
 
 import asyncio
+import uuid as uuid_module
 from uuid import uuid4
 
 import pytest
 
 from zhiwei.agents.task_graph import TaskGraph, TaskGraphNode
 from zhiwei.contracts.identifiers import new_id
+from zhiwei.persistence.runtime_events import RuntimeEventStore
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.runtime.handlers.registry import TaskHandlerRegistry
-from zhiwei.runtime.persistence import RuntimeEventStore
 from zhiwei.workers.agent_worker import DEFAULT_TASK_QUEUE, build_agent_worker
 from zhiwei.workflows.agent_run import AgentRunWorkflow, AgentRunWorkflowInput
 
@@ -48,7 +49,7 @@ def _graph(
 async def _submit_run(
     sessions, context: TenantContext, graph: TaskGraph, **input_kwargs
 ) -> str:
-    from zhiwei.runtime.run_commands import RunCommandService
+    from zhiwei.persistence.run_commands import RunCommandService
 
     run_id = uuid4()
     async with tenant_session(sessions, context) as session:
@@ -433,3 +434,105 @@ class TestSignalsAcrossContinueAsNew:
             store = RuntimeEventStore(session, context)
             state = await store.reduce_state(uuid_module.UUID(run_id))
             assert state.status == "cancelled"
+
+
+class TestApprovalJourney:
+    """S2-T7 RED：RequestApproval 任务 → PG 审批请求 → 决策信号 → 任务终态。"""
+
+    def _approval_graph(self) -> TaskGraph:
+        return _graph(
+            task_types={"intake": "Fixture", "review": "RequestApproval", "final": "Fixture"},
+            deps={"review": ["intake"], "final": ["review"]},
+        )
+
+    async def _approvals_in_pg(self, sessions, context, run_id):
+        from zhiwei.persistence.approvals import ApprovalRequestStore
+        from zhiwei.persistence.tenant import tenant_session as ts
+
+        async with ts(sessions, context) as session:
+            return await ApprovalRequestStore(session, context).list_for_run(uuid_module.UUID(run_id))
+
+    async def test_rejected_approval_fails_run(
+        self, temporal_env, worker_stack
+    ) -> None:
+        _, sessions, context, _registry = worker_stack
+        graph = self._approval_graph()
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                requested_by="alice",
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        # 等 PG 出现 pending 审批请求（create_approval activity 落账）
+        deadline = asyncio.get_event_loop().time() + 30
+        approvals: list = []
+        while asyncio.get_event_loop().time() < deadline:
+            approvals = await self._approvals_in_pg(sessions, context, run_id)
+            if approvals:
+                break
+            await asyncio.sleep(0.1)
+        assert approvals, "create_approval activity never recorded a request"
+        assert approvals[0].status == "pending"
+        assert approvals[0].task_id == "review"
+
+        # 决策经生产命令路径：信号（SoD 由 store 守护——这里直接模拟已裁决信号）
+        await handle.signal("approval_decided", {
+            "command_event_id": str(new_id()),
+            "task_id": "review",
+            "decision": "rejected",
+        })
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "failed"
+        assert "review" in result.failed_tasks
+
+        async with tenant_session(sessions, context) as session:
+            state = await RuntimeEventStore(session, context).reduce_state(
+                uuid_module.UUID(run_id)
+            )
+            assert state.status == "failed"
+
+    async def test_approved_approval_completes_run(
+        self, temporal_env, worker_stack
+    ) -> None:
+        _, sessions, context, _registry = worker_stack
+        graph = self._approval_graph()
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                requested_by="alice",
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        deadline = asyncio.get_event_loop().time() + 30
+        approvals: list = []
+        while asyncio.get_event_loop().time() < deadline:
+            approvals = await self._approvals_in_pg(sessions, context, run_id)
+            if approvals:
+                break
+            await asyncio.sleep(0.1)
+        assert approvals
+        await handle.signal("approval_decided", {
+            "command_event_id": str(new_id()),
+            "task_id": "review",
+            "decision": "approved",
+        })
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "completed"
+        assert "review" in result.completed_tasks
