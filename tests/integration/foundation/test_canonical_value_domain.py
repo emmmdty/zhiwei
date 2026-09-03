@@ -145,5 +145,7 @@ class TestCanonicalValueDomain:
             )
         async with tenant_session(sessions, context) as session:
             events = await RuntimeEventStore(session, context).load_events(parsed)
-        completed = [e for e in events if type(e).__name__ == "TaskCompleted"]
+        from zhiwei.runtime.events import TaskCompleted as TaskCompletedEvent
+
+        completed = [e for e in events if isinstance(e, TaskCompletedEvent)]
         assert completed and completed[0].output_values["ratio"] == 0.25

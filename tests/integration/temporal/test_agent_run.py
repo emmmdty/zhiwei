@@ -573,7 +573,13 @@ class TestFirstTransactionFailure:
                     "simulated infra failure: first transaction never committed"
                 )
 
+        # registry 完整性（批次 C 预检契约）：Fixture handler 必须注册——
+        # 预检在 Run 事件落账前拒绝空 registry（sabotage 目标是首事务，
+        # 不是 registry）
+        from tests.integration.temporal.conftest import CountingFixtureHandler
+
         registry = TaskHandlerRegistry()
+        registry.register(CountingFixtureHandler())
         activities = _InfraBrokenActivities(sessions, registry)
         worker = Worker(
             temporal_env.client,
@@ -649,7 +655,11 @@ class TestFirstTransactionFailure:
             async def execute_task(self, input):  # type: ignore[override]
                 raise RuntimeError("simulated infra failure: first transaction never committed")
 
-        activities = _InfraBrokenActivities(sessions, TaskHandlerRegistry())
+        from tests.integration.temporal.conftest import CountingFixtureHandler
+
+        _registry = TaskHandlerRegistry()
+        _registry.register(CountingFixtureHandler())
+        activities = _InfraBrokenActivities(sessions, _registry)
         worker = Worker(
             temporal_env.client,
             task_queue=DEFAULT_TASK_QUEUE,
@@ -890,15 +900,22 @@ class TestBatchCRepairContracts:
 
         await asyncio.sleep(0.3)
         await handle.signal("pause", {"command_event_id": str(new_id())})
-        await asyncio.sleep(0.5)
-
-        async with tenant_session(sessions, context) as session:
-            state = await RuntimeEventStore(session, context).reduce_state(
-                uuid_module.UUID(run_id)
-            )
-            assert state.status == "paused", (
-                f"暂停期间 PG 真相必须为 paused（实际 {state.status}）"
-            )
+        # 轮询等待落账：workflow 在当前 activity 完成后才观察暂停标志
+        # （单次定点检查在负载下存在时序竞态）
+        deadline = asyncio.get_event_loop().time() + 30
+        last_status: str | None = None
+        paused_seen = False
+        while asyncio.get_event_loop().time() < deadline:
+            async with tenant_session(sessions, context) as session:
+                state = await RuntimeEventStore(session, context).reduce_state(
+                    uuid_module.UUID(run_id)
+                )
+            last_status = state.status
+            if last_status == "paused":
+                paused_seen = True
+                break
+            await asyncio.sleep(0.2)
+        assert paused_seen, f"暂停期间 PG 真相必须为 paused（实际 {last_status}）"
 
         await handle.signal("resume", {"command_event_id": str(new_id())})
         result = await asyncio.wait_for(handle.result(), timeout=60)
@@ -972,11 +989,27 @@ class TestBatchCRepairContracts:
     ) -> None:
         """K-1 并行冲突：ConflictDetected 落 canonical event；Synthesize 降级。"""
         from zhiwei.agents.task_graph import MergeStrategy
+        from zhiwei.runtime.handlers.base import TaskHandler, TaskInput, TaskOutput
+
+        class _ConflictFixtureHandler(TaskHandler):
+            """输出图声明的 conflict 字段（conftest 的 Fixture 只输出
+            task_id——声明字段与输出不符时冲突路径根本不会被走到）。"""
+
+            @property
+            def primitive_type(self) -> str:
+                return "ConflictFixture"
+
+            @property
+            def handler_version(self) -> int:
+                return 1
+
+            def execute(self, input: TaskInput) -> TaskOutput:
+                return TaskOutput(output_values={"decision": f"value-{input.task_id}"})
 
         def _conflict_node(task_id: str) -> TaskGraphNode:
             return TaskGraphNode(
                 task_id=task_id,
-                task_type="Fixture",
+                task_type="ConflictFixture",
                 dependencies=(),
                 parallel_safe=True,
                 required_capability="fixture",
@@ -998,7 +1031,14 @@ class TestBatchCRepairContracts:
             },
             edges={"synth": ["a", "b"]},
         )
-        _, sessions, context, _registry = worker_stack
+        _, sessions, context, registry = worker_stack
+        # registry 完整性（批次 C 预检契约）：本场景 handler 必须注册
+        from zhiwei.runtime.handlers.core import SynthesizeHandler
+
+        if not registry.has_handler("Synthesize"):
+            registry.register(SynthesizeHandler())
+        if not registry.has_handler("ConflictFixture"):
+            registry.register(_ConflictFixtureHandler())
         run_id, handle = await self._start(temporal_env, sessions, context, graph)
         result = await asyncio.wait_for(handle.result(), timeout=60)
         assert result.status == "completed"
