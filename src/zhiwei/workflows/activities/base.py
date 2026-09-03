@@ -1,125 +1,139 @@
-"""S2 runtime: Activity base classes and port definitions。
+"""S2 runtime: Activity contracts — IO models and idempotency key builders。
 
-事实源：design doc §4.3、S2-T3 plan、ADR-005。
+事实源：specs/s2-agent-runtime.md §3/§4、S2-T3 plan。
 
-Activities are the side-effect boundary. Ports (Protocol classes) define the
-contract between workflow orchestration and activity implementations.
-No Temporal SDK dependency — protocols abstract the Temporal integration.
+Activities 是唯一副作用边界。IO 用 dataclass（temporalio 默认 converter 原生支持）；
+幂等键由 workflow 按逻辑身份派生（run/task/attempt/transition），同一逻辑事件跨
+activity 重试只落一次账（先查 has_event 再 append，冲突由 UoW fail-closed 拒绝）。
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol
-from uuid import UUID
+from dataclasses import dataclass, field
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
-
-from zhiwei.agents.task_graph import TaskGraph
-from zhiwei.runtime.events import RuntimeEvent
+_DEFAULT_ACTOR_REF = "agent-runtime:worker"
 
 
-class ActivityError(RuntimeError):
-    """Activity execution failed (timeout, retryable error)."""
-
-
-class EventRepositoryError(RuntimeError):
-    """Event repository operation failed (duplicate key, constraint violation)."""
-
-
-class StartRunInput(BaseModel):
+@dataclass
+class StartRunActivityInput:
     """Input for the start_run activity."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-    graph: TaskGraph
-
-
-class StartRunResult(BaseModel):
-    """Result from the start_run activity."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-    events: list[RuntimeEvent]
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    graph: dict[str, Any]
+    actor_ref: str = _DEFAULT_ACTOR_REF
 
 
-class ScheduleTaskInput(BaseModel):
-    """Input for scheduling or starting a task attempt."""
+@dataclass
+class ExecuteTaskInput:
+    """Input for the execute_task activity.
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    attempt_id 由 workflow 以 workflow.uuid4() 派生（replay 确定）；attempt_no 是
+    workflow 侧的逻辑尝试序号，两者共同构成 TaskStarted 的幂等键。
+    """
 
-    run_id: UUID
+    run_id: str
+    organization_id: str
+    workspace_id: str
     task_id: str
+    task_type: str
+    handler_version: int
+    attempt_id: str
+    attempt_no: int
+    input_values: dict[str, Any] = field(default_factory=dict)
+    actor_ref: str = _DEFAULT_ACTOR_REF
 
 
-class CompleteTaskInput(BaseModel):
-    """Input for completing a task with output values."""
+@dataclass
+class RecordRunTerminalInput:
+    """Input for recording a run-level terminal event."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    outcome: str  # completed | failed | cancelled
+    error: str | None = None
+    reason: str | None = None
+    actor_ref: str = _DEFAULT_ACTOR_REF
 
-    run_id: UUID
+
+@dataclass
+class RecordTaskSkippedInput:
+    """Input for recording a TaskSkipped event (unreachable after dep failure)."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
     task_id: str
-    output_values: dict[str, Any] = Field(default_factory=dict)
+    reason: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
 
 
-class FailTaskInput(BaseModel):
-    """Input for failing a task with an error."""
+@dataclass
+class RecordTaskFailedInput:
+    """Input for recording a TaskFailed event after activity retries exhausted."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
+    run_id: str
+    organization_id: str
+    workspace_id: str
     task_id: str
+    attempt_no: int
     error: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
 
 
-class AppendEventInput(BaseModel):
-    """Input for appending an event to the repository."""
+@dataclass
+class TaskExecutionResult:
+    """Terminal outcome of one task attempt."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    event: RuntimeEvent
-    idempotency_key: str
-
-
-class ActivityResult(BaseModel):
-    """Generic result from an activity invocation."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    success: bool
-    event: RuntimeEvent | None = None
+    task_id: str
+    status: str  # completed | failed
+    attempt_no: int
+    output_values: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
 
 
-class EventRepository(Protocol):
-    """Port for persisting runtime events with idempotency.
+@dataclass
+class ActivityEventAck:
+    """Acknowledgement that logical events are durably committed."""
 
-    Implementations must reject duplicate idempotency keys.
-    """
-
-    def append(self, event: RuntimeEvent, *, idempotency_key: str) -> None: ...
-
-    def get_events(self, run_id: UUID) -> list[RuntimeEvent]: ...
+    run_id: str
+    created_events: int
 
 
-class Activities(Protocol):
-    """Protocol defining all activities available to workflow orchestration.
+def scheduled_key(run_id: str, task_id: str) -> str:
+    return f"task:{run_id}:{task_id}:scheduled"
 
-    Each method corresponds to a Temporal activity. Implementations handle
-    the actual side effects (PG event append, state transitions).
-    """
 
-    def start_run(self, input: StartRunInput) -> StartRunResult: ...
+def started_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:started:{attempt_no}"
 
-    def schedule_task(self, input: ScheduleTaskInput) -> ActivityResult: ...
 
-    def start_attempt(self, input: ScheduleTaskInput) -> ActivityResult: ...
+def attempt_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:attempt:{attempt_no}"
 
-    def complete_task(self, input: CompleteTaskInput) -> ActivityResult: ...
 
-    def fail_task(self, input: FailTaskInput) -> ActivityResult: ...
+def terminal_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:terminal:{attempt_no}"
 
-    def skip_task(self, input: ScheduleTaskInput) -> ActivityResult: ...
 
-    def append_event(self, input: AppendEventInput) -> ActivityResult: ...
+def attempt_terminal_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:attempt-terminal:{attempt_no}"
+
+
+def run_created_key(run_id: str) -> str:
+    return f"run:{run_id}:created"
+
+
+def run_started_key(run_id: str) -> str:
+    return f"run:{run_id}:started"
+
+
+def run_terminal_key(run_id: str, outcome: str) -> str:
+    return f"run:{run_id}:terminal:{outcome}"
+
+
+def task_skipped_key(run_id: str, task_id: str) -> str:
+    return f"task:{run_id}:{task_id}:skipped"

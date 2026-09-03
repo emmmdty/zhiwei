@@ -1,6 +1,6 @@
-"""S2 runtime: Activity implementations for agent workflows。
+"""S2 runtime: Activity contracts and real Temporal activity implementations。
 
-事实源：design doc §4.3、S2-T3 plan。
+事实源：specs/s2-agent-runtime.md §3/§4、S2-T3 plan。
 
 Activities are the side-effect boundary — they append PG events idempotently.
 Workflow orchestration calls activities; activities never call back into workflow.
@@ -9,29 +9,23 @@ Workflow orchestration calls activities; activities never call back into workflo
 from __future__ import annotations
 
 from zhiwei.workflows.activities.base import (
-    ActivityError,
-    ActivityResult,
-    AppendEventInput,
-    CompleteTaskInput,
-    EventRepository,
-    EventRepositoryError,
-    FailTaskInput,
-    ScheduleTaskInput,
-    StartRunInput,
-    StartRunResult,
+    ActivityEventAck,
+    ExecuteTaskInput,
+    RecordRunTerminalInput,
+    RecordTaskFailedInput,
+    RecordTaskSkippedInput,
+    StartRunActivityInput,
+    TaskExecutionResult,
 )
 from zhiwei.workflows.activities.runtime import RuntimeActivities
 
 __all__ = [
-    "ActivityError",
-    "ActivityResult",
-    "AppendEventInput",
-    "CompleteTaskInput",
-    "EventRepository",
-    "EventRepositoryError",
-    "FailTaskInput",
+    "ActivityEventAck",
+    "ExecuteTaskInput",
+    "RecordRunTerminalInput",
+    "RecordTaskFailedInput",
+    "RecordTaskSkippedInput",
     "RuntimeActivities",
-    "ScheduleTaskInput",
-    "StartRunInput",
-    "StartRunResult",
+    "StartRunActivityInput",
+    "TaskExecutionResult",
 ]

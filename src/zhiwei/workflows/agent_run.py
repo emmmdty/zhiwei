@@ -1,304 +1,433 @@
-"""S2 runtime: Temporal workflow for agent runs。
+"""S2 runtime: Temporal workflow for agent runs（deterministic orchestration only）。
 
-事实源：design doc §4.3、S2-T3 plan。
+事实源：specs/s2-agent-runtime.md §3/§4、S2-T3 plan、总设计 §4.3。
 
-Workflow is orchestration only — it determines task ordering and calls activities.
-PG events are the source of truth; workflow history only stores refs.
-No Temporal SDK dependency — WorkflowClient protocol abstracts the integration.
+Workflow 只推进执行位置：排序、并行分派、信号、重试位置、Continue-As-New。全部编排
+决策派生自「图 + 已记录的 activity 结果」（replay 确定）；PG canonical events 是唯一
+业务真相，workflow 不持有权威状态。大 payload 不进 history——图是小的类型化元数据，
+其余输入只携带 refs（run/org/ws id）。
+
+确定性纪律：不使用 wall clock / uuid4 / random；attempt_id 用 workflow.uuid4()，
+时间戳全部由 activity 落账。pydantic 校验（TaskGraph）在 workflow 内是纯函数，
+经 imports_passed_through 显式放行。
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any, Protocol
-from uuid import UUID
+from dataclasses import dataclass, field
+from datetime import timedelta
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from temporalio import workflow
+from temporalio.common import RetryPolicy
 
-from zhiwei.agents.task_graph import TaskGraph
-from zhiwei.contracts.identifiers import new_id
-from zhiwei.runtime.events import (
-    RuntimeEvent,
-    TaskScheduled,
-    TaskStarted,
-)
-from zhiwei.runtime.reducer import RunState, reduce
 from zhiwei.workflows.activities.base import (
-    Activities,
-    ActivityError,
-    CompleteTaskInput,
-    FailTaskInput,
-    ScheduleTaskInput,
-    StartRunInput,
+    ExecuteTaskInput,
+    RecordRunTerminalInput,
+    RecordTaskFailedInput,
+    RecordTaskSkippedInput,
+    StartRunActivityInput,
+)
+
+with workflow.unsafe.imports_passed_through():
+    from zhiwei.agents.task_graph import FailurePolicy, TaskGraph
+
+# 基础设施失败（DB 抖动等）重试；确定性业务拒绝（Run 缺失、schema 未知、
+# 幂等冲突）不重试——重试同样的输入只会得到同样的拒绝。
+_INFRA_RETRY_POLICY = RetryPolicy(
+    maximum_attempts=5,
+    initial_interval=timedelta(milliseconds=200),
+    maximum_interval=timedelta(seconds=2),
+    non_retryable_error_types=[
+        "zhiwei.persistence.unit_of_work.RunNotFound",
+        "zhiwei.runtime.persistence.RuntimeEventSchemaError",
+        "zhiwei.persistence.unit_of_work.EventIdempotencyConflict",
+        "ValueError",
+    ],
 )
 
 
-class WorkflowClientError(RuntimeError):
-    """Workflow client operation failed (duplicate ID, not found)."""
+@dataclass
+class AgentRunWorkflowInput:
+    """Workflow input; carries only refs plus the small typed graph metadata.
+
+    continue-as-new 携带状态：已终态 task 集合与已派发计数（history 不重复存储大状态）。
+    """
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    graph: dict[str, Any]
+    task_queue: str
+    max_task_attempts: int = 3
+    continue_as_new_after: int = 1000
+    activity_timeout_seconds: int = 60
+    actor_ref: str = "agent-runtime:worker"
+    # continue-as-new carried state
+    started: bool = False
+    completed_tasks: list[str] = field(default_factory=list)
+    failed_tasks: list[str] = field(default_factory=list)
+    skipped_tasks: list[str] = field(default_factory=list)
+    attempt_counts: dict[str, int] = field(default_factory=dict)
+    dispatched_total: int = 0
 
 
-class WorkflowRunConfig(BaseModel):
-    """Configuration for starting an agent run workflow."""
+@dataclass
+class AgentRunWorkflowResult:
+    """Terminal summary of the run (a projection of PG truth, not the truth)."""
 
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-    graph: TaskGraph
-    max_attempts: int = Field(default=3, ge=1)
-
-
-class WorkflowExecutionResult(BaseModel):
-    """Result of a workflow execution."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
+    run_id: str
     status: str
-    events: list[dict[str, Any]] = Field(default_factory=list)
+    completed_tasks: list[str]
+    failed_tasks: list[str]
+    skipped_tasks: list[str]
 
 
-class CancelSignal(BaseModel):
-    """Signal to cancel a running workflow."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-
-
-class PauseSignal(BaseModel):
-    """Signal to pause a running workflow."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    run_id: UUID
-
-
-class WorkflowClient(Protocol):
-    """Port for the Temporal workflow client.
-
-    Abstracts the Temporal SDK integration. Implementations handle
-    workflow start, signal, and execution.
-    """
-
-    def start_workflow(
-        self,
-        workflow_type: str,
-        workflow_id: str,
-        input: WorkflowRunConfig,
-    ) -> None: ...
-
-    def execute_workflow(
-        self,
-        workflow_type: str,
-        workflow_id: str,
-        input: WorkflowRunConfig,
-    ) -> WorkflowExecutionResult: ...
-
-    def signal_workflow(
-        self,
-        workflow_id: str,
-        signal_name: str,
-        payload: Any,
-    ) -> None: ...
-
-
+@workflow.defn(name="agent-run")
 class AgentRunWorkflow:
-    """Orchestration workflow for agent runs.
+    """Durable orchestration shell for one agent run."""
 
-    Determines task scheduling order using topological sort and delegates
-    all side effects to activities. PG events are the source of truth.
+    def __init__(self) -> None:
+        self._completed: set[str] = set()
+        self._failed: set[str] = set()
+        self._skipped: set[str] = set()
+        self._attempt_counts: dict[str, int] = {}
+        self._dispatched_total = 0
+        self._cancel_requested = False
+        self._cancel_reason: str | None = None
+        self._paused = False
+        self._seen_signal_ids: set[str] = set()
 
-    The workflow:
-    1. Starts the run via start_run activity
-    2. Schedules tasks in topological order
-    3. Starts attempts and waits for completion/failure
-    4. Skips downstream tasks when dependencies fail
-    5. Handles cancel/pause signals
-    6. Returns terminal state when all tasks are done
-    """
+    @workflow.run
+    async def run(self, input: AgentRunWorkflowInput) -> AgentRunWorkflowResult:
+        graph = TaskGraph.model_validate(input.graph)
+        self._completed = set(input.completed_tasks)
+        self._failed = set(input.failed_tasks)
+        self._skipped = set(input.skipped_tasks)
+        self._attempt_counts = dict(input.attempt_counts)
+        self._dispatched_total = input.dispatched_total
 
-    WORKFLOW_TYPE = "AgentRun"
-
-    def __init__(
-        self,
-        client: WorkflowClient,
-        activities: Activities,
-        *,
-        max_retries: int = 3,
-        signal_queue: list[Any] | None = None,
-    ) -> None:
-        self._client = client
-        self._activities = activities
-        self._max_retries = max_retries
-        self._signal_queue = signal_queue or []
-
-    def start(self, config: WorkflowRunConfig) -> None:
-        """Start the workflow via the client."""
-        workflow_id = f"run-{config.run_id}"
-        self._client.start_workflow(
-            workflow_type=self.WORKFLOW_TYPE,
-            workflow_id=workflow_id,
-            input=config,
-        )
-
-    def run(self, config: WorkflowRunConfig) -> WorkflowExecutionResult:
-        """Execute the workflow orchestration loop.
-
-        Schedules tasks in topological order, calling activities for each
-        state transition. Tracks events directly and reduces them for state.
-        """
-        events: list[RuntimeEvent] = []
-        start_result = self._activities.start_run(
-            StartRunInput(run_id=config.run_id, graph=config.graph)
-        )
-        events.extend(start_result.events)
-        state = reduce(events)
-
-        completed: set[str] = set()
-        cancelled = False
-
-        while not state.is_terminal and not cancelled:
-            cancelled = self._process_signals(config.run_id)
-            if cancelled:
-                break
-
-            ready = config.graph.ready_tasks(completed)
-            if not ready:
-                break
-
-            for task_id in sorted(ready):
-                task_state = state.tasks.get(task_id)
-                if task_state is None or task_state.status != "pending":
-                    continue
-
-                if self._has_failed_dependencies(task_id, config.graph, state):
-                    skip_result = self._activities.skip_task(
-                        ScheduleTaskInput(run_id=config.run_id, task_id=task_id)
-                    )
-                    if skip_result.event is not None:
-                        events.append(skip_result.event)
-                        state = reduce(events)
-                    completed.add(task_id)
-                    continue
-
-                task_events = self._execute_task(config, task_id, events)
-                events.extend(task_events)
-                state = reduce(events)
-                completed.add(task_id)
-
-        if cancelled:
-            status = "cancelled"
-        elif state.is_terminal:
-            has_failure = any(
-                t.status == "failed" for t in state.tasks.values()
+        if not input.started:
+            await workflow.execute_activity(
+                "start_run",
+                StartRunActivityInput(
+                    run_id=input.run_id,
+                    organization_id=input.organization_id,
+                    workspace_id=input.workspace_id,
+                    graph=input.graph,
+                    actor_ref=input.actor_ref,
+                ),
+                schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+                retry_policy=_INFRA_RETRY_POLICY,
+                task_queue=input.task_queue,
             )
-            status = "failed" if has_failure else "completed"
-        else:
-            status = "running"
-        return WorkflowExecutionResult(
-            run_id=config.run_id,
+
+        while True:
+            if self._cancel_requested:
+                await self._record_terminal(input, "cancelled")
+                return self._result(input, "cancelled")
+
+            newly_skipped = self._skip_unreachable(graph, input)
+            for task_id in newly_skipped:
+                await workflow.execute_activity(
+                    "record_task_skipped",
+                    RecordTaskSkippedInput(
+                        run_id=input.run_id,
+                        organization_id=input.organization_id,
+                        workspace_id=input.workspace_id,
+                        task_id=task_id,
+                        reason="dependencies failed",
+                        actor_ref=input.actor_ref,
+                    ),
+                    schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+                    retry_policy=_INFRA_RETRY_POLICY,
+                    task_queue=input.task_queue,
+                )
+
+            terminal = self._terminal_set()
+            ready = [
+                task_id
+                for task_id in self._ready_sorted(graph)
+                if task_id not in terminal
+            ]
+
+            if not ready:
+                if set(graph.nodes) <= self._terminal_set():
+                    outcome = "failed" if self._failed else "completed"
+                    await self._record_terminal(input, outcome)
+                    return self._result(input, outcome)
+                if self._paused:
+                    await workflow.wait_condition(
+                        lambda: not self._paused or self._cancel_requested
+                    )
+                    continue
+                # 无 ready、非全终态、未暂停：依赖失败传播后剩余节点应已被 skip；
+                # 仍卡住说明调度不可推进——fail closed，不静默空转。
+                await self._record_terminal(input, "failed")
+                return self._result(input, "failed")
+
+            if self._paused:
+                await workflow.wait_condition(
+                    lambda: not self._paused or self._cancel_requested
+                )
+                continue
+
+            parallel = [t for t in ready if graph.nodes[t].parallel_safe]
+            serial = [t for t in ready if not graph.nodes[t].parallel_safe]
+
+            # 串行节点逐个执行；并行只读节点并发分派、按 stable task id 顺序收集。
+            for task_id in serial:
+                await self._run_task(input, graph, task_id)
+                if self._cancel_requested:
+                    break
+
+            if parallel and not self._cancel_requested:
+                handles = {
+                    task_id: self._start_task(input, graph, task_id)
+                    for task_id in parallel
+                }
+                for task_id in sorted(handles):
+                    await self._await_and_interpret(input, graph, task_id, handles[task_id])
+
+            self._dispatched_total += len(serial) + len(parallel)
+            if (
+                input.continue_as_new_after > 0
+                and self._dispatched_total >= input.continue_as_new_after
+                and not set(graph.nodes) <= self._terminal_set()
+            ):
+                # continue_as_new 声明为 NoReturn（旧 history 就此截止，新 run 承接
+                # 状态）；await NoReturn 是 SDK 类型存根的已知形态，运行时永不返回。
+                await workflow.continue_as_new(  # pyright: ignore[reportGeneralTypeIssues]
+                    self._carry_input(input)
+                )
+                raise AssertionError("continue_as_new must not return")
+
+    # ------------------------------------------------------------------ signals
+
+    @workflow.signal
+    def cancel(self, payload: dict[str, Any]) -> None:
+        if self._dedupe_signal(payload):
+            return
+        self._cancel_requested = True
+        self._cancel_reason = payload.get("reason")
+
+    @workflow.signal
+    def pause(self, payload: dict[str, Any]) -> None:
+        if self._dedupe_signal(payload):
+            return
+        self._paused = True
+
+    @workflow.signal
+    def resume(self, payload: dict[str, Any]) -> None:
+        if self._dedupe_signal(payload):
+            return
+        self._paused = False
+
+    @workflow.signal
+    def notify(self, payload: dict[str, Any]) -> None:
+        """Generic signal channel (S3+ handler hints); deduplicated by command id."""
+
+        self._dedupe_signal(payload)
+
+    @workflow.query
+    def status(self) -> dict[str, Any]:
+        return {
+            "completed": sorted(self._completed),
+            "failed": sorted(self._failed),
+            "skipped": sorted(self._skipped),
+            "cancelled": self._cancel_requested,
+            "paused": self._paused,
+            "dispatched_total": self._dispatched_total,
+        }
+
+    # ------------------------------------------------------------------ helpers
+
+    def _dedupe_signal(self, payload: dict[str, Any]) -> bool:
+        """Return True when the signal is a duplicate (already seen command id)."""
+
+        signal_id = str(payload.get("command_event_id", ""))
+        if not signal_id or signal_id in self._seen_signal_ids:
+            return bool(signal_id)
+        self._seen_signal_ids.add(signal_id)
+        return False
+
+    def _terminal_set(self) -> set[str]:
+        return self._completed | self._failed | self._skipped
+
+    def _ready_sorted(self, graph: TaskGraph) -> list[str]:
+        ready = graph.ready_tasks(set(self._completed))
+        return sorted(ready)
+
+    def _result(
+        self, input: AgentRunWorkflowInput, status: str
+    ) -> AgentRunWorkflowResult:
+        return AgentRunWorkflowResult(
+            run_id=input.run_id,
             status=status,
-            events=[],
+            completed_tasks=sorted(self._completed),
+            failed_tasks=sorted(self._failed),
+            skipped_tasks=sorted(self._skipped),
         )
 
-    def _execute_task(
-        self,
-        config: WorkflowRunConfig,
-        task_id: str,
-        existing_events: list[RuntimeEvent],
-    ) -> list[RuntimeEvent]:
-        """Execute a single task through schedule -> attempt -> complete.
+    def _carry_input(self, input: AgentRunWorkflowInput) -> AgentRunWorkflowInput:
+        return AgentRunWorkflowInput(
+            run_id=input.run_id,
+            organization_id=input.organization_id,
+            workspace_id=input.workspace_id,
+            graph=input.graph,
+            task_queue=input.task_queue,
+            max_task_attempts=input.max_task_attempts,
+            continue_as_new_after=input.continue_as_new_after,
+            activity_timeout_seconds=input.activity_timeout_seconds,
+            actor_ref=input.actor_ref,
+            started=True,
+            completed_tasks=sorted(self._completed),
+            failed_tasks=sorted(self._failed),
+            skipped_tasks=sorted(self._skipped),
+            attempt_counts=dict(self._attempt_counts),
+            dispatched_total=self._dispatched_total,
+        )
 
-        Returns the list of events generated during task execution.
-        On ActivityError exhaustion, emits prerequisite events then fails.
+    def _skip_unreachable(
+        self, graph: TaskGraph, input: AgentRunWorkflowInput
+    ) -> list[str]:
+        """Mark tasks whose dependencies terminally failed/skipped as skipped.
+
+        依赖失败传播是编排决策（不是数据写入），在 workflow 内确定性计算；TaskSkipped
+        事件由 activity 落账（幂等键 run:task:skipped，重复传播是 no-op）。返回本轮
+        新增 skip 的 task id 列表（sorted，确定性）。
         """
-        task_events: list[RuntimeEvent] = []
+        newly_skipped: list[str] = []
+        changed = True
+        while changed:
+            changed = False
+            for task_id in sorted(graph.nodes):
+                if task_id in self._terminal_set():
+                    continue
+                blocked = [
+                    dep
+                    for dep in graph.nodes[task_id].dependencies
+                    if dep in self._failed or dep in self._skipped
+                ]
+                if blocked:
+                    self._skipped.add(task_id)
+                    newly_skipped.append(task_id)
+                    changed = True
+        return newly_skipped
+
+    def _start_task(
+        self, input: AgentRunWorkflowInput, graph: TaskGraph, task_id: str
+    ) -> Any:
+        attempt_no = self._attempt_counts.get(task_id, 0) + 1
+        self._attempt_counts[task_id] = attempt_no
+        node = graph.nodes[task_id]
+        activity_input = ExecuteTaskInput(
+            run_id=input.run_id,
+            organization_id=input.organization_id,
+            workspace_id=input.workspace_id,
+            task_id=task_id,
+            task_type=node.task_type,
+            handler_version=1,
+            attempt_id=str(workflow.uuid4()),
+            attempt_no=attempt_no,
+            input_values={},
+            actor_ref=input.actor_ref,
+        )
+        return workflow.start_activity(
+            "execute_task",
+            activity_input,
+            schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+            retry_policy=_INFRA_RETRY_POLICY,
+            task_queue=input.task_queue,
+        )
+
+    async def _run_task(
+        self, input: AgentRunWorkflowInput, graph: TaskGraph, task_id: str
+    ) -> None:
+        await self._await_and_interpret(
+            input, graph, task_id, self._start_task(input, graph, task_id)
+        )
+
+    async def _await_and_interpret(
+        self,
+        input: AgentRunWorkflowInput,
+        graph: TaskGraph,
+        task_id: str,
+        handle: Any,
+    ) -> None:
+        from temporalio.exceptions import ActivityError
 
         try:
-            schedule_result = self._invoke_with_retry(
-                lambda: self._activities.schedule_task(
-                    ScheduleTaskInput(run_id=config.run_id, task_id=task_id)
-                ),
-            )
-            if schedule_result.event is not None:
-                task_events.append(schedule_result.event)
+            result = await handle
+        except ActivityError as exc:
+            await self._interpret(input, graph, task_id, exc)
+            return
+        await self._interpret(input, graph, task_id, result)
 
-            attempt_result = self._invoke_with_retry(
-                lambda: self._activities.start_attempt(
-                    ScheduleTaskInput(run_id=config.run_id, task_id=task_id)
-                ),
-            )
-            if attempt_result.event is not None:
-                task_events.append(attempt_result.event)
-
-            complete_result = self._invoke_with_retry(
-                lambda: self._activities.complete_task(
-                    CompleteTaskInput(
-                        run_id=config.run_id,
-                        task_id=task_id,
-                        output_values={},
-                    )
-                ),
-            )
-            if complete_result.event is not None:
-                task_events.append(complete_result.event)
-
-        except ActivityError:
-            now = datetime.now(tz=UTC)
-            task_events.append(TaskScheduled(
-                run_id=config.run_id, timestamp=now, task_id=task_id,
-            ))
-            task_events.append(TaskStarted(
-                run_id=config.run_id, timestamp=now,
-                task_id=task_id, attempt_id=new_id(),
-            ))
-            fail_result = self._activities.fail_task(
-                FailTaskInput(
-                    run_id=config.run_id,
-                    task_id=task_id,
-                    error="activity retries exhausted",
-                )
-            )
-            if fail_result.event is not None:
-                task_events.append(fail_result.event)
-
-        return task_events
-
-    def _process_signals(self, run_id: UUID) -> bool:
-        """Process pending signals. Returns True if workflow should stop."""
-        processed: list[Any] = []
-        should_stop = False
-        for signal in self._signal_queue:
-            if isinstance(signal, CancelSignal) and signal.run_id == run_id:
-                should_stop = True
-            processed.append(signal)
-        self._signal_queue.clear()
-        self._signal_queue.extend(processed)
-        return should_stop
-
-    def _invoke_with_retry(self, fn: Any) -> Any:
-        """Invoke an activity function with retry on ActivityError."""
-        last_error: ActivityError | None = None
-        for _attempt in range(self._max_retries):
-            try:
-                return fn()
-            except ActivityError as exc:
-                last_error = exc
-                continue
-        if last_error is not None:
-            raise last_error
-        raise ActivityError("retry loop completed without result")
-
-    def _has_failed_dependencies(
+    async def _interpret(
         self,
-        task_id: str,
+        input: AgentRunWorkflowInput,
         graph: TaskGraph,
-        state: RunState,
-    ) -> bool:
-        """Check if any dependency of a task has failed or been skipped."""
-        deps = graph.edges.get(task_id, [])
-        for dep_id in deps:
-            dep_state = state.tasks.get(dep_id)
-            if dep_state is not None and dep_state.status in ("failed", "skipped"):
-                return True
-        return False
+        task_id: str,
+        result: Any,
+    ) -> None:
+        from temporalio.exceptions import ActivityError
+
+        if isinstance(result, ActivityError):
+            # activity 基础设施重试耗尽（handler 挂起超时等）→ TaskFailed 终态
+            await workflow.execute_activity(
+                "record_task_failed",
+                RecordTaskFailedInput(
+                    run_id=input.run_id,
+                    organization_id=input.organization_id,
+                    workspace_id=input.workspace_id,
+                    task_id=task_id,
+                    attempt_no=self._attempt_counts.get(task_id, 1),
+                    error=f"activity exhausted: {result}",
+                    actor_ref=input.actor_ref,
+                ),
+                schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+                retry_policy=_INFRA_RETRY_POLICY,
+                task_queue=input.task_queue,
+            )
+            self._failed.add(task_id)
+            return
+
+        # string-name 调用经默认 converter 解码为 dict（无 activity 侧类型信息）
+        if result["status"] == "completed":
+            self._completed.add(task_id)
+            return
+
+        # 业务失败：按节点 failure policy 决定重试或终态
+        node = graph.nodes[task_id]
+        attempt_no = self._attempt_counts.get(task_id, 1)
+        can_retry = (
+            node.failure_policy == FailurePolicy.RETRY
+            and attempt_no < input.max_task_attempts
+        )
+        if can_retry:
+            await self._run_task(input, graph, task_id)
+            return
+        if node.failure_policy == FailurePolicy.CANCEL:
+            self._cancel_requested = True
+            self._cancel_reason = f"task {task_id} failed with cancel policy"
+        self._failed.add(task_id)
+
+    async def _record_terminal(
+        self, input: AgentRunWorkflowInput, outcome: str
+    ) -> None:
+        await workflow.execute_activity(
+            "record_run_terminal",
+            RecordRunTerminalInput(
+                run_id=input.run_id,
+                organization_id=input.organization_id,
+                workspace_id=input.workspace_id,
+                outcome=outcome,
+                error=self._cancel_reason,
+                reason=self._cancel_reason,
+                actor_ref=input.actor_ref,
+            ),
+            schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+            retry_policy=_INFRA_RETRY_POLICY,
+            task_queue=input.task_queue,
+        )
