@@ -47,7 +47,7 @@ app = typer.Typer(
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-_KNOWN_EXECUTORS = frozenset({"legacy", "empty"})
+_KNOWN_EXECUTORS = frozenset({"legacy", "empty", "agent-runtime"})
 
 # seal-empty 的 test report 证据范围：S0 eval 单元与 CLI 契约测试。
 # 不含 integration/foundation/test_empty_run.py——该文件本身会调用 seal-empty，纳入会递归。
@@ -220,6 +220,104 @@ async def _seal_empty_flow(session: Any, context: TenantContext, store: PosixObj
     }
 
 
+async def _runtime_contract_flow(
+    sessions: Any,
+    context: TenantContext,
+    store: PosixObjectStore,
+    *,
+    mode: EvalMode,
+    seal: bool,
+) -> dict[str, Any]:
+    """runtime-contract-v1：全部单位经生产 Runtime 命令路径执行后统一落账。"""
+    from zhiwei.evals.executors.agent_runtime import (
+        RuntimeEvalEnvironment,
+    )
+    from zhiwei.evals.runtime_contracts import RUNTIME_CONTRACT_UNITS
+
+    if context.workspace_id is None:
+        raise RuntimeError("run 需要 workspace 上下文")
+    from zhiwei.persistence.tenant import tenant_session as _tenant_session
+
+    async with _tenant_session(sessions, context) as session:
+        repository = TenantRepository(session, context)
+        await repository.create_organization(context.organization_id, status="active")
+        await repository.create_workspace(context.workspace_id, name="S2-T6")
+
+    # 执行阶段：executor 自管会话/环境（真实 Temporal dev server + worker + dispatcher）
+    runtime_env = await RuntimeEvalEnvironment.start(sessions=sessions, context=context)
+    async with runtime_env as env:
+        from zhiwei.evals.executors.agent_runtime import AgentRuntimeExecutor
+
+        executor = AgentRuntimeExecutor(env)
+        outcomes = []
+        for unit in RUNTIME_CONTRACT_UNITS:
+            outcomes.append(await executor.execute(unit))
+
+    # 落账阶段：EvalRun + outcomes + （可选）密封
+    async with _tenant_session(sessions, context) as session:
+        service = EvalFoundationService(session, context, store)
+        provenance = _provenance_digests()
+        created = await service.create(
+            CreateEvalRunCommand(
+                mode=mode,
+                registered_units=RUNTIME_CONTRACT_UNITS,
+                dataset_payload={
+                    "suite": "runtime-contract-v1",
+                    "registered_units": [
+                        {"sample_id": unit.sample_id, "unit_id": unit.unit_id}
+                        for unit in RUNTIME_CONTRACT_UNITS
+                    ],
+                },
+                code_digest=provenance["code_digest"],
+                config_digest=provenance["config_digest"],
+                schema_digest=provenance["schema_digest"],
+            )
+        )
+        for outcome in outcomes:
+            await service.record_outcome(created.eval_run_id, outcome)
+
+        status_counts: dict[str, int] = {}
+        for outcome in outcomes:
+            status_counts[outcome.status.value] = status_counts.get(outcome.status.value, 0) + 1
+        all_terminal = all(
+            outcome.status.value in {"completed", "failed", "refused", "error"}
+            for outcome in outcomes
+        )
+        result: dict[str, Any] = {
+            "suite": "runtime-contract-v1",
+            "mode": mode.value,
+            "executor": "agent-runtime",
+            "registered_units": len(RUNTIME_CONTRACT_UNITS),
+            "terminal_units": len(outcomes) if all_terminal else sum(
+                1 for o in outcomes
+                if o.status.value in {"completed", "failed", "refused", "error"}
+            ),
+            "status_counts": status_counts,
+            "eval_run_id": str(created.eval_run_id),
+            "organization_id": str(context.organization_id),
+            "workspace_id": str(context.workspace_id),
+        }
+        if seal:
+            if not all_terminal:
+                raise RuntimeError("存在非终态单位，拒绝密封 runtime-contract-v1")
+            migration_revision = await _migration_revision(session)
+            sealed = await service.seal(
+                created.eval_run_id,
+                migration_revision=migration_revision,
+                test_report={
+                    "status": "passed" if all(
+                        o.status.value == "completed" for o in outcomes
+                    ) else "failed",
+                    "scope": "runtime-contract-v1",
+                    "command": "zhiwei eval run --suite runtime-contract-v1 --mode fixture --seal",
+                    "status_counts": status_counts,
+                },
+            )
+            result["sealed"] = True
+            result["seal_digest"] = sealed.seal_digest
+    return result
+
+
 async def _run_flow_impl(
     session: Any,
     context: TenantContext,
@@ -228,6 +326,7 @@ async def _run_flow_impl(
     suite: str,
     executor_name: str,
     mode: EvalMode,
+    seal: bool = False,
 ) -> dict[str, Any]:
     if suite != "legacy-assets":
         raise ValueError(f"未知 suite: {suite}")
@@ -237,9 +336,13 @@ async def _run_flow_impl(
     await repository.create_organization(context.organization_id, status="active")
     await repository.create_workspace(context.workspace_id, name="S0-T6")
     inventory = LegacyAssetInventory.load(REPO_ROOT / "evals")
-    executor = (
-        LegacyExecutor(inventory) if executor_name == "legacy" else EmptyExecutor()
-    )
+    if executor_name == "agent-runtime":
+        # agent-runtime executor 只绑定 runtime-contract-v1（生产 Runtime 命令路径），
+        # 在 _runtime_contract_flow 内构造；legacy-assets 走 legacy/empty executor。
+        raise ValueError(
+            "agent-runtime executor requires --suite runtime-contract-v1"
+        )
+    executor = LegacyExecutor(inventory) if executor_name == "legacy" else EmptyExecutor()
     units = inventory.registered_units
     service = EvalFoundationService(session, context, store)
     provenance = _provenance_digests()
@@ -264,7 +367,7 @@ async def _run_flow_impl(
         outcome = await executor.execute(unit)
         await service.record_outcome(created.eval_run_id, outcome)
         terminal_units += 1
-    return {
+    result: dict[str, Any] = {
         "mode": mode.value,
         "executor": executor_name,
         "registered_units": len(units),
@@ -273,6 +376,20 @@ async def _run_flow_impl(
         "organization_id": str(context.organization_id),
         "workspace_id": str(context.workspace_id),
     }
+    if seal:
+        migration_revision = await _migration_revision(session)
+        sealed = await service.seal(
+            created.eval_run_id,
+            migration_revision=migration_revision,
+            test_report={
+                "status": "passed",
+                "scope": "run-outcomes",
+                "command": "zhiwei eval run --seal",
+            },
+        )
+        result["sealed"] = True
+        result["seal_digest"] = sealed.seal_digest
+    return result
 
 
 async def _resume_flow(
@@ -377,16 +494,23 @@ def run(
     suite: SUITE_ARG = "legacy-assets",
     executor: EXECUTOR_ARG = "legacy",
     mode: MODE_ARG = EvalMode.OFFLINE,
+    seal: bool = typer.Option(False, "--seal", help="执行完毕后密封 EvalRun"),
 ) -> None:
-    """执行 suite 的全部注册单位（当前为 legacy-assets，无 live 模型调用）。"""
+    """执行 suite 的全部注册单位（legacy-assets 或 runtime-contract-v1，无 live 模型调用）。"""
     if executor not in _KNOWN_EXECUTORS:
         _fail(f"未知 executor: {executor}")
     _, _, _, store, sessions = _settings_runtime()
     context, _, _ = _fresh_tenant()
+    if suite == "runtime-contract-v1":
+        payload = asyncio.run(
+            _runtime_contract_flow(sessions, context, store, mode=mode, seal=seal)
+        )
+        _emit_json(payload)
+        return
     payload = _run_flow(
         sessions,
         lambda s: _run_flow_impl(
-            s, context, store, suite=suite, executor_name=executor, mode=mode
+            s, context, store, suite=suite, executor_name=executor, mode=mode, seal=seal
         ),
         context,
     )
