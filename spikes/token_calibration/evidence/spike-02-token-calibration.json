@@ -1,0 +1,322 @@
+{
+  "spike": "spike-02 token estimator calibration",
+  "adr": "ADR-002",
+  "verdict": "FEASIBLE",
+  "environment": {
+    "python": "3.11.15",
+    "note": "simulated provider actuals, no live model calls",
+    "estimators_tested": [
+      "char_estimator",
+      "word_estimator",
+      "structure_estimator"
+    ],
+    "content_types_tested": [
+      "english_text",
+      "chinese_text",
+      "json_tool_schema",
+      "python_code",
+      "mixed_prompt",
+      "long_document"
+    ]
+  },
+  "scenarios": [
+    {
+      "name": "S1-estimator-accuracy",
+      "question": "Compare estimator accuracy across content types without calibration",
+      "passed": true,
+      "checks": [
+        {
+          "id": "all_estimators_have_errors",
+          "ok": true,
+          "detail": "All estimators produce non-zero MAE across content types"
+        },
+        {
+          "id": "structure_estimator_best_on_json",
+          "ok": true,
+          "detail": "Best on JSON: structure_estimator (MAE=3.00)"
+        }
+      ],
+      "facts": {
+        "mae_by_estimator_and_content": {
+          "char_estimator": {
+            "english_text": 1074.17,
+            "chinese_text": 124.7,
+            "json_tool_schema": 36.0,
+            "python_code": 131.0,
+            "mixed_prompt": 360.0,
+            "long_document": 143.0
+          },
+          "word_estimator": {
+            "english_text": 1065.83,
+            "chinese_text": 197.7,
+            "json_tool_schema": 263.0,
+            "python_code": 187.8,
+            "mixed_prompt": 537.0,
+            "long_document": 152.0
+          },
+          "structure_estimator": {
+            "english_text": 923.37,
+            "chinese_text": 99.7,
+            "json_tool_schema": 3.0,
+            "python_code": 62.07,
+            "mixed_prompt": 319.0,
+            "long_document": 126.0
+          }
+        }
+      }
+    },
+    {
+      "name": "S2-calibration-error-reduction",
+      "question": "Calibrate with N=50 samples, test on held-out set, measure error reduction",
+      "passed": true,
+      "checks": [
+        {
+          "id": "cal_improves_mae_english_text",
+          "ok": true,
+          "detail": "english_text: pre_mae=1078.30 post_mae=42.55"
+        },
+        {
+          "id": "cal_improves_mae_chinese_text",
+          "ok": true,
+          "detail": "chinese_text: pre_mae=125.22 post_mae=5.15"
+        },
+        {
+          "id": "cal_improves_mae_json_tool_schema",
+          "ok": true,
+          "detail": "json_tool_schema: pre_mae=36.00 post_mae=0.00"
+        },
+        {
+          "id": "cal_improves_mae_python_code",
+          "ok": true,
+          "detail": "python_code: pre_mae=126.80 post_mae=4.75"
+        },
+        {
+          "id": "cal_improves_mae_mixed_prompt",
+          "ok": true,
+          "detail": "mixed_prompt: pre_mae=360.00 post_mae=0.00"
+        },
+        {
+          "id": "cal_improves_mae_long_document",
+          "ok": true,
+          "detail": "long_document: pre_mae=143.00 post_mae=0.00"
+        }
+      ],
+      "facts": {
+        "train_size": 50,
+        "test_size": 20,
+        "base_estimator": "char_estimator"
+      }
+    },
+    {
+      "name": "S3-margin-covers-worst-case",
+      "question": "Verify margin: 99th percentile error covers worst case in held-out set",
+      "passed": true,
+      "checks": [
+        {
+          "id": "margin_covers_held_out_errors",
+          "ok": true,
+          "detail": "margin=70, coverage=95.00%, max_test_error=71"
+        },
+        {
+          "id": "margin_is_non_negative",
+          "ok": true,
+          "detail": "margin=70"
+        },
+        {
+          "id": "margin_at_least_p99_training",
+          "ok": true,
+          "detail": "margin=70 >= p99_train=70"
+        }
+      ],
+      "facts": {
+        "margin": 70,
+        "max_test_error": 71
+      }
+    },
+    {
+      "name": "S4-context-length-exceeded-mapping",
+      "question": "context_length_exceeded → context_refusal mapping logic",
+      "passed": true,
+      "checks": [
+        {
+          "id": "maps_to_refusal",
+          "ok": true,
+          "detail": "context_length_exceeded → context_refusal"
+        },
+        {
+          "id": "other_errors_map_to_provider_failure",
+          "ok": true,
+          "detail": "Other errors (['rate_limit', 'server_error', 'invalid_request', 'timeout']) → provider_failure"
+        },
+        {
+          "id": "context_refusal_triggers_recalibration",
+          "ok": true,
+          "detail": "context_refusal triggers estimator recalibration"
+        }
+      ],
+      "facts": {
+        "error_mapping": {
+          "context_length_exceeded": "context_refusal",
+          "default": "provider_failure"
+        },
+        "recalibration_trigger": "context_refusal"
+      }
+    },
+    {
+      "name": "S5-recalibration-updates-margin",
+      "question": "Add new data, verify margin updates on recalibration",
+      "passed": true,
+      "checks": [
+        {
+          "id": "margin_updated_after_recalibration",
+          "ok": true,
+          "detail": "Before: n=30 margin=70, After: n=50 margin=98"
+        },
+        {
+          "id": "sample_count_increased",
+          "ok": true,
+          "detail": "Total samples after recalibration: 50"
+        },
+        {
+          "id": "scale_parameters_updated",
+          "ok": true,
+          "detail": "scale: 5.3017 → 5.4876, bias: -8.4305 → -56.2194"
+        }
+      ],
+      "facts": {
+        "initial_samples": 30,
+        "new_samples": 20,
+        "result1": {
+          "scale": 5.30171,
+          "bias": -8.4305,
+          "margin": 70,
+          "pre_calib": {
+            "mae": 1074.1667,
+            "mape": 81.0034,
+            "max_error": 1176,
+            "mean_error": -1074.1667,
+            "stddev_error": 51.6863,
+            "percentile_95": 1159,
+            "percentile_99": 1176,
+            "n": 30
+          },
+          "post_calib": {
+            "mae": 32.1,
+            "mape": 2.4087,
+            "max_error": 70,
+            "mean_error": 0.5,
+            "stddev_error": 37.0763,
+            "percentile_95": 70,
+            "percentile_99": 70,
+            "n": 30
+          }
+        },
+        "result2": {
+          "scale": 5.487552,
+          "bias": -56.2194,
+          "margin": 98,
+          "pre_calib": {
+            "mae": 1303.06,
+            "mape": 81.0954,
+            "max_error": 1761,
+            "mean_error": -1303.06,
+            "stddev_error": 288.4242,
+            "percentile_95": 1751,
+            "percentile_99": 1761,
+            "n": 50
+          },
+          "post_calib": {
+            "mae": 42.12,
+            "mape": 2.5822,
+            "max_error": 98,
+            "mean_error": 0.6,
+            "stddev_error": 49.0208,
+            "percentile_95": 93,
+            "percentile_99": 98,
+            "n": 50
+          }
+        }
+      }
+    },
+    {
+      "name": "S6-fail-closed-unknown-profile",
+      "question": "Unknown profile defaults to level 3 conservative margin",
+      "passed": true,
+      "checks": [
+        {
+          "id": "unknown_defaults_to_level_3",
+          "ok": true,
+          "detail": "token_counting_level=None → effective_level=3"
+        },
+        {
+          "id": "level_3_uses_margin",
+          "ok": true,
+          "detail": "margin_source=conservative_default"
+        },
+        {
+          "id": "conservative_margin_applied",
+          "ok": true,
+          "detail": "raw=3 with_margin=13"
+        }
+      ],
+      "facts": {
+        "token_counting_level": null,
+        "effective_level": 3,
+        "raw_estimate": 3,
+        "safe_estimate": 13,
+        "conservative_margin": 10
+      }
+    },
+    {
+      "name": "S7-stress-test-large-input",
+      "question": "100K+ character inputs: verify estimator doesn't crash",
+      "passed": true,
+      "checks": [
+        {
+          "id": "input_large_enough",
+          "ok": true,
+          "detail": "Input length: 110,000 chars"
+        },
+        {
+          "id": "char_estimator_completes",
+          "ok": true,
+          "detail": "char_estimator: estimated 27,500 tokens for 110,000 chars"
+        },
+        {
+          "id": "char_estimator_reasonable",
+          "ok": true,
+          "detail": "char_estimator: 27,500 tokens (should be > 1000 for 100K chars)"
+        },
+        {
+          "id": "word_estimator_completes",
+          "ok": true,
+          "detail": "word_estimator: estimated 21,921 tokens for 110,000 chars"
+        },
+        {
+          "id": "word_estimator_reasonable",
+          "ok": true,
+          "detail": "word_estimator: 21,921 tokens (should be > 1000 for 100K chars)"
+        },
+        {
+          "id": "structure_estimator_completes",
+          "ok": true,
+          "detail": "structure_estimator: estimated 44,000 tokens for 110,000 chars"
+        },
+        {
+          "id": "structure_estimator_reasonable",
+          "ok": true,
+          "detail": "structure_estimator: 44,000 tokens (should be > 1000 for 100K chars)"
+        },
+        {
+          "id": "calibrated_estimator_completes",
+          "ok": true,
+          "detail": "calibrated: 30,246 tokens"
+        }
+      ],
+      "facts": {
+        "input_length": 110000,
+        "target_tokens": 110000
+      }
+    }
+  ]
+}

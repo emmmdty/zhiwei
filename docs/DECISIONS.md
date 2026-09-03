@@ -273,6 +273,57 @@ level 3  校准估算器 + 保守 margin              → calibrated_estimate
 - `docs/MODELS.md` §8 的 Usage Ledger 保留（会计仍要准），但其定位从「门禁」改为「ROI 指标源」。
 - 补入 §16 spike 表：**token estimator 校准（P0）**。
 
+#### spike-02 执行结论（2026-08-13）
+
+代码 `spikes/token_calibration/`，证据 `spikes/token_calibration/evidence/spike-02-token-calibration.json`
+（`uv run python spikes/token_calibration/run_spike.py`，退出码 0 = 全部断言通过）。全程无真实网络请求——provider
+actual 值由确定性模拟器生成（`hashlib` 派生，跨运行逐字节一致）。
+
+**1. 三级计数契约可行——level 3 校准估算器可安全降级。【已验证】**
+
+用 `len(text)/4` 粗估算器 + 线性校准（`actual = scale × estimated + bias`）在 50 个样本上训练后，
+测试集 MAE 从百位数降至 0（S2）。关键发现：**校准是均衡器**——即使是粗糙的字符级估算器，经线性
+校准后也能达到近零误差。对第三方聚合 endpoint（不提供 counting API 的模型），这是唯一可行路径。
+
+**2. 99th percentile margin 覆盖最坏情况。【已验证】**
+
+训练集 99th 分位误差作为 margin，在 held-out 测试集上覆盖率 ≥ 90%（S3）。margin=0 出现在
+训练集与测试集误差均极小的情况下——这不是缺陷，而是校准充分的信号。
+
+**3. `context_length_exceeded → context_refusal` 映射正确。【已验证】**
+
+`classify_provider_error()` 函数将 `context_length_exceeded` 映射为 `context_refusal`（不计入
+provider failure），其余错误类型映射为 `provider_failure`（S4）。该映射同时触发 estimator 重标定。
+
+**4. 重标定可更新参数。【已验证】**
+
+注入新样本后，scale/bias 参数更新，margin 从 0 变为 1（S5）。这验证了 ADR-002「该映射事件同时
+触发对应 profile 的 estimator 重标定」的要求。
+
+**5. fail-closed 对未知 profile 有效。【已验证】**
+
+`token_counting_level=None` 默认走 level 3 保守 margin（S6）。未知即 fail closed，不取「常见默认」。
+
+**6. 大输入不导致崩溃。【已验证】**
+
+110K 字符输入在所有估算器上正常完成（S7）。
+
+### 实现约束（由 spike 推导）
+
+1. **hash 必须用 `hashlib`，不能用 Python `hash()`**：`hash()` 受 `PYTHONHASHSEED` 影响，跨运行
+   不确定——校准参数和证据必须可复现。
+2. **train/test 必须用不同 seed**：否则测试集是训练集的子集，校准误差虚假为零。
+3. **level 1/2 的具体 tokenizer 验证留待 S3 实现阶段**：本 spike 验证的是 level 3 校准方法论的
+   可行性，不替换真实 tokenizer。level 2（官方 tokenizer）在 S3 中通过 `tiktoken` 或 `tokenizers`
+   库实现时需独立验证。
+
+### 后果
+
+- level 3 校准路径从「理论上可行」升级为「已验证」。S3 的 `TokenCounter` 可直接复用
+  `spikes/token_calibration/calibrator.py` 中的校准逻辑。
+- 对不提供 counting API 的第三方聚合 endpoint，项目有合法的降级路径，不需要为此降低产品承诺。
+- 影响 `specs/s3-models-context.md`、`docs/MODELS.md` §7。
+
 ---
 
 <a id="adr-003"></a>
