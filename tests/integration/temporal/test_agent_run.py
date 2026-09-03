@@ -536,3 +536,91 @@ class TestApprovalJourney:
         result = await asyncio.wait_for(handle.result(), timeout=60)
         assert result.status == "completed"
         assert "review" in result.completed_tasks
+
+
+class TestFirstTransactionFailure:
+    """S2 修复轮 RED（复审 C-1）：写入侧不得产生 reducer 拒绝的事件序列。
+
+    场景：execute_task 的第一个事务（TaskScheduled/AttemptCreated/TaskStarted 落账）
+    遇基础设施故障且重试耗尽——workflow 此时会追加 TaskFailed 终态。若写入侧不补全
+    前置生命周期事件，reducer 对 pending→failed 直接抛 ValueError，该 run 的每次
+    reduce（详情/SSE/replay-check/eval seal）都崩溃且无自愈路径，违背「PG event 为
+    真相」的可消费性（spec §6 写入侧守护，ADR-012 测试层级【I】）。
+    """
+
+    async def test_task_failed_without_prior_events_keeps_sequence_reducible(
+        self, temporal_env, database
+    ) -> None:
+        from temporalio import activity
+        from temporalio.worker import Worker
+
+        from zhiwei.workflows.activities.runtime import RuntimeActivities
+
+        _, sessions, context = database
+        graph = _graph(task_types={"t1": "Fixture"})
+        run_id = await _submit_run(sessions, context, graph)
+
+        class _InfraBrokenActivities(RuntimeActivities):
+            """execute_task 在第一个事务提交前持续失败（模拟 DB 故障重试耗尽）。
+
+            record_* 与 start_run 保持真实：只有 execute_task 的前置事务被破坏，
+            其余落账路径（record_task_failed/record_run_terminal）必须照常工作。
+            """
+
+            @activity.defn
+            async def execute_task(self, input):  # type: ignore[override]
+                raise RuntimeError(
+                    "simulated infra failure: first transaction never committed"
+                )
+
+        registry = TaskHandlerRegistry()
+        activities = _InfraBrokenActivities(sessions, registry)
+        worker = Worker(
+            temporal_env.client,
+            task_queue=DEFAULT_TASK_QUEUE,
+            workflows=[AgentRunWorkflow],
+            activities=[
+                activities.start_run,
+                activities.execute_task,
+                activities.create_approval,
+                activities.record_approval_outcome,
+                activities.record_run_terminal,
+                activities.record_task_skipped,
+                activities.record_task_failed,
+            ],
+        )
+        async with worker:
+            client = temporal_env.client
+            handle = await client.start_workflow(
+                AgentRunWorkflow.run,
+                AgentRunWorkflowInput(
+                    run_id=run_id,
+                    organization_id=str(context.organization_id),
+                    workspace_id=str(context.workspace_id),
+                    graph=graph.model_dump(mode="json"),
+                    task_queue=DEFAULT_TASK_QUEUE,
+                ),
+                id=f"run-{run_id}",
+                task_queue=DEFAULT_TASK_QUEUE,
+            )
+            # 基础设施重试耗尽（5 次退避约 3s）后 ActivityError → TaskFailed 落账
+            result = await asyncio.wait_for(handle.result(), timeout=60)
+            assert result.status == "failed"
+            assert result.failed_tasks == ["t1"]
+
+        # 真相层可消费：reduce 不抛异常，任务投影为 failed、run 到终态
+        async with tenant_session(sessions, context) as session:
+            store = RuntimeEventStore(session, context)
+            state = await store.reduce_state(uuid_module.UUID(run_id))
+            assert state.status == "failed"
+            assert state.tasks["t1"].status == "failed"
+
+            # TaskFailed 之前必须存在完整生命周期（写入侧补全，不是只落终态）
+            events = await store.load_events(uuid_module.UUID(run_id))
+            types = [type(e).__name__ for e in events]
+            assert "TaskFailed" in types
+            scheduled_at = types.index("TaskScheduled")
+            attempt_at = types.index("AttemptCreated")
+            started_at = types.index("TaskStarted")
+            failed_at = types.index("TaskFailed")
+            assert scheduled_at < attempt_at < started_at < failed_at
