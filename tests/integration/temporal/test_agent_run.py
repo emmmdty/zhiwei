@@ -373,3 +373,63 @@ class TestWorkflowReplay:
         history = await handle.fetch_history()
         replayer = Replayer(workflows=[AgentRunWorkflow])
         await replayer.replay_workflow(history=history)
+
+
+class TestSignalsAcrossContinueAsNew:
+    """S2 修复轮 RED（Reviewer B #1）：信号状态必须跨 Continue-As-New 存活。
+
+    CAN 只携带任务集合时，cancel/pause/seen_signal_ids 全部丢失——CANCEL failure
+    policy 或 operator cancel 落在 CAN 之后即被静默吞掉（run 照常 completed）。
+    """
+
+    async def test_cancel_after_continue_as_new_still_cancels(
+        self, temporal_env, worker_stack
+    ) -> None:
+        from tests.integration.temporal.conftest import SlowFixtureHandler
+
+        _, sessions, context, registry = worker_stack
+        # 2s/task：保证 cancel 稳定落在「之后还会 CAN」的 run 内（非终 run）
+        registry.register(SlowFixtureHandler(sleep_seconds=2.0))
+        graph = _graph(
+            task_types={"t1": "SlowFixture", "t2": "SlowFixture",
+                        "t3": "SlowFixture", "t4": "SlowFixture"},
+            deps={"t2": ["t1"], "t3": ["t2"], "t4": ["t3"]},
+        )
+        run_id = await _submit_run(sessions, context, graph)
+        client = temporal_env.client
+        handle = await client.start_workflow(
+            AgentRunWorkflow.run,
+            AgentRunWorkflowInput(
+                run_id=run_id,
+                organization_id=str(context.organization_id),
+                workspace_id=str(context.workspace_id),
+                graph=graph.model_dump(mode="json"),
+                task_queue=DEFAULT_TASK_QUEUE,
+                continue_as_new_after=1,  # 每 run 只派发 1 个 task → 必然多次 CAN
+            ),
+            id=f"run-{run_id}",
+            task_queue=DEFAULT_TASK_QUEUE,
+        )
+        # 等 CAN 至少发生一次：同 workflow id 的 execution 数 > 1
+        # （describe() 不跟随 CAN 链，run_id 恒为首 run，不能用 run_id 判定）
+        deadline = asyncio.get_event_loop().time() + 20
+        while asyncio.get_event_loop().time() < deadline:
+            executions = [e async for e in client.list_workflows(f"WorkflowId = 'run-{run_id}'")]
+            if len(executions) > 1:
+                break
+            await asyncio.sleep(0.1)
+        else:
+            raise AssertionError("continue-as-new never happened")
+        # CAN 之后发送 cancel —— 必须仍然生效
+        await handle.signal("cancel", {"command_event_id": str(new_id()), "reason": "post-can"})
+        result = await asyncio.wait_for(handle.result(), timeout=60)
+        assert result.status == "cancelled", (
+            f"cancel after continue-as-new was lost (status={result.status})"
+        )
+
+        import uuid as uuid_module
+
+        async with tenant_session(sessions, context) as session:
+            store = RuntimeEventStore(session, context)
+            state = await store.reduce_state(uuid_module.UUID(run_id))
+            assert state.status == "cancelled"

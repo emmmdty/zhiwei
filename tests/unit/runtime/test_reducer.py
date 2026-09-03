@@ -659,3 +659,27 @@ class TestTaskRetryReopensFailedTask:
         assert state.tasks["intake"].status == "completed"
         assert len(state.tasks["intake"].attempts) == 2
         assert state.status == "completed"
+
+
+class TestAttemptNumberPreservation:
+    """S2 修复轮 RED（Reviewer B #3）：TaskStarted 不得覆盖 AttemptCreated 的序号。
+
+    生产事件序恒为 TaskScheduled → AttemptCreated(n) → TaskStarted（同 attempt），
+    旧实现无条件以 len(attempts)+1 重算序号，每个 attempt 的投影序号恒 +1。
+    """
+
+    def test_task_started_preserves_attempt_created_number(self) -> None:
+        run_id = new_id()
+        attempt = new_id()
+        events = [
+            RunCreated(run_id=run_id, timestamp=_ts(0), graph=_make_graph()),
+            RunStarted(run_id=run_id, timestamp=_ts(1)),
+            TaskScheduled(run_id=run_id, timestamp=_ts(2), task_id="intake"),
+            AttemptCreated(run_id=run_id, timestamp=_ts(3), task_id="intake",
+                           attempt_id=attempt, attempt_number=1),
+            TaskStarted(run_id=run_id, timestamp=_ts(4), task_id="intake",
+                        attempt_id=attempt),
+            TaskCompleted(run_id=run_id, timestamp=_ts(5), task_id="intake", output_values={}),
+        ]
+        state = reduce(events)
+        assert state.tasks["intake"].attempts[attempt].attempt_number == 1
