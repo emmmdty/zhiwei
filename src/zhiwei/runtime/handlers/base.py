@@ -63,3 +63,12 @@ class TaskHandler(ABC):
 
     def validate_output(self, output: TaskOutput) -> None:  # noqa: B027
         """Validate task output after execution. Override for custom validation."""
+
+
+class EffectUnknownError(RuntimeError):
+    """副作用状态未知的失败（spec §4 2026-09-03 增补）。
+
+    抛出本类型的 handler 声明：副作用可能已发生（写入已发出但结果未确认）。
+    重试会造成重复副作用——workflow 的重试决策必须拒绝自动重试，run 以
+    failed 终态落账后由人工/对账路径处置（ADR-008 终止界外的效果语义）。
+    """

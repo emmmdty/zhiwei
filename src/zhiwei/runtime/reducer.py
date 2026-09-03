@@ -337,7 +337,7 @@ def _handle_event(state: RunState, event: RuntimeEvent) -> RunState:
                     )
                     canonical[field] = merged
                     if conflict is not None:
-                        conflicts.append(conflict)
+                        _append_conflict_deduped(conflicts, conflict)
 
         result = state.with_update(
             tasks=tasks, canonical=canonical, conflicts=conflicts,
@@ -407,20 +407,37 @@ def _handle_event(state: RunState, event: RuntimeEvent) -> RunState:
         return state.with_update(tasks=tasks)
 
     if isinstance(event, ConflictDetected):
+        # 冲突去重（ADR-005 增补 4）：TaskCompleted 的 merge 路径与
+        # ConflictDetected 事件路径可能对同一 (field, 写者对) 各产生一条记录
+        # ——重放语义下不得双计。
         conflicts = list(state.conflicts)
         evidence_refs_raw = event.conflict_record.get("evidence_refs", [])
         evidence_refs = tuple(evidence_refs_raw) if isinstance(evidence_refs_raw, list) else ()
-        conflicts.append(
+        _append_conflict_deduped(
+            conflicts,
             ConflictRecord(
                 field=event.field,
                 values=event.conflict_record.get("values", {}),
                 evidence_refs=evidence_refs,
                 detected_at=event.timestamp,
-            )
+            ),
         )
         return state.with_update(conflicts=conflicts)
 
     return state
+
+
+def _conflict_identity(record: ConflictRecord) -> tuple[str, tuple[str, ...]]:
+    """冲突的等价键：字段 + 写者集合（值序无关——写入方与事件方同键）。"""
+    return (record.field, tuple(sorted(str(k) for k in record.values)))
+
+
+def _append_conflict_deduped(
+    conflicts: list[ConflictRecord], record: ConflictRecord
+) -> None:
+    if any(_conflict_identity(existing) == _conflict_identity(record) for existing in conflicts):
+        return
+    conflicts.append(record)
 
 
 def reduce(events: list[RuntimeEvent]) -> RunState:

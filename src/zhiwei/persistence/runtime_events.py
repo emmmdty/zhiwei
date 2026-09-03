@@ -11,6 +11,7 @@ UUID/datetime 实例），读取用 lax 反序列化从 JSONB 还原。
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -125,6 +126,17 @@ class RuntimeEventStore:
         )
         result = await self._uow.append_event(command)
         return result.created
+
+    async def lock_run(self, run_id: UUID) -> None:
+        """取 run 级 advisory xact lock（与 append_event 同键）。
+
+        冲突落账（ConflictDetected）的判定需要「先 reduce 后 append」——
+        并发完成事务必须在锁内 reduce，否则后落账者可能看不到先落账者的
+        TaskCompleted（读已提交 + 锁外快照的竞态）。
+        """
+        from zhiwei.persistence.unit_of_work import _advisory_lock
+
+        await _advisory_lock(self._session, run_id, namespace=0x45564E54)
 
     async def has_event(self, run_id, idempotency_key: str) -> bool:
         """Check whether a logical event (by idempotency key) is already committed."""

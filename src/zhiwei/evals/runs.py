@@ -550,6 +550,20 @@ class EvalFoundationService:
         if suite_version is None:
             raise EvalStateError("suite version is missing")
 
+        # seal 前复验 dataset 对象字节（specs/s0 §4：missing object / digest
+        # mismatch 不得 seal）。此前只信 dataset_version.content_digest 的 DB
+        # 信任链——create 与 seal 之间对象被篡改/删除时仍会 sealed。
+        dataset_manifest = await self._artifact_manifest(
+            "dataset_version", eval_run.dataset_version_id
+        )
+        if dataset_manifest is None:
+            raise EvalStateError("dataset manifest is missing")
+        await self._artifacts.verify_manifest(dataset_manifest.id)
+        if dataset_manifest.content_digest != dataset_version.content_digest:
+            raise EvalStateError(
+                "dataset manifest digest does not match the frozen dataset version"
+            )
+
         test_report_bytes = canonical_json(test_report)
         test_report_digest = digest_bytes(test_report_bytes)
         temporary_key = self._store.write_temporary(self._namespace, [test_report_bytes])

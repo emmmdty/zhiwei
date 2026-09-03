@@ -32,6 +32,8 @@ class ExecuteTaskInput:
 
     attempt_id 由 workflow 以 workflow.uuid4() 派生（replay 确定）；attempt_no 是
     workflow 侧的逻辑尝试序号，两者共同构成 TaskStarted 的幂等键。
+    conflict_fields：节点声明的 conflict_preserving 输出字段——完成事务据此
+    追加 ConflictDetected canonical event（spec §3 增补，ADR-005 增补 4）。
     """
 
     run_id: str
@@ -44,16 +46,28 @@ class ExecuteTaskInput:
     attempt_no: int
     input_values: dict[str, Any] = field(default_factory=dict)
     actor_ref: str = _DEFAULT_ACTOR_REF
+    conflict_fields: tuple[str, ...] = ()
 
 
 @dataclass
-class RecordRunTerminalInput:
-    """Input for recording a run-level terminal event."""
+class CheckApprovalInput:
+    """Input for the check_approval activity（expired 路径的权威行回查）。"""
 
     run_id: str
     organization_id: str
     workspace_id: str
-    outcome: str  # completed | failed | cancelled
+    task_id: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RecordRunTerminalInput:
+    """Input for recording a run-level lifecycle event."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    outcome: str  # completed | failed | cancelled | paused | resumed
     error: str | None = None
     reason: str | None = None
     actor_ref: str = _DEFAULT_ACTOR_REF
@@ -84,6 +98,9 @@ class CreateApprovalInput:
     # 审批 expiry（秒）：pending 请求的等待上界（spec §4 2026-09-03 增补——
     # 无 expiry 的审批使 run 可永久挂起，ADR-012 反例）
     approval_expiry_seconds: int = 3600
+    # 审批节点的声明内容（digest 输入）：绑定节点契约而非 run/task 身份常量
+    # ——身份派生使 swap 检测结构上不可触发（spec §4 增补）
+    node_content: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

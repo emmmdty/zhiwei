@@ -374,8 +374,15 @@ def create_runs_router(
         async with tenant_session(sessions, context) as session:
             store = ApprovalRequestStore(session, context)
             # 归属校验先于决策：错 run_id 的请求不得污染目标审批（此前依赖
-            # 异常隐式回滚兜底——显式化，防未来重构破坏该不变量）
-            record = await store.get(request_id)
+            # 异常隐式回滚兜底——显式化，防未来重构破坏该不变量）。未知/跨
+            # 租户 request 与「不属于本 run」同语义 404（防枚举）。
+            try:
+                record = await store.get(request_id)
+            except ApprovalError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="approval request not found",
+                ) from exc
             if record.run_id != run_id:
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND,

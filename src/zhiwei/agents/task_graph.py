@@ -174,13 +174,12 @@ class TaskGraph(BaseModel):
         return visited
 
     def validate_merge_strategies(self) -> None:
-        """ADR-005: Validate that parallel tasks writing the same field declare merge strategies.
+        """ADR-005（2026-09-03 增补）: 并行写同一字段的**每个写者**都必须声明 merge 策略。
 
-        A field written by two tasks with no dependency relationship between them
-        must have a merge strategy declared in at least one of the tasks'
-        output_merge_strategies.
+        单边声明（一方声明、另一方未声明）同样拒绝：未声明写者在运行时走
+        静默覆盖路径，正是 ADR-005 要在发布期消灭的 dict.update 事故。
 
-        Raises ValueError if undeclared parallel writes exist.
+        Raises ValueError if any potential parallel writer lacks a strategy.
         """
         # Collect output fields per task
         task_fields: dict[str, set[str]] = {}
@@ -209,8 +208,9 @@ class TaskGraph(BaseModel):
                     checked.add(key)
                     a_has_strategy = field in self.nodes[a].output_merge_strategies
                     b_has_strategy = field in self.nodes[b].output_merge_strategies
-                    if not a_has_strategy and not b_has_strategy:
+                    if not (a_has_strategy and b_has_strategy):
                         raise ValueError(
                             f"Parallel tasks '{a}' and '{b}' write to field "
-                            f"'{field}' without any declared merge strategy"
+                            f"'{field}'; every potential writer must declare a "
+                            f"merge strategy (single-sided declaration rejected)"
                         )

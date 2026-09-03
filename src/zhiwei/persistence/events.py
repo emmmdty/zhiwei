@@ -120,6 +120,33 @@ class AuditEventData(BaseModel):
         return self
 
 
+def _reject_jsonb_non_roundtrippable_floats(value: object, path: str) -> None:
+    """JSONB 值域守卫（specs/s0 §4 2026-09-03 增补）。
+
+    integral 且 |v| > 2^53-1 的 float 经 jsonb 归一为整数字面量，读回 int
+    超出 JCS 安全整数域——落库后该 run 的链验证/复算必败（自伤式毒化）。
+    写入侧 fail closed。
+    """
+    if isinstance(value, bool):
+        return
+    if isinstance(value, float):
+        if value.is_integer() and abs(value) > 2**53 - 1:
+            raise ValueError(
+                f"{path}: float {value!r} is integral and beyond the JCS safe "
+                "integer domain; jsonb would normalize it to an integer literal "
+                "and the round-trip cannot reproduce canonical JSON "
+                "(use a bounded representation)"
+            )
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _reject_jsonb_non_roundtrippable_floats(item, f"{path}.{key}")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _reject_jsonb_non_roundtrippable_floats(item, f"{path}[{index}]")
+
+
 def validate_event_command(
     command: EventCommand, schema_registry: SchemaRegistry
 ) -> EventCommand:
@@ -132,6 +159,7 @@ def validate_event_command(
     validated_payload = payload.model_dump(mode="json", by_alias=True)
     if not isinstance(validated_payload, dict):
         raise ValueError("canonical event payload schema must produce a JSON object")
+    _reject_jsonb_non_roundtrippable_floats(validated_payload, path="$")
     return command_snapshot.model_copy(update={"payload": deepcopy(validated_payload)})
 
 

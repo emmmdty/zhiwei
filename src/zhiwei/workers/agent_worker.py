@@ -49,6 +49,7 @@ def build_agent_worker(
             activities_impl.start_run,
             activities_impl.execute_task,
             activities_impl.create_approval,
+            activities_impl.check_approval,
             activities_impl.record_approval_outcome,
             activities_impl.record_run_terminal,
             activities_impl.record_task_skipped,

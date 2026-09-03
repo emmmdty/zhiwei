@@ -22,6 +22,7 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from zhiwei.workflows.activities.base import (
+    CheckApprovalInput,
     CreateApprovalInput,
     ExecuteTaskInput,
     RecordApprovalOutcomeInput,
@@ -32,7 +33,7 @@ from zhiwei.workflows.activities.base import (
 )
 
 with workflow.unsafe.imports_passed_through():
-    from zhiwei.agents.task_graph import FailurePolicy, TaskGraph
+    from zhiwei.agents.task_graph import FailurePolicy, MergeStrategy, TaskGraph
 
 # 基础设施失败（DB 抖动等）重试；确定性业务拒绝（Run 缺失、schema 未知）不
 # 重试——重试同样的输入只会得到同样的拒绝。错误类型名是异常类裸名
@@ -48,6 +49,9 @@ _INFRA_RETRY_POLICY = RetryPolicy(
         "RunNotFound",
         "RuntimeEventSchemaError",
         "ValueError",
+        # registry 预检失败是确定性拒绝（missing handler 在 Run 事件落账前
+        # fail closed，spec §3）——重试同样输入只会得到同样拒绝
+        "TaskHandlerRegistryError",
     ],
 )
 
@@ -79,6 +83,10 @@ class AgentRunWorkflowInput:
     cancel_requested: bool = False
     cancel_reason: str | None = None
     paused: bool = False
+    # pause/resume 的落账脏标记（M-4）：信号只翻内存态 + 置脏，主循环在等待前
+    # 经 activity 落 RunPaused/RunResumed——PG 真相必须反映暂停态
+    pause_dirty: bool = False
+    resume_dirty: bool = False
     seen_signal_ids: list[str] = field(default_factory=list)
     requested_by: str = ""
     approval_decisions: dict[str, str] = field(default_factory=dict)
@@ -111,6 +119,8 @@ class AgentRunWorkflow:
         self._cancel_requested = False
         self._cancel_reason: str | None = None
         self._paused = False
+        self._pause_dirty = False
+        self._resume_dirty = False
         self._seen_signal_ids: set[str] = set()
 
     @workflow.run
@@ -124,6 +134,8 @@ class AgentRunWorkflow:
         self._cancel_requested = input.cancel_requested
         self._cancel_reason = input.cancel_reason
         self._paused = input.paused
+        self._pause_dirty = input.pause_dirty
+        self._resume_dirty = input.resume_dirty
         self._seen_signal_ids = set(input.seen_signal_ids)
         self._approval_decisions: dict[str, str] = dict(input.approval_decisions)
 
@@ -146,6 +158,20 @@ class AgentRunWorkflow:
             if self._cancel_requested:
                 await self._record_terminal(input, "cancelled")
                 return self._result(input, "cancelled")
+
+            # pause/resume 落账（M-4）：状态翻转经 activity 写入 PG 真相，
+            # 再进入等待——投影在暂停期间必须显示 paused
+            if self._paused and self._pause_dirty:
+                await self._record_terminal(input, "paused")
+                self._pause_dirty = False
+            if not self._paused and self._resume_dirty:
+                await self._record_terminal(input, "resumed")
+                self._resume_dirty = False
+            if self._paused:
+                await workflow.wait_condition(
+                    lambda: not self._paused or self._cancel_requested
+                )
+                continue
 
             newly_skipped = self._skip_unreachable(graph, input)
             for task_id in newly_skipped:
@@ -205,6 +231,7 @@ class AgentRunWorkflow:
             ]
             if pending_approval and not self._cancel_requested:
                 task_id = pending_approval[0]
+                node = graph.nodes[task_id]
 
                 def _decided(t: str = task_id) -> bool:
                     return t in self._approval_decisions
@@ -219,6 +246,14 @@ class AgentRunWorkflow:
                         requested_by=input.requested_by or "system",
                         actor_ref=input.actor_ref,
                         approval_expiry_seconds=input.approval_expiry_seconds,
+                        # digest 绑定节点声明内容（spec §4 增补）：节点契约变化
+                        # 产生新 digest——身份派生使 swap 检测不可触发
+                        node_content={
+                            "task_type": node.task_type,
+                            "dependencies": sorted(node.dependencies),
+                            "output_schema": node.output_schema,
+                            "required_capability": node.required_capability,
+                        },
                     ),
                     schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
                     retry_policy=_INFRA_RETRY_POLICY,
@@ -227,8 +262,8 @@ class AgentRunWorkflow:
                 # 等待决策信号；cancel 可中断等待；expiry 到期未决 → failed
                 # 终态（spec §4 增补：无上界的等待是永久挂起面）。timer 是
                 # history 事件，重放安全；+1s 容差让 store 侧先按 expires_at
-                # 拒绝迟到的决策（双路解除语义一致）。
-
+                # 拒绝迟到的决策（双路解除语义一致）。Py3.11 起
+                # asyncio.TimeoutError 是内建 TimeoutError 的别名。
                 try:
                     await workflow.wait_condition(
                         lambda: _decided() or self._cancel_requested,
@@ -238,9 +273,32 @@ class AgentRunWorkflow:
                     )
                 except TimeoutError:
                     if not self._cancel_requested and not _decided():
-                        self._approval_decisions[task_id] = "expired"
+                        # 权威行回查（批次 B 验收缺陷 ②）：决策可能已及时落账
+                        # 但信号投递迟到——以 PG 真相为准，不误判 expired
+                        outcome = await workflow.execute_activity(
+                            "check_approval",
+                            CheckApprovalInput(
+                                run_id=input.run_id,
+                                organization_id=input.organization_id,
+                                workspace_id=input.workspace_id,
+                                task_id=task_id,
+                                actor_ref=input.actor_ref,
+                            ),
+                            schedule_to_close_timeout=timedelta(
+                                seconds=input.activity_timeout_seconds
+                            ),
+                            retry_policy=_INFRA_RETRY_POLICY,
+                            task_queue=input.task_queue,
+                        )
+                        if outcome["decision"] in {"approved", "rejected"}:
+                            self._approval_decisions[task_id] = outcome["decision"]
+                        else:
+                            self._approval_decisions[task_id] = "expired"
                 if self._cancel_requested:
                     continue
+                decision = self._approval_decisions[task_id]
+                await self._record_approval_outcome(input, graph, task_id, decision)
+                continue
                 decision = self._approval_decisions[task_id]
                 await self._record_approval_outcome(input, graph, task_id, decision)
                 continue
@@ -291,12 +349,15 @@ class AgentRunWorkflow:
         if self._dedupe_signal(payload):
             return
         self._paused = True
+        self._pause_dirty = True
 
     @workflow.signal
     def resume(self, payload: dict[str, Any]) -> None:
         if self._dedupe_signal(payload):
             return
         self._paused = False
+        # resume 需要落账（重复 resume 由 run_terminal_key 的幂等键去重）
+        self._resume_dirty = True
 
     @workflow.signal
     def approval_decided(self, payload: dict[str, Any]) -> None:
@@ -374,6 +435,8 @@ class AgentRunWorkflow:
             cancel_requested=self._cancel_requested,
             cancel_reason=self._cancel_reason,
             paused=self._paused,
+            pause_dirty=self._pause_dirty,
+            resume_dirty=self._resume_dirty,
             seen_signal_ids=sorted(self._seen_signal_ids),
             requested_by=input.requested_by,
             approval_decisions=dict(self._approval_decisions),
@@ -413,6 +476,15 @@ class AgentRunWorkflow:
         attempt_no = self._attempt_counts.get(task_id, 0) + 1
         self._attempt_counts[task_id] = attempt_no
         node = graph.nodes[task_id]
+        # conflict_preserving 字段随任务下发（spec §3 增补：ConflictDetected
+        # 落账的判定输入）
+        conflict_fields = tuple(
+            sorted(
+                field_name
+                for field_name, strategy in node.output_merge_strategies.items()
+                if strategy == MergeStrategy.CONFLICT_PRESERVING
+            )
+        )
         activity_input = ExecuteTaskInput(
             run_id=input.run_id,
             organization_id=input.organization_id,
@@ -424,6 +496,7 @@ class AgentRunWorkflow:
             attempt_no=attempt_no,
             input_values={},
             actor_ref=input.actor_ref,
+            conflict_fields=conflict_fields,
         )
         return workflow.start_activity(
             "execute_task",
@@ -488,6 +561,12 @@ class AgentRunWorkflow:
         # string-name 调用经默认 converter 解码为 dict（无 activity 侧类型信息）
         if result["status"] == "completed":
             self._completed.add(task_id)
+            return
+
+        # effect_unknown 门（spec §4 增补）：副作用可能已发生，重试 = 重复
+        # 副作用。无论节点 failure policy 如何，都不自动重试——直接终态。
+        if result["status"] == "effect_unknown":
+            self._failed.add(task_id)
             return
 
         # 业务失败：按节点 failure policy 决定重试或终态
