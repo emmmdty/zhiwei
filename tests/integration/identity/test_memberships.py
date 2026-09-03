@@ -160,6 +160,25 @@ def _org_actor(organization_id: UUID, *, workspace_id: UUID | None = None) -> Ac
     )
 
 
+async def _seed_actor_principal(
+    identity_sessions: async_sessionmaker[AsyncSession], principal_id: UUID
+) -> None:
+    """为合成 actor 落 principal 行。
+
+    workspace 创建自 2026-09-03 增补起同事务授予创建者 workspace_admin
+    （bootstrap），授予要求创建者 principal 真实存在（fail closed）——
+    经端点创建 workspace 的合成 actor 必须先种子。
+    """
+    async with identity_sessions.begin() as session:
+        await session.execute(
+            text(
+                "INSERT INTO principals (id, kind, status, schema_version)"
+                " VALUES (:id, 'user', 'active', 1)"
+            ),
+            {"id": principal_id},
+        )
+
+
 def _no_org_actor(principal_id: UUID | None = None) -> ActorContext:
     return ActorContext(principal_id=principal_id or uuid4())
 
@@ -1226,9 +1245,11 @@ async def test_api_workspaces_and_groups_endpoints_enforce_scope(
     )
 
     org_app = FastAPI()
+    org_actor = _org_actor(organization_id)
+    await _seed_actor_principal(identity_sessions, org_actor.principal_id)
     org_app.include_router(
         create_workspaces_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            actor_dependency=lambda: org_actor, sessions=sessions,
             policy_enforcer=FakePolicyEnforcer(),
         )
     )
@@ -1598,9 +1619,11 @@ async def test_api_existing_workspace_collision_rejected(
         sessions, organization_id, uuid4(), workspace_name="Sales"
     )
     app = FastAPI()
+    ws_actor = _org_actor(organization_id)
+    await _seed_actor_principal(identity_sessions, ws_actor.principal_id)
     app.include_router(
         create_workspaces_router(
-            actor_dependency=lambda: _org_actor(organization_id), sessions=sessions,
+            actor_dependency=lambda: ws_actor, sessions=sessions,
             policy_enforcer=FakePolicyEnforcer(),
         )
     )

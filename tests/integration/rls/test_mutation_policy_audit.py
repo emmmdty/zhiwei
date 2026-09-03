@@ -1067,7 +1067,11 @@ async def test_workspace_group_member_mutations_auto_write_audit(
     assert first_input["organization_id"] == str(org_a)
     assert first_input["resource"]["type"] == "workspace_policy"
     assert first_input["resource"]["version"] == "1"
-    assert first_input["action"] == "configure_workspace"
+    # 2026-09-03 修订（ADR-012 反例 4）：动作从 configure_workspace 改为 configure——
+    # 原值是矩阵死锁的固化（唯一允许角色 workspace_admin 是 workspace 作用域，
+    # 创建时无 workspace 上下文 → 真实 OPA 恒 deny）；specs/s1 §3 增补裁定为
+    # org 作用域 configure（org_owner）。
+    assert first_input["action"] == "configure"
     assert first_input["purpose"] == "general"
     assert {
         "name": "org_owner",
@@ -1480,7 +1484,7 @@ async def test_no_mutation_success_with_zero_audit_and_outbox(
     每个 mutation 端点独立 scope；成功后该 scope 的 audit_events 与 outbox 必须各 ≥ 1。
     """
     _, client, idp, _ = app_and_client
-    principal = await _reset_alice()
+    await _reset_alice()
     await _perform_login(client, idp)
     csrf_token = await _csrf_token(client)
 
@@ -1530,8 +1534,9 @@ async def test_no_mutation_success_with_zero_audit_and_outbox(
         await connection.close()
 
     group_id = uuid4()
-    # group 端点要求 workspace 级 actor 上下文：为 alice 补一条新建 workspace 的绑定
-    await _seed_workspace_membership(principal, org_id, workspace_id, ["builder"])
+    # group 端点要求 workspace 级 actor 上下文：创建 workspace 时已同事务授予
+    # 创建者 workspace_admin（2026-09-03 增补的 bootstrap 路径），无需再补绑定
+    # ——重复 seed 会撞 pk_workspace_memberships。
     response = await client.post(
         f"/api/v1/workspaces/{workspace_id}/groups",
         json={"group_id": str(group_id), "name": "CounterGroup"},
