@@ -193,15 +193,16 @@ class TestDelegationBoundary:
 
         a = self._draft(agents, "agent-a")
         b = self._draft(agents, "agent-b")
+        agents.promote_to_sandbox(a.id)  # a 尚无委托 → 放行
         pack_a = packs.create_draft("pack-a", a.id, {})
-        pack_b = packs.create_draft("pack-b", b.id, {}, depends_on=(pack_a.id,))
-        agents.promote_to_sandbox(a.id)
         packs.promote_to_sandbox(pack_a.id)
         packs.promote_to_published(pack_a.id)
+        # 依赖已发布的 pack_a：运行 b 的 solution 会拉入 a 的 pack（b→a 派生边）
+        pack_b = packs.create_draft("pack-b", b.id, {}, depends_on=(pack_a.id,))
         packs.promote_to_sandbox(pack_b.id)
         packs.promote_to_published(pack_b.id)
 
-        # a delegate 到 b（a→b）；b 的 pack 依赖 a 的 pack（b→a）→ 环
+        # a delegate 到 b（a→b）+ pack 派生边 b→a → 跨实体环
         agents.set_delegation(a.id, delegate_dependencies=(b.id,))
         with pytest.raises(VersionStateError, match="delegation"):
             agents.promote_to_sandbox(b.id)
