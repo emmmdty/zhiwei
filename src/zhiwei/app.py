@@ -25,11 +25,14 @@ from zhiwei.api.auth import (
     create_auth_router,
     create_session_actor_dependency,
 )
+from zhiwei.api.events import create_events_router
 from zhiwei.api.memberships import create_memberships_router
 from zhiwei.api.organizations import create_organizations_router
+from zhiwei.api.runs import create_runs_router
 from zhiwei.api.scim import create_scim_router
 from zhiwei.api.workspaces import create_workspaces_router
 from zhiwei.config.settings import Settings
+from zhiwei.identity.domain import ActorContext
 from zhiwei.identity.oidc import OIDCService
 from zhiwei.identity.sessions import (
     AuthSessionStore,
@@ -37,6 +40,7 @@ from zhiwei.identity.sessions import (
     SessionService,
 )
 from zhiwei.persistence.database import create_database_engine, create_session_factory
+from zhiwei.persistence.tenant import TenantContext
 from zhiwei.policy.client import OPAClient
 from zhiwei.policy.enforcement import PolicyEnforcer
 from zhiwei.secrets.local import LocalSecretBackend, load_keyring
@@ -52,6 +56,42 @@ _REQUIRED = (
     # S1-T4 修复：策略 endpoint 是组合期必需输入（缺失 → 拒绝，不静默降级为无策略）
     ("ZHIWEI_OPA_BASE_URL", "opa_base_url"),
 )
+
+
+def _actor_tenant_context(actor: Any) -> TenantContext:
+    """actor → 显式租户上下文（fail closed：无 org 即拒绝，不编造作用域）。"""
+    from fastapi import HTTPException
+    from fastapi import status as fastapi_status
+
+    if actor.organization_id is None or actor.workspace_id is None:
+        raise HTTPException(
+            status_code=fastapi_status.HTTP_403_FORBIDDEN,
+            detail="organization and workspace context required",
+        )
+    return TenantContext(
+        organization_id=actor.organization_id, workspace_id=actor.workspace_id
+    )
+
+
+def _make_run_exists(app_sessions: Any) -> Any:
+    """tenant scope 内的 run 归属校验（SSE PEP 判定）。"""
+    from sqlalchemy import select
+
+    from zhiwei.persistence.models import Run
+    from zhiwei.persistence.tenant import tenant_session
+
+    async def run_exists(context: Any, run_id: Any) -> bool:
+        async with tenant_session(app_sessions, context) as session:
+            row = await session.scalar(
+                select(Run.id).where(
+                    Run.id == run_id,
+                    Run.organization_id == context.organization_id,
+                    Run.workspace_id == context.workspace_id,
+                )
+            )
+            return row is not None
+
+    return run_exists
 
 
 def create_app(
@@ -173,6 +213,42 @@ def create_app(
             issuer=oidc_issuer,
         )
     )
+
+    # S2-T7：runtime 面（runs/SSE）。TEMPORAL_TARGET 未声明则不注册——
+    # 本地产品按需声明，不在缺配置时提供半途而废的端点。
+    if settings.temporal_target is not None:
+        temporal_target = settings.temporal_target
+
+        def _runs_sessions(
+            actor: ActorContext, workspace_id: Any
+        ) -> Any:
+            return app_sessions
+
+        app.include_router(
+            create_runs_router(
+                actor_dependency=session_actor,
+                sessions_factory=_runs_sessions,
+                temporal_target=temporal_target,
+            )
+        )
+
+        from zhiwei.telemetry.redis_streams import RedisEventStream
+
+        # REDIS_URL 缺失 → SSE 走 PG 轮询（增量通道是可选加速，丢失零影响）
+        redis_stream = (
+            RedisEventStream.connect_lazy(settings.redis_url)
+            if settings.redis_url is not None
+            else None
+        )
+        app.include_router(
+            create_events_router(
+                actor_dependency=session_actor,
+                session_factory_factory=lambda: app_sessions,
+                tenant_context_factory=_actor_tenant_context,
+                run_exists=_make_run_exists(app_sessions),
+                redis_stream=redis_stream,
+            )
+        )
 
     async def dispose_engines() -> None:
         await oidc_service.aclose()

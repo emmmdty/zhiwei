@@ -28,13 +28,13 @@ from zhiwei.evals.runtime_contracts import (
     check_invariant,
     scenario_for_unit,
 )
+from zhiwei.persistence.run_commands import RunCommandService
+from zhiwei.persistence.runtime_events import RuntimeEventStore
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.runtime.handlers.base import TaskHandler, TaskInput, TaskOutput
 from zhiwei.runtime.handlers.registry import TaskHandlerRegistry
 from zhiwei.runtime.outbox_handlers import OutboxSignalHandler
-from zhiwei.runtime.persistence import RuntimeEventStore
 from zhiwei.runtime.reducer import RunState
-from zhiwei.runtime.run_commands import RunCommandService
 from zhiwei.workers.agent_worker import DEFAULT_TASK_QUEUE, build_agent_worker
 from zhiwei.workers.outbox_dispatcher import (
     OutboxDispatcher,
@@ -356,7 +356,7 @@ class AgentRuntimeExecutor:
         from sqlalchemy import select
 
         from zhiwei.persistence.models import OutboxMessage
-        from zhiwei.runtime.run_commands import RUNTIME_COMMAND_TOPIC
+        from zhiwei.persistence.run_commands import RUNTIME_COMMAND_TOPIC
 
         async with tenant_session(self._sessions, self._context) as session:
             rows = (
@@ -376,7 +376,7 @@ class AgentRuntimeExecutor:
         from sqlalchemy import select
 
         from zhiwei.persistence.models import OutboxMessage
-        from zhiwei.runtime.run_commands import RUNTIME_COMMAND_TOPIC
+        from zhiwei.persistence.run_commands import RUNTIME_COMMAND_TOPIC
 
         async with tenant_session(self._sessions, self._context) as session:
             row = await session.scalar(

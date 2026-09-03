@@ -72,6 +72,31 @@ class RecordTaskSkippedInput:
 
 
 @dataclass
+class CreateApprovalInput:
+    """Input for the create_approval activity (RequestApproval tasks)."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    requested_by: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RecordApprovalOutcomeInput:
+    """Input for recording an approval task's terminal event after a decision."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    attempt_no: int
+    decision: str  # approved | rejected
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
 class RecordTaskFailedInput:
     """Input for recording a TaskFailed event after activity retries exhausted."""
 
@@ -137,3 +162,7 @@ def run_terminal_key(run_id: str, outcome: str) -> str:
 
 def task_skipped_key(run_id: str, task_id: str) -> str:
     return f"task:{run_id}:{task_id}:skipped"
+
+
+def approval_outcome_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:approval:{attempt_no}"

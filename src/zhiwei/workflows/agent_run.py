@@ -22,7 +22,9 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 from zhiwei.workflows.activities.base import (
+    CreateApprovalInput,
     ExecuteTaskInput,
+    RecordApprovalOutcomeInput,
     RecordRunTerminalInput,
     RecordTaskFailedInput,
     RecordTaskSkippedInput,
@@ -78,6 +80,8 @@ class AgentRunWorkflowInput:
     cancel_reason: str | None = None
     paused: bool = False
     seen_signal_ids: list[str] = field(default_factory=list)
+    requested_by: str = ""
+    approval_decisions: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -118,6 +122,7 @@ class AgentRunWorkflow:
         self._cancel_reason = input.cancel_reason
         self._paused = input.paused
         self._seen_signal_ids = set(input.seen_signal_ids)
+        self._approval_decisions: dict[str, str] = dict(input.approval_decisions)
 
         if not input.started:
             await workflow.execute_activity(
@@ -187,6 +192,44 @@ class AgentRunWorkflow:
             parallel = [t for t in ready if graph.nodes[t].parallel_safe]
             serial = [t for t in ready if not graph.nodes[t].parallel_safe]
 
+            # RequestApproval 任务走专用等待路径（spec §3/§4：审批期间 run 挂起，
+            # 决策经生产命令路径以信号送达；CAR 门与 cancel 语义照常生效）。
+            pending_approval = [
+                t
+                for t in serial
+                if graph.nodes[t].task_type == "RequestApproval"
+                and t not in self._approval_decisions
+            ]
+            if pending_approval and not self._cancel_requested:
+                task_id = pending_approval[0]
+
+                def _decided(t: str = task_id) -> bool:
+                    return t in self._approval_decisions
+
+                await workflow.execute_activity(
+                    "create_approval",
+                    CreateApprovalInput(
+                        run_id=input.run_id,
+                        organization_id=input.organization_id,
+                        workspace_id=input.workspace_id,
+                        task_id=task_id,
+                        requested_by=input.requested_by or "system",
+                        actor_ref=input.actor_ref,
+                    ),
+                    schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+                    retry_policy=_INFRA_RETRY_POLICY,
+                    task_queue=input.task_queue,
+                )
+                # 等待决策信号；cancel 可中断等待
+                await workflow.wait_condition(
+                    lambda: _decided() or self._cancel_requested
+                )
+                if self._cancel_requested:
+                    continue
+                decision = self._approval_decisions[task_id]
+                await self._record_approval_outcome(input, graph, task_id, decision)
+                continue
+
             # 串行节点逐个执行；并行只读节点并发分派、按 stable task id 顺序收集。
             for task_id in serial:
                 await self._run_task(input, graph, task_id)
@@ -239,6 +282,16 @@ class AgentRunWorkflow:
         if self._dedupe_signal(payload):
             return
         self._paused = False
+
+    @workflow.signal
+    def approval_decided(self, payload: dict[str, Any]) -> None:
+        """审批人经生产命令路径投递的决策（task_id + approved/rejected）。"""
+        if self._dedupe_signal(payload):
+            return
+        task_id = str(payload.get("task_id", ""))
+        decision = str(payload.get("decision", ""))
+        if task_id and decision in {"approved", "rejected"}:
+            self._approval_decisions[task_id] = decision
 
     @workflow.signal
     def notify(self, payload: dict[str, Any]) -> None:
@@ -307,6 +360,8 @@ class AgentRunWorkflow:
             cancel_reason=self._cancel_reason,
             paused=self._paused,
             seen_signal_ids=sorted(self._seen_signal_ids),
+            requested_by=input.requested_by,
+            approval_decisions=dict(self._approval_decisions),
         )
 
     def _skip_unreachable(
@@ -433,6 +488,40 @@ class AgentRunWorkflow:
             self._cancel_requested = True
             self._cancel_reason = f"task {task_id} failed with cancel policy"
         self._failed.add(task_id)
+
+    async def _record_approval_outcome(
+        self,
+        input: AgentRunWorkflowInput,
+        graph: TaskGraph,
+        task_id: str,
+        decision: str,
+    ) -> None:
+        """把审批决策落账为任务终态（approved→completed；rejected→failed）。"""
+        attempt_no = self._attempt_counts.get(task_id, 0) + 1
+        self._attempt_counts[task_id] = attempt_no
+        await workflow.execute_activity(
+            "record_approval_outcome",
+            RecordApprovalOutcomeInput(
+                run_id=input.run_id,
+                organization_id=input.organization_id,
+                workspace_id=input.workspace_id,
+                task_id=task_id,
+                attempt_no=attempt_no,
+                decision=decision,
+                actor_ref=input.actor_ref,
+            ),
+            schedule_to_close_timeout=timedelta(seconds=input.activity_timeout_seconds),
+            retry_policy=_INFRA_RETRY_POLICY,
+            task_queue=input.task_queue,
+        )
+        if decision == "approved":
+            self._completed.add(task_id)
+        else:
+            node = graph.nodes[task_id]
+            if node.failure_policy == FailurePolicy.CANCEL:
+                self._cancel_requested = True
+                self._cancel_reason = f"task {task_id} rejected by approver"
+            self._failed.add(task_id)
 
     async def _record_terminal(
         self, input: AgentRunWorkflowInput, outcome: str

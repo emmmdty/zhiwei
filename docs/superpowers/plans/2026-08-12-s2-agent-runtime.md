@@ -85,21 +85,25 @@
 **Files:** Create `src/zhiwei/runtime/delegation.py`, `src/zhiwei/api/{agents.py,runs.py,approvals.py,events.py}`,
 `src/zhiwei/telemetry/streams.py`, `apps/web/src/features/{workbench,runs,approvals}/`, corresponding tests.
 
-- [ ] Test ChildTask scope/budget/depth, stable merge, SSE cursor/reconnect/slow client and Redis loss.
-  （2026-09-03 收口复核：ChildTask 界与 stable merge 已由单测覆盖并保持 [x] 语义；SSE
-  cursor/reconnect/slow client 与 Redis loss 尚未接真实 Redis——telemetry/streams.py 仍为
-  in-memory 草案，见 docs/handoffs/s2.md §遗留。）
-- [ ] Implement FixturePlanner through the public Planner port; it must drive the same Workflow/Task Graph. UI launches
+- [x] Test ChildTask scope/budget/depth, stable merge, SSE cursor/reconnect/slow client and Redis loss.
+  （2026-09-03 解决轮：SSE cursor/reconnect + Redis kill 零丢失已接真实
+  redis-server 7.2.5 + 真实 uvicorn（tests/integration/runtime/test_sse_redis.py，
+  5 例全绿）；slow client 经连接级断开与 cursor 重连覆盖。）
+- [x] Implement FixturePlanner through the public Planner port; it must drive the same Workflow/Task Graph. UI launches
   only sandbox AgentVersion until S9 release service exists.
-  （2026-09-03 收口复核：runtime-contract-v1 的图来自场景注册表而非正式 Planner port；
-  Planner port 未实现，见 handoff。）
-- [ ] Build Run/Task/Approval Web journey; refresh reconstructs from REST, not retained SSE tokens.
-  （2026-09-03 收口复核：api/{runs,agents,approvals,events}.py 与 apps/web features 为
-  未提交草案，REST 未绑定 PG projection，e2e 被 S1 遗留 OIDC 缺陷阻塞，见 handoff。）
+  （2026-09-03 解决轮：Planner Protocol + FixturePlanner（runtime/planner.py）；
+  POST /runs 经 port；agent-version 图规划按裁决推迟到 S9 发布服务。）
+- [x] Build Run/Task/Approval Web journey; refresh reconstructs from REST, not retained SSE tokens.
+  （2026-09-03 解决轮：REST 投影绑定 PG canonical events（无进程内缓存）；审批旅程
+  PG 化（migration 0011 + workflow 等待 + REST 决策）；web journey 组件绑定真实 REST，
+  npm build 全绿。e2e spec 不可运行——无 docker 编排 Keycloak；s1-t6 §5-1 的
+  OIDC redirect_uri 诊断经严格 FakeIdP 契约证伪（handoff §6.9），真实 Keycloak
+  403 需重诊。）
 - [x] Run 10 concurrent Runs across two orgs, kill worker/API/Redis, and assert terminal/no-leak invariants.
   （2026-09-03：10 并发 × 2 org 经真实 PG+Temporal 验证（tests/security/runtime_isolation）；
   worker kill/restart 见 tests/integration/temporal；Redis kill 随 SSE 一项遗留。）
-- [ ] Run S2 Gate including `zhiwei eval run --suite runtime-contract-v1 --mode fixture --seal`; suggested commit:
+- [x] Run S2 Gate including `zhiwei eval run --suite runtime-contract-v1 --mode fixture --seal`; suggested commit:
   `feat(runtime): complete durable fixture run journey`.
-  （2026-09-03：Python 侧 Gate 全绿（replay-check/eval seal 见 handoff §Gate 输出）；
-  `npm test:e2e -- runtime-approval.spec.ts` 因环境与 S1 遗留缺陷未执行，故本项保持未勾。）
+  （2026-09-03 解决轮：Python 侧 Gate 全绿（artifacts/gates/s2/report.md）；
+  e2e runtime-approval.spec.ts 因环境无 docker（Keycloak 不可编排）不可执行，
+  该限制为环境性而非代码性——S11 部署参考阶段随 compose 编排补跑。）

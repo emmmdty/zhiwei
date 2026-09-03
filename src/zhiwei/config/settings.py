@@ -35,6 +35,10 @@ _IDENTITY_MASTER_KEY_FILE_ENV = "ZHIWEI_IDENTITY_MASTER_KEY_FILE"
 # S1-T4 修复：策略 endpoint 是组合期必需输入（缺失 → create_app 组合期拒绝）。
 # 取值是部署期 override，与 endpoints.yaml 的 OPA 侧无关（策略边车地址由部署拓扑决定）。
 _OPA_BASE_URL_ENV = "ZHIWEI_OPA_BASE_URL"
+# S2-T7：runtime 附加面。TEMPORAL_TARGET 缺失 → runs/events 路由不注册（S2 本地
+# 产品按需声明）；REDIS_URL 缺失 → SSE 走 PG 轮询（增量通道是可选加速）。
+_TEMPORAL_TARGET_ENV = "ZHIWEI_TEMPORAL_TARGET"
+_REDIS_URL_ENV = "ZHIWEI_REDIS_URL"
 
 
 class DeploymentProfile(StrEnum):
@@ -79,6 +83,8 @@ class Settings(BaseModel):
     oidc_redirect_uri: str | None = None
     identity_master_key_file: Path | None = None
     opa_base_url: str | None = None
+    temporal_target: str | None = None
+    redis_url: str | None = None
 
     @model_validator(mode="after")
     def _deny_live_below_production(self) -> Self:
@@ -160,4 +166,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         oidc_redirect_uri=source.get(_OIDC_REDIRECT_URI_ENV),
         identity_master_key_file=_optional_path(source.get(_IDENTITY_MASTER_KEY_FILE_ENV)),
         opa_base_url=source.get(_OPA_BASE_URL_ENV),
+        temporal_target=source.get(_TEMPORAL_TARGET_ENV),
+        redis_url=source.get(_REDIS_URL_ENV),
     )

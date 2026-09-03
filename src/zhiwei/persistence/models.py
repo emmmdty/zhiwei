@@ -959,3 +959,64 @@ class OutboxMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ApprovalRequestRow(Base):
+    """S2-T7 审批请求（0011）：跨账号可见的审批旅程持久层。"""
+
+    __tablename__ = "approval_requests"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('pending', 'approved', 'rejected', 'revoked', 'expired')",
+            name="approval_status",
+        ),
+        CheckConstraint(
+            "(status IN ('approved', 'rejected')) = "
+            "(decided_by IS NOT NULL AND decided_at IS NOT NULL)",
+            name="approval_decision_fields",
+        ),
+        CheckConstraint(
+            "decided_by IS NULL OR decided_by <> requester",
+            name="approval_sod_requester",
+        ),
+        CheckConstraint("schema_version > 0", name="approval_schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_approval_requests_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "run_id"],
+            ["runs.organization_id", "runs.workspace_id", "runs.id"],
+            name="fk_approval_requests_run",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "run_id",
+            "task_id",
+            "input_digest",
+            name="uq_approval_requests_task_digest",
+        ),
+        Index("ix_approval_requests_run_status", "run_id", "status"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    task_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    input_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    requester: Mapped[str] = mapped_column(String(255), nullable=False)
+    last_input_modifier: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_identity: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(255))
+    decision_reason: Mapped[str | None] = mapped_column(Text())
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    replaced_by: Mapped[UUID | None] = mapped_column(Uuid)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)

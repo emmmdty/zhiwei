@@ -5,6 +5,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "./lib/api";
+import { Workbench } from "./features/workbench/Workbench";
 import {
   SessionProvider,
   useSession,
@@ -56,6 +57,12 @@ function Dashboard({
       </header>
       <main>
         <Organizations user={user} onSessionExpired={onSessionExpired} />
+        {user.workspace_id && (
+          <Workbench
+            workspaceId={user.workspace_id}
+            onSessionExpired={onSessionExpired}
+          />
+        )}
       </main>
     </div>
   );

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from typing import Annotated, Any, NoReturn
+from uuid import UUID
 
 import click
 import typer
@@ -43,8 +44,8 @@ def _replay_check_all() -> dict[str, Any]:
     from zhiwei.evals.runtime_contracts import RUNTIME_CONTRACT_UNITS
     from zhiwei.persistence.events import event_data_from_row, verify_event_chain
     from zhiwei.persistence.models import CanonicalEvent
+    from zhiwei.persistence.runtime_events import RuntimeEventStore
     from zhiwei.persistence.tenant import tenant_session
-    from zhiwei.runtime.persistence import RuntimeEventStore
 
     _, _, _, _, sessions = _settings_runtime()
     context, _, _ = _fresh_tenant()
@@ -137,3 +138,61 @@ def replay_check(
     _emit_json(payload)
     if payload["status"] != "passed":
         _fail("replay-check failed: non-deterministic replay or broken chain detected")
+
+
+@app.command("dead-letters")
+def dead_letters(
+    organization_id: Annotated[UUID, typer.Option("--organization-id", help="组织（显式恢复 RLS 上下文）")],
+    workspace_id: Annotated[UUID, typer.Option("--workspace-id", help="工作区（显式恢复 RLS 上下文）")],
+) -> None:
+    """列出 dead-letter 的 outbox 消息（operator 巡检入口；控制信号 dead-letter
+    即意图丢失，必须人工处置——见 handoff §4.5 B-7）。"""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from zhiwei.cli.evals import _load_settings, _require_runtime
+    from zhiwei.persistence.database import create_database_engine, create_session_factory
+    from zhiwei.persistence.models import OutboxMessage
+    from zhiwei.persistence.tenant import TenantContext, tenant_session
+
+    database_url, _ = _require_runtime(_load_settings())
+
+    async def _run() -> dict[str, Any]:
+        context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
+        engine = create_database_engine(database_url)
+        try:
+            scoped = create_session_factory(engine)
+            async with tenant_session(scoped, context) as session:
+                rows = (
+                    await session.scalars(
+                        select(OutboxMessage)
+                        .where(
+                            OutboxMessage.organization_id == organization_id,
+                            OutboxMessage.workspace_id == workspace_id,
+                            OutboxMessage.status == "dead_letter",
+                        )
+                        .order_by(OutboxMessage.dead_lettered_at.desc())
+                    )
+                ).all()
+                return {
+                    "count": len(rows),
+                    "messages": [
+                        {
+                            "id": str(row.id),
+                            "topic": row.topic,
+                            "event_key": row.event_key,
+                            "attempts": row.attempts,
+                            "last_error": row.last_error,
+                            "dead_lettered_at": row.dead_lettered_at.isoformat()
+                            if row.dead_lettered_at
+                            else None,
+                            "payload": row.payload,
+                        }
+                        for row in rows
+                    ],
+                }
+        finally:
+            await engine.dispose()
+
+    _emit_json(asyncio.run(_run()))

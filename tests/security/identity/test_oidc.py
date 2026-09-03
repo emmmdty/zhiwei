@@ -240,6 +240,11 @@ class FakeIdP:
                 if state is None:
                     return httpx.Response(400, json={"error": "invalid_grant"})
                 auth = self.authorizations[state]
+                # Keycloak 语义（RFC 6749 §4.1.3）：code 换 token 必须携带与
+                # authorize 完全一致的 redirect_uri；缺失/不一致 = invalid_grant。
+                # s1-t6 §5-1 的预存缺陷即客户端漏传该字段，被 MockTransport 掩盖。
+                if body.get("redirect_uri", [""])[0] != auth["redirect_uri"]:
+                    return httpx.Response(400, json={"error": "invalid_grant"})
                 verifier = body.get("code_verifier", [""])[0]
                 challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
                 if not hmac.compare_digest(challenge, auth["code_challenge"]):

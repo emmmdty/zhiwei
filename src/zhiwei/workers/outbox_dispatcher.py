@@ -22,12 +22,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.persistence.outbox import OutboxDelivery, OutboxSink
 from zhiwei.persistence.outbox import OutboxRepository as PGOutboxRepository
+from zhiwei.persistence.run_commands import RUNTIME_COMMAND_TOPIC
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.runtime.outbox_handlers import (
     HandleResult,
     OutboxSignalHandler,
 )
-from zhiwei.runtime.run_commands import RUNTIME_COMMAND_TOPIC
 
 logger = logging.getLogger(__name__)
 

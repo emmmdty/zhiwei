@@ -138,6 +138,24 @@ class RuntimeEventStore:
         )
         return existing is not None
 
+    async def load_events_with_sequences(self, run_id) -> list[tuple[int, RuntimeEvent]]:
+        """Load (sequence_no, event) pairs in sequence order (SSE 游标空间）。"""
+        rows = (
+            (
+                await self._session.scalars(
+                    select(CanonicalEvent)
+                    .where(
+                        CanonicalEvent.organization_id == self._context.organization_id,
+                        CanonicalEvent.workspace_id == self._context.workspace_id,
+                        CanonicalEvent.run_id == run_id,
+                    )
+                    .order_by(CanonicalEvent.sequence_no)
+                )
+            )
+            .all()
+        )
+        return [(row.sequence_no, _decode_event(row.event_type, row.payload)) for row in rows]
+
     async def load_events(self, run_id) -> list[RuntimeEvent]:
         """Load and decode all committed runtime events for a run, in sequence order."""
         rows = (
