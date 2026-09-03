@@ -85,7 +85,7 @@ class TestDelegationDepthCapAtCommandLayer:
     async def test_chain_beyond_hard_cap_rejected_before_run_row(self, tenant) -> None:
         sessions, context = tenant
         run_id = uuid4()
-        chain = [f"link-{i}" for i in range(MAX_DELEGATION_DEPTH + 1)]
+        chain = tuple(f"link-{i}" for i in range(MAX_DELEGATION_DEPTH + 1))
         async with tenant_session(sessions, context) as session:
             service = RunCommandService(session, context)
             with pytest.raises(RunCommandError, match="delegation"):
@@ -99,7 +99,7 @@ class TestDelegationDepthCapAtCommandLayer:
     async def test_chain_within_hard_cap_accepted(self, tenant) -> None:
         sessions, context = tenant
         run_id = uuid4()
-        chain = [f"link-{i}" for i in range(MAX_DELEGATION_DEPTH)]
+        chain = tuple(f"link-{i}" for i in range(MAX_DELEGATION_DEPTH))
         async with tenant_session(sessions, context) as session:
             service = RunCommandService(session, context)
             await service.submit_start_run(

@@ -59,9 +59,21 @@ async def tenant() -> AsyncIterator[tuple[object, TenantContext, str]]:
     context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
     run_id = str(uuid4())
     async with tenant_session(sessions, context) as session:
+        from sqlalchemy import text
+
+        from zhiwei.persistence.repositories import TenantRepository
+
         repository = TenantRepository(session, context)
         await repository.create_organization(organization_id, status="active")
         await repository.create_workspace(workspace_id, name="replay-probe")
+        # UoW 的 append_event 校验 Run 行存在于租户作用域——先落行再落事件
+        await session.execute(
+            text(
+                "INSERT INTO runs (id, organization_id, workspace_id, status, schema_version)"
+                " VALUES (:id, :org, :ws, 'created', 1)"
+            ),
+            {"id": run_id, "org": organization_id, "ws": workspace_id},
+        )
         # 直接落 RunCreated + 一个 task 事件：探针只关心事件序列的载入一致性
         from zhiwei.agents.task_graph import TaskGraph, TaskGraphNode
         from zhiwei.runtime.events import RunCreated
