@@ -1,6 +1,7 @@
 # S0 - Platform Foundation
 
 > Status: frozen implementation specification  
+> Revised: 2026-09-03（S0–S2 复审增补，见 ADR-012；JSONB 值域不变量）  
 > Depends on: existing repository assets only  
 > Unlocks: S1
 
@@ -41,6 +42,10 @@ deploy/compose/compose.test.yaml
 ## 4. Invariants
 
 - event/projection/outbox 同事务；projection 可从 event 重建。
+- canonical 值域与 PG JSONB round-trip 兼容：写入 canonical_events/eval_samples 的值经 JSONB
+  往返后必须仍能复算出逐字节一致的 canonical JSON；写入侧对不可 round-trip 的值（如
+  `|float| ≥ 1e16` 被 jsonb 归一为整数字面量）fail closed，不允许落库后毒化事件链
+  （ADR-012 复审反例）。
 - tenant repository 无 org context 时拒绝；RLS policy skeleton 默认 deny，S1 再接真实 principal/policy。
 - artifact digest mismatch、missing object、manifest before object 全部不能 seal。
 - schema/version 未知时 fail closed；migration 可从空库向前并完成一次 downgrade/upgrade smoke。
@@ -48,7 +53,8 @@ deploy/compose/compose.test.yaml
 
 ## 5. Required tests
 
-- canonical JSON/property：字段顺序、Unicode、decimal/float/time、schema mismatch。
+- canonical JSON/property：字段顺序、Unicode、decimal/float/time、schema mismatch、JSONB
+  round-trip 值域边界（float→jsonb→int 的归一区段必须在写入侧被拒绝）。
 - PG：transaction rollback、idempotency same/different payload、event sequence/CAS、projection rebuild、outbox retry。
 - Object：partial upload、digest tamper、orphan、manifest missing、authorized namespace。
 - migration：fresh upgrade、downgrade/upgrade、application role cannot own/bypass tenant tables。

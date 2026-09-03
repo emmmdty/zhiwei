@@ -99,7 +99,10 @@ uv run ruff check .
 uv run pyright
 ```
 
-各阶段完整 Gate 见对应 `specs/s*.md` 的 Gate 小节。Gate 全绿才能进入下一阶段。
+各阶段完整 Gate 见对应 `specs/s*.md` 的 Gate 小节。Gate 全绿才能进入下一阶段。环境阻塞的 Gate 项
+按 ADR-012 例外机制处理：显式登记（阻塞项/根因/解锁条件/复执行时点）并经 operator 确认后，阶段为
+「有条件收口」而非「收口」；未登记的 Gate 项缺失一律按未通过处理。spec 必需测试场景不得只存在于
+默认 deselect 的 marker 之后（详见 ADR-012 §决策 5）。
 
 ## 代码约定
 

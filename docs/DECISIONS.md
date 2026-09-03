@@ -23,6 +23,7 @@
 | [ADR-009](#adr-009) | Memory candidate 的写入去重与队列收敛 | S7 | accepted |
 | [ADR-010](#adr-010) | Provider 中立：OpenCode Go 降为 EndpointProfile 实例 | S3 | accepted |
 | [ADR-011](#adr-011) | Endpoint 分级信任、运行时注册与模型热切换 | S3 | accepted |
+| [ADR-012](#adr-012) | 契约测试层级、Gate 例外与读路径授权（S0–S2 复审修订） | S0–S3 | accepted |
 
 ---
 
@@ -490,6 +491,23 @@ authoritative 字段强制最严格的一类。**
   ConflictRecord 且 Synthesize 被正确降级。
 - 影响 `specs/s2-agent-runtime.md`、总设计 §4.3。
 
+### 2026-09-03 增补：append 保序语义与声明边界（S0–S2 复审反例驱动）
+
+复审发现四处实现与本决策的偏差/歧义（到达序追加、单边声明放行、运行时静默覆盖、冲突不落账），
+消歧如下：
+
+1. **append 保序 = `(task_id, attempt_no)` 的纯函数**。「按稳定 task id 保序」的准确含义：合并结果
+   序列由写者的 `(task_id, attempt_no)` 决定，与事件到达/任务完成顺序无关；同一逻辑图两次执行
+   （含并行调度抖动后的重放）必须产出**逐字节相同**的合并序列。按到达/完成序追加不满足本语义。
+   同一 `(task_id, attempt_no)` 的重复投递按幂等去重。
+2. **单边声明 = 拒绝**。发布期校验的对象是「每个潜在写者」：字段被 K 个可能并行的节点写入时，
+   K 个节点都必须声明与字段一致的 merge 策略，任一写者未声明即发布失败。「仅一方声明即放行」
+   不属于本决策（这正是 LangGraph「未声明即拒绝」的原义）。
+3. **运行时兜底 fail closed**。运行时遇到未声明策略的写入（未经发布校验的图，如 Planner 产物），
+   拒绝该事件或降级为 conflict_preserving 并落 ConflictRecord，**禁止静默覆盖**已合并值。
+4. **ConflictDetected 必须作为 canonical event 落账**（含双方 task/attempt、Evidence refs、检测
+   时刻），不允许只存在于内存投影——否则 Run 重放后冲突证据消失。
+
 ---
 
 <a id="adr-006"></a>
@@ -617,6 +635,20 @@ Evidence 于 T1 冻结，T2 被撤权后回看历史 Run 的 Evidence——能�
 
 - 环不再依赖「烧完预算」这种事后止损，而是发布期就被拒绝。
 - 影响 `specs/s2-agent-runtime.md`、`specs/s4-capability-hub.md`、总设计 §4.6/§8.4。
+
+### 2026-09-03 增补：第三层「静态证明」的可判定化（S0–S2 复审反例驱动）
+
+原第三层「发布前静态证明每条可能循环的路径上存在单调递减的界」对一般依赖图是不可判定的研究级
+问题——属「写清了要求、没写清算法」的典型。消解为两个**可判定检查**加构造性论证：
+
+| 层 | 可判定检查 | 时机 |
+| --- | --- | --- |
+| 静态 | 委托依赖图（AgentVersion 的 delegate 依赖 + SolutionPack 依赖 + agent-as-tool provider 边）必须为 **DAG**；任何环（含 A→B→A、经 tool provider 交替构成的环）发布失败。自委托必须显式声明并附深度上限 | 发布时 |
+| 结构 | `delegation_chain` 为**共享计数**（Delegate 与 Agent-as-tool 两条路径追加同一 chain 并递增同一深度），参与 CAS；子 Run 继承并递增；硬上界为 `min(max_delegation_depth, 自委托声明上限)`——无自委托声明时即 `max_delegation_depth` | 运行时创建 ChildTask 时 |
+
+**终止性论证**：DAG 无环 ⟹ 每条路径有限；每条委托边严格消耗剩余深度 ⟹ 深度沿路径单调递减。
+原「单调递减界证明」由该构造直接成立，不再是独立的证明义务。运行时硬上界作为纵深防御保留
+（防发布校验被绕过或图在发布后被篡改）。
 
 ---
 
@@ -807,6 +839,91 @@ network zone、classification ceiling、声明人。**不允许静默换 endpoin
 - 环境基线测试相应调整：不再断言 base_url 已登记（那会阻断合法的自部署场景），改为断言**档案库
   自身 schema 完整**；「未登记 → unverified 档」的行为断言属于 S3 的 RED。
 - 影响 `config/providers/endpoints.yaml`、`.env.example`、`docs/MODELS.md`、`specs/s3-models-context.md`。
+
+---
+
+<a id="adr-012"></a>
+
+## ADR-012：契约测试层级、Gate 例外与读路径授权 —— S0–S2 复审修订
+
+**影响阶段**：S0–S2（回补修复轮）、S3+（前置纪律）　**状态**：accepted
+
+### 问题
+
+S0–S2 收口后的多路代码复审暴露的不是孤立 bug，而是四类**规格级**缺口：
+
+1. 契约只写了「必须成立」，没写「必须在哪里被验证」——导致系统性模式「域层正确、接线失效」：
+   机制存在于带单测的域模块中，生产路径上没有执行点，单测全绿但契约从未生效。
+2. Gate 因环境无法执行（无 docker/Keycloak）时没有合法处置路径——阶段带病收口，纪律文本
+   「Gate 全绿才能进入下一阶段」与实际流程脱节。
+3. 读路径授权只规定了 mutation PEP——org 级读端点与 SCIM 的可见性边界留白。
+4. spec 必需测试场景只存在于默认 deselect 的 slow 标记之后——「全绿」不含策略变更类安全场景。
+
+### 反例清单（驱动本决策的最小反例，均已源码核实）
+
+| # | 反例 | 位置 | 缺口类型 |
+| --- | --- | --- | --- |
+| 1 | 审批 SoD 三层防御（域层/PG store/DB CHECK）比较的 requester 恒为常量 `agent-runtime`，人类 principal 未从 StartRun 穿透；域层单测用真实字符串所以全绿 | `workflows/activities/runtime.py:271` | 测试层级 |
+| 2 | `effect_unknown` 禁自动重试：`ActionReceiptManager`/`FailureTaxonomy` 零生产调用方，workflow `_interpret` 重试循环无门 | `workflows/agent_run.py:477` | 测试层级 |
+| 3 | 委托三层界（环检测/深度上界/共用计数）均未接线，spec §6 要求的发布期环拒绝测试缺失 | `agents/versions.py:82`、`runtime/delegation.py` 零引用 | 测试层级 |
+| 4 | 真实 OPA 下 workspace 创建恒 deny（`configure_workspace` 要求 workspace-scoped 角色，创建时无 workspace 上下文）；集成测试用 FakeOPA 恒 allow 掩盖 | `api/workspaces.py:179` + `policies/zhiwei/authz.rego` | Fake 边界 |
+| 5 | 真实 Keycloak 登录 e2e 13/13 失败，S1 Gate 仍收口 | `artifacts/gates/s1-t6/report.md` | Gate 例外 |
+| 6 | `refresh_session` 零生产调用方（域层 ~400 行 + 约 20 个安全测试为死代码，计数口径：直接调用 refresh_session 的 security 套件用例 18 个），会话 30min idle 即强制登出 | `identity/sessions.py:622` | 测试层级 |
+| 7 | `replay-check` 注释声称「不同会话/事务」，实际两次载入在同一 session 同一事务快照内；交接单以【已验证】登记 | `cli/runtime.py:85` | 声明纪律 |
+| 8 | 任意 org member 可 GET 全量 membership+角色绑定（无 PEP）；SCIM User 资源 identity-global，跨 org principal 可读（200/404 构成存在性 oracle） | `api/memberships.py:115`、`identity/scim.py:165` | 读路径授权 |
+| 9 | `policy change during request`（S1 spec §5 必需场景）唯一实现位于 `-m slow`，默认 Gate 永不执行 | `tests/integration/policy/test_opa_sidecar_slow.py` | Gate deselect |
+
+### 决策
+
+#### 1. 契约测试层级（必要而非充分条件）
+
+spec Required tests 中的**跨组件不变量**（经 API → workflow/policy → DB 生产路径才能成立的契约），
+验收测试必须至少有一条位于 integration/contract 层并走**真实生产路径**。domain 层单测是必要而非充分
+条件——「域正确」不构成「契约生效」的证据。RED 冻结关键契约时须同时指明层级。
+
+S2 修复轮必须回补的接线级契约：SoD requester 穿透、effect_unknown 重试门、委托三层界、Synthesize
+降级、handler registry 完整性预检、RunPaused/RunResumed 落账、replay-check 探针独立性、Redis
+event_sink 生产组装接线。
+
+#### 2. Gate 例外机制
+
+「Gate 全绿才能进入下一阶段」补充唯一例外路径：环境阻塞的 Gate 项必须以**显式例外条目**记录于
+阶段交接单——含阻塞项、根因、解锁条件、复执行时点四要素，并由 operator 确认。此时阶段状态为
+「**有条件收口**」，不得表述为「收口/全绿」；例外项必须在后续依赖该能力的阶段 Gate 前复执行并
+转绿。凡未走例外登记的 Gate 项缺失，一律按 Gate 未通过处理。
+
+#### 3. Fake 件边界
+
+FakeIdP/FakeOPA/Fake ticket 测试是必要而非充分条件：
+
+- 授权矩阵每个 mutation happy path 至少一条**真实 OPA bundle** 集成测试；FakeOPA 恒 allow 不得
+  作为矩阵语义的验证依据。
+- OIDC 登录 happy path 至少一条**真实 Keycloak** 集成测试。
+- Fake 与真实栈的语义分歧（时钟偏移容差、redirect_uri 校验、矩阵 cell 匹配）是缺陷信号，须登记
+  差异清单并在真实栈测试转绿前保持例外条目。
+
+#### 4. 读路径授权（PERMISSIONS §3.1 读 cell 的机读化）
+
+| 读场景 | 允许角色 | 语义 |
+| --- | --- | --- |
+| membership/角色绑定列表 | org_owner、security_admin（workspace_admin 限本 workspace 成员） | Member 仅「读自身」 |
+| workspace 列表 | org 内 active 成员 | 目录语义；workspace 级资源仍按 workspace membership |
+| SCIM Users/Groups | org 作用域 | 仅返回与本 org 存在 Membership 关联的 principal；跨 org 一律 404（与不存在同文案） |
+| runs/approvals/agents 读 | 走 PEP（read cell） | 不允许仅依赖 RLS+membership 判定可见性 |
+
+#### 5. Gate 与 deselect
+
+spec Required tests 场景不得只存在于默认 deselect 的 marker 之后；Gate 命令必须显式包含这些场景
+（如显式 `-m slow` 或逐文件列出），或将其移入默认套件。Gate 输出须列出 deselect 清单并逐项说明
+为何可 deselect。
+
+### 后果
+
+- S2 修复轮（代码回补）在 S3 开工前执行；本决策与 ADR-005/008 增补一起回写 `specs/s0`、`specs/s1`、
+  `specs/s2`；AGENTS.md 同步 Gate 例外机制。
+- e2e（Playwright 五角色 journey、runtime-approval）在真实 Keycloak 可用前以例外条目存在，
+  不宣称全绿。
+- 已收口阶段的「有条件收口」状态由修复轮消除：例外条目转绿或转为显式债务登记后才可宣称收口。
 
 ---
 
