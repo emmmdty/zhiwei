@@ -1,18 +1,21 @@
 """S2-T7：Run API——REST 投影绑定 PG 真相 + Planner port + 审批决策端点。
 
-事实源：specs/s2-agent-runtime.md §3/§5（REST projection 可恢复；sandbox run）。
+事实源：specs/s2-agent-runtime.md §3/§5（REST projection 可恢复；sandbox run）+
+2026-09-03 增补（ADR-012）：POST /runs 的 body workspace_id 必须经成员校验
+（客户端声明只是请求，不是授权事实）；审批 requester 穿透为创建者 principal。
 
 - GET /runs / GET /runs/{id} / GET /runs/{id}/events：从 PG canonical events
   reduce（刷新/断网恢复的权威来源），无进程内缓存；
-- POST /runs：经 Planner port 产出图 → RunCommandService（Run 行 + outbox 命令
-  同事务）→ 请求内联 dispatch（S2 单进程形态；多租户后台 dispatcher 属 S11）；
+- POST /runs：workspace 归属（404 防枚举）→ 成员校验（403）→ Planner port 产出图
+  → RunCommandService（Run 行 + outbox 命令同事务，requested_by=创建者 principal）
+  → 请求内联 dispatch（S2 单进程形态；多租户后台 dispatcher 属 S11）；
 - POST /runs/{id}/approvals/{request_id}/decision：ApprovalRequestStore 的 CAS +
   SoD 守护，决策经命令路径投递给 workflow（approval_decided 信号）。
 """
 
 import asyncio
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -21,8 +24,9 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.identity.domain import ActorContext
+from zhiwei.identity.sessions import MembershipScopeError
 from zhiwei.persistence.approvals import ApprovalRequestStore
-from zhiwei.persistence.run_commands import RunCommandService
+from zhiwei.persistence.run_commands import RunCommandError, RunCommandService
 from zhiwei.persistence.runtime_events import RuntimeEventStore
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.runtime.approvals import ApprovalError
@@ -32,6 +36,11 @@ from zhiwei.workers.outbox_dispatcher import OutboxDispatcher
 from zhiwei.workers.temporal_sender import TemporalWorkflowSender
 
 logger = logging.getLogger(__name__)
+
+WorkspaceAuthorizer = Callable[[ActorContext, UUID], Awaitable[None]]
+"""成员校验端口：确认 actor 持有目标 workspace 的 membership，否则抛
+MembershipScopeError。生产组装绑定 SessionService.resolve_context（S1 权威
+membership 解析）；缺失在构造期拒绝（fail closed）。"""
 
 
 class RunRecord(BaseModel):
@@ -118,14 +127,19 @@ def create_runs_router(
     planner: Planner | None = None,
     dispatch_inline: bool = True,
     task_queue: str = DEFAULT_TASK_QUEUE,
+    workspace_authorizer: WorkspaceAuthorizer,
 ) -> APIRouter:
     """Run API router。
 
     sessions_factory：actor+workspace → PG session factory（app 组装期绑定）；
     temporal_target：Temporal 前端地址（local-product 默认 dev server）；
     dispatch_inline：命令提交后在同一请求内跑一轮 dispatcher poll（S2 单进程
-    形态，见 docstring）。
+    形态，见 docstring）；
+    workspace_authorizer：POST /runs 的 body workspace 成员校验（fail closed，
+    缺失在构造期拒绝——客户端声明不是授权事实，ADR-012）。
     """
+    if workspace_authorizer is None:
+        raise TypeError("workspace_authorizer must be provided (fail closed)")
     planner = planner or FixturePlanner()
     router = APIRouter(prefix="/api/v1/runs", tags=["runs"])
 
@@ -267,13 +281,38 @@ def create_runs_router(
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> dict[str, Any]:
         context = _tenant(actor, request.workspace_id)
+        sessions = sessions_factory(actor, context.workspace_id)
+        # body workspace 是授权事实的「声明」：先验证归属（跨 org/不存在统一 404
+        # 防枚举），再做成员校验（org 内无资格 403）——顺序不可倒置，否则跨 org
+        # 探测能区分「存在但无权」与「不存在」。
+        from sqlalchemy import select
+
+        from zhiwei.persistence.models import Workspace
+
+        async with tenant_session(sessions, context) as session:
+            workspace_exists = await session.scalar(
+                select(Workspace).where(
+                    Workspace.organization_id == context.organization_id,
+                    Workspace.id == context.workspace_id,
+                )
+            )
+        if workspace_exists is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="workspace not found"
+            )
+        try:
+            await workspace_authorizer(actor, request.workspace_id)
+        except MembershipScopeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="outside workspace scope",
+            ) from exc
         try:
             planned = planner.plan(PlanIntent(template=request.template))
         except PlannerError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             ) from exc
-        sessions = sessions_factory(actor, context.workspace_id)
         run_id = await _submit_run(sessions, context, planned, actor)
         await _dispatch(sessions, context)
         return {
@@ -391,13 +430,20 @@ def create_runs_router(
         run_id = uuid4()
         async with tenant_session(session_factory, context) as session:
             service = RunCommandService(session, context)
-            await service.submit_start_run(
-                run_id=run_id,
-                graph=planned.graph.model_dump(mode="json"),
-                task_queue=task_queue,
-                max_task_attempts=planned.max_task_attempts,
-                continue_as_new_after=planned.continue_as_new_after,
-            )
+            try:
+                await service.submit_start_run(
+                    run_id=run_id,
+                    graph=planned.graph.model_dump(mode="json"),
+                    task_queue=task_queue,
+                    max_task_attempts=planned.max_task_attempts,
+                    continue_as_new_after=planned.continue_as_new_after,
+                    # SoD 事实源：审批 requester 从 API actor 穿透（ADR-012 反例 1）
+                    requested_by=str(actor.principal_id),
+                )
+            except RunCommandError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="workspace not found"
+                ) from exc
         return run_id
 
     return router

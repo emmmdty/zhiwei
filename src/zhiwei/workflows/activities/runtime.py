@@ -252,7 +252,13 @@ class RuntimeActivities:
 
     @activity.defn
     async def create_approval(self, input: CreateApprovalInput) -> ActivityEventAck:
-        """为 RequestApproval 任务创建 PG 审批请求（幂等：任务级唯一键）。"""
+        """为 RequestApproval 任务创建 PG 审批请求（幂等：任务级唯一键）。
+
+        requester 承载触发 run 的 human principal（H-1：经 StartRun 命令从
+        POST /runs 的 actor 穿透）——SoD 三层防御（域层/PG store/DB CHECK）
+        比较的都是本列；退化为常量会使三层同时失效（ADR-012 反例 1）。
+        requested_by 同值冗余存储（0011 列语义：发起人可读标识）。
+        """
         run_id = UUID(input.run_id)
         context = _context(input.organization_id, input.workspace_id)
         async with tenant_session(self._sessions, context) as session:
@@ -260,6 +266,7 @@ class RuntimeActivities:
             existing = await store.list_for_run(run_id)
             if any(r.task_id == input.task_id for r in existing):
                 return ActivityEventAck(run_id=input.run_id, created_events=0)
+            requester = input.requested_by or "system"
             # exact input digest：S2 fixture 的任务输入即 task_id 绑定的确定值；
             # digest 绑定沿用域语义（swap 检测在域层 CAS/唯一键处收口）
             await store.create(
@@ -268,9 +275,9 @@ class RuntimeActivities:
                 input_digest=digest_bytes(
                     f"approval:{input.run_id}:{input.task_id}".encode()
                 ),
-                requester="agent-runtime",
+                requester=requester,
                 agent_identity="agent-runtime:fixture",
-                requested_by=input.requested_by,
+                requested_by=requester,
             )
         return ActivityEventAck(run_id=input.run_id, created_events=1)
 
@@ -428,19 +435,71 @@ class RuntimeActivities:
     async def record_task_failed(
         self, input: RecordTaskFailedInput
     ) -> ActivityEventAck:
+        """ActivityError 路径的 TaskFailed 终态落账（幂等键含 attempt_no）。
+
+        前置生命周期补全（C-1）：execute_task 的第一个事务（scheduled/attempt/
+        started）可能因基础设施故障重试耗尽而从未提交——此时直接落 TaskFailed 会
+        产生 reducer 拒绝的序列（pending→failed 非法），该 run 的每次 reduce 都
+        崩溃且无自愈。与 record_approval_outcome 相同的 backfill 模式：先补全
+        pending→scheduled→started，再落终态。
+        """
         run_id = UUID(input.run_id)
         context = _context(input.organization_id, input.workspace_id)
+        now = utc_now()
         key = terminal_key(input.run_id, input.task_id, input.attempt_no)
         async with tenant_session(self._sessions, context) as session:
             store = RuntimeEventStore(session, context)
             if await store.has_event(run_id, key):
                 return ActivityEventAck(run_id=input.run_id, created_events=0)
+            if not await store.has_event(
+                run_id, scheduled_key(input.run_id, input.task_id)
+            ):
+                await store.append(
+                    TaskScheduled(run_id=run_id, timestamp=now, task_id=input.task_id),
+                    actor_ref=input.actor_ref,
+                    idempotency_key=scheduled_key(input.run_id, input.task_id),
+                )
+            attempt_id = _deterministic_attempt_id(
+                input.run_id, input.task_id, input.attempt_no
+            )
+            if not await store.has_event(
+                run_id, attempt_key(input.run_id, input.task_id, input.attempt_no)
+            ):
+                await store.append(
+                    AttemptCreated(
+                        run_id=run_id,
+                        timestamp=now,
+                        task_id=input.task_id,
+                        attempt_id=attempt_id,
+                        attempt_number=input.attempt_no,
+                    ),
+                    actor_ref=input.actor_ref,
+                    idempotency_key=attempt_key(
+                        input.run_id, input.task_id, input.attempt_no
+                    ),
+                )
+            if not await store.has_event(
+                run_id, started_key(input.run_id, input.task_id, input.attempt_no)
+            ):
+                await store.append(
+                    TaskStarted(
+                        run_id=run_id,
+                        timestamp=now,
+                        task_id=input.task_id,
+                        attempt_id=attempt_id,
+                    ),
+                    actor_ref=input.actor_ref,
+                    idempotency_key=started_key(
+                        input.run_id, input.task_id, input.attempt_no
+                    ),
+                )
             await store.append(
                 TaskFailed(
                     run_id=run_id,
-                    timestamp=utc_now(),
+                    timestamp=now,
                     task_id=input.task_id,
                     error=input.error,
+                    attempt_id=attempt_id,
                 ),
                 actor_ref=input.actor_ref,
                 idempotency_key=key,

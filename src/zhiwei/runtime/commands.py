@@ -52,6 +52,9 @@ class StartRun(CommandBase):
     # 否则 eval 场景声称的契约在生产路径上被默认值静默替换）
     continue_as_new_after: int = Field(default=1000, ge=1)
     activity_timeout_seconds: int = Field(default=60, ge=1)
+    # 触发 run 的 human principal（SoD 事实源：审批 requester 必须是真实主体，
+    # 不得在 activity 内退化为常量——ADR-012 反例 1）。空值仅在 eval/内部路径允许。
+    requested_by: str = ""
 
 
 class CancelRun(CommandBase):

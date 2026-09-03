@@ -29,17 +29,25 @@ from zhiwei.identity.commands import (
     IdempotencyRequest,
     NameConflictError,
     ResourceConflictError,
+    add_workspace_membership,
     canonical_request_digest,
     create_group,
     create_workspace,
 )
-from zhiwei.identity.domain import ActorContext, Group
+from zhiwei.identity.domain import (
+    ActorContext,
+    Group,
+    PrincipalDisabledError,
+    PrincipalNotFoundError,
+    WorkspaceMembership,
+)
 from zhiwei.identity.repositories import IdentityRepository
 from zhiwei.persistence.repositories import IdempotencyConflict, WorkspaceRecord
 from zhiwei.persistence.tenant import (
     TenantContext,
     TenantContextRequired,
     TenantScopeError,
+    set_tenant_context,
     tenant_session,
 )
 from zhiwei.policy.enforcement import PolicyEnforcer
@@ -66,6 +74,29 @@ class CreateGroupRequest(BaseModel):
 
     group_id: UUID
     name: str
+
+
+class GrantWorkspaceMembershipRequest(BaseModel):
+    """workspace membership 授予请求（角色词汇 fail closed：仅 workspace 作用域角色）。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    principal_id: UUID
+    role_bindings: frozenset[str]
+
+
+class WorkspaceMembershipView(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    principal_id: UUID
+    organization_id: UUID
+    workspace_id: UUID
+    role_bindings: tuple[str, ...]
+
+
+# workspace 作用域角色词汇（与 policies/zhiwei/authz.rego 的
+# workspace_scoped_roles 一致；未知角色在写路径早失败，不进库等读时 403）
+_WORKSPACE_ROLE_VOCABULARY = frozenset({"workspace_admin", "agent_builder"})
 
 
 class GroupCreated(BaseModel):
@@ -180,7 +211,10 @@ def create_workspaces_router(
             audit_action="organization.workspace.create",
             resource_type="workspace",
             policy_type=ResourceType.WORKSPACE_POLICY,
-            policy_action=Action.CONFIGURE_WORKSPACE,
+            # workspace 创建是 org 作用域动作（PERMISSIONS §3.1 行 2「Org Owner 配置」）。
+            # 不得使用 configure_workspace：唯一允许角色 workspace_admin 是 workspace
+            # 作用域，创建时目标尚不存在 → 矩阵结构性恒 deny（ADR-012 反例 4）。
+            policy_action=Action.CONFIGURE,
             resource_id=request.workspace_id,
             resource_version=1,
             purpose=Purpose.GENERAL,
@@ -205,6 +239,30 @@ def create_workspaces_router(
                     ),
                 )
                 if outcome.created:
+                    # bootstrap：同事务内授予创建者 workspace_admin（与 org 创建
+                    # 自动授予 owner 对称）。workspace_memberships 的 RLS 要求
+                    # workspace GUC——同一事务内重设 GUC 后经 workspace 级 repo
+                    # 写入；不授予则 manage_workspace_members 永远无人持有，
+                    # workspace 生命周期不可运营（s1 spec §3 2026-09-03 增补）。
+                    ws_context = TenantContext(
+                        organization_id=actor.organization_id,
+                        workspace_id=request.workspace_id,
+                    )
+                    await set_tenant_context(session, ws_context)
+                    ws_repository = IdentityRepository(session, ws_context)
+                    if (
+                        await ws_repository.get_workspace_membership(
+                            principal_id=actor.principal_id,
+                            workspace_id=request.workspace_id,
+                        )
+                        is None
+                    ):
+                        await ws_repository.add_workspace_membership(
+                            principal_id=actor.principal_id,
+                            organization_id=actor.organization_id,
+                            workspace_id=request.workspace_id,
+                            role_bindings=frozenset({"workspace_admin"}),
+                        )
                     await append_allowed_audit(
                         session,
                         actor=actor,
@@ -331,4 +389,153 @@ def create_workspaces_router(
             return JSONResponse(content=outcome.response, status_code=status.HTTP_201_CREATED)
         return JSONResponse(content=outcome.response, status_code=status.HTTP_200_OK)
 
+    # ------------------------------------------------- workspace membership 管理（ADR-012）
+
+    @router.get(
+        "/workspaces/{workspace_id}/memberships",
+        response_model=list[WorkspaceMembershipView],
+    )
+    async def list_workspace_memberships(
+        workspace_id: UUID,
+        actor: Annotated[ActorContext, Depends(actor_dependency)],
+    ) -> list[WorkspaceMembershipView]:
+        if actor.organization_id is None:
+            _reject_read(TenantContextRequired("organization context is required"))
+        context = TenantContext(
+            organization_id=actor.organization_id, workspace_id=workspace_id
+        )
+        async with tenant_session(sessions, context) as session:
+            try:
+                memberships = await IdentityRepository(
+                    session, context
+                ).list_workspace_memberships(workspace_id=workspace_id)
+            except (TenantContextRequired, TenantScopeError) as error:
+                _reject_read(error)
+        return [
+            WorkspaceMembershipView(
+                principal_id=m.principal_id,
+                organization_id=m.organization_id,
+                workspace_id=m.workspace_id,
+                role_bindings=tuple(sorted(m.role_bindings)),
+            )
+            for m in memberships
+        ]
+
+    @router.post("/workspaces/{workspace_id}/memberships")
+    async def grant_workspace_membership(
+        workspace_id: UUID,
+        request: GrantWorkspaceMembershipRequest,
+        request_scope: Request,
+        idempotency_key: Annotated[
+            str, Header(min_length=1, pattern=r"\S+", alias="Idempotency-Key")
+        ],
+        actor: Annotated[ActorContext, Depends(actor_dependency)],
+    ) -> JSONResponse:
+        """workspace_admin 授予 workspace membership（角色词汇 fail closed）。
+
+        矩阵语义：org 资源的 manage_workspace_members（workspace_admin、workspace
+        作用域）——这是 workspace_admin 的产生路径之外的管理面（s1 spec §3
+        2026-09-03 增补）。
+        """
+        if actor.organization_id is None:
+            _no_organization(TenantContextRequired("organization context is required"))
+        unknown_roles = sorted(request.role_bindings - _WORKSPACE_ROLE_VOCABULARY)
+        if unknown_roles:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"unknown workspace roles: {unknown_roles}",
+            )
+        request_id, trace_id = request_trace(request_scope)
+        authorization = await authorize_mutation(
+            enforcer=policy_enforcer,
+            sessions=sessions,
+            actor=actor,
+            bootstrap=False,
+            organization_id=actor.organization_id,
+            workspace_id=workspace_id,
+            audit_action="workspace.membership.grant",
+            resource_type="membership",
+            policy_type=ResourceType.ORG,
+            policy_action=Action.MANAGE_WORKSPACE_MEMBERS,
+            resource_id=request.principal_id,
+            resource_version=1,
+            purpose=Purpose.GENERAL,
+            request_id=request_id,
+            trace_id=trace_id,
+        )
+        context = TenantContext(
+            organization_id=actor.organization_id, workspace_id=workspace_id
+        )
+        async with tenant_session(sessions, context) as session:
+            repository = IdentityRepository(session, context)
+            existing = await repository.get_workspace_membership(
+                principal_id=request.principal_id, workspace_id=workspace_id
+            )
+            if existing is not None:
+                view = _membership_view(existing)
+                return JSONResponse(
+                    content=view, status_code=status.HTTP_200_OK
+                )
+            try:
+                membership = await add_workspace_membership(
+                    repository,
+                    principal_id=request.principal_id,
+                    organization_id=actor.organization_id,
+                    workspace_id=workspace_id,
+                    role_bindings=request.role_bindings,
+                )
+                await append_allowed_audit(
+                    session,
+                    actor=actor,
+                    organization_id=actor.organization_id,
+                    workspace_id=workspace_id,
+                    action="workspace.membership.grant",
+                    resource_type="membership",
+                    resource_id=request.principal_id,
+                    resource_version=1,
+                    authorization=authorization,
+                )
+            except (PrincipalNotFoundError, PrincipalDisabledError) as error:
+                await append_failed_mutation_audit(
+                    sessions,
+                    actor=actor,
+                    organization_id=actor.organization_id,
+                    workspace_id=workspace_id,
+                    action="workspace.membership.grant",
+                    resource_type="membership",
+                    resource_id=request.principal_id,
+                    error=error,
+                    request_id=authorization.request_id,
+                    trace_id=authorization.trace_id,
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="principal not found"
+                ) from error
+            except _REQUEST_ERRORS as error:
+                await append_failed_mutation_audit(
+                    sessions,
+                    actor=actor,
+                    organization_id=actor.organization_id,
+                    workspace_id=workspace_id,
+                    action="workspace.membership.grant",
+                    resource_type="membership",
+                    resource_id=request.principal_id,
+                    error=error,
+                    request_id=authorization.request_id,
+                    trace_id=authorization.trace_id,
+                )
+                _reject_write(error)
+        return JSONResponse(
+            content=_membership_view(membership), status_code=status.HTTP_201_CREATED
+        )
+
     return router
+
+
+def _membership_view(membership: WorkspaceMembership) -> dict[str, object]:
+    return {
+        "principal_id": str(membership.principal_id),
+        "organization_id": str(membership.organization_id),
+        "workspace_id": str(membership.workspace_id),
+        "role_bindings": sorted(membership.role_bindings),
+    }

@@ -224,11 +224,23 @@ def create_app(
         ) -> Any:
             return app_sessions
 
+        async def _runs_workspace_authorizer(
+            actor: ActorContext, workspace_id: Any
+        ) -> None:
+            # S1 权威 membership 解析：body workspace 与 header 声明同纪律——
+            # 客户端声明只是请求，不是授权事实（ADR-012）。
+            await session_service.resolve_context(
+                actor.principal_id,
+                organization_id=str(actor.organization_id),
+                workspace_id=str(workspace_id),
+            )
+
         app.include_router(
             create_runs_router(
                 actor_dependency=session_actor,
                 sessions_factory=_runs_sessions,
                 temporal_target=temporal_target,
+                workspace_authorizer=_runs_workspace_authorizer,
             )
         )
 

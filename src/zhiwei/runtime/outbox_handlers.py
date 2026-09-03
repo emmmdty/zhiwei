@@ -160,6 +160,7 @@ class OutboxSignalHandler:
                         "max_task_attempts": command.max_attempts,
                         "continue_as_new_after": command.continue_as_new_after,
                         "activity_timeout_seconds": command.activity_timeout_seconds,
+                        "requested_by": command.requested_by,
                     },
                     organization_id=delivery.organization_id,
                     workspace_id=delivery.workspace_id,

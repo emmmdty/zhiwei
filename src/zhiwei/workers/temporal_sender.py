@@ -55,6 +55,7 @@ class TemporalWorkflowSender:
             max_task_attempts=int(input.get("max_task_attempts", 3)),
             continue_as_new_after=int(input.get("continue_as_new_after", 1000)),
             activity_timeout_seconds=int(input.get("activity_timeout_seconds", 60)),
+            requested_by=str(input.get("requested_by") or "system"),
         )
         try:
             await self._client.start_workflow(
