@@ -82,6 +82,8 @@ class TestResourceActionSchema:
                 "delegate",
                 "config_security",
                 "manage_workspace_members",
+                # 2026-09-03 修订（ADR-012 决策 4）：membership 列表读 cell
+                "read_memberships",
                 "read_self",
                 "read_audit",
                 "create",
