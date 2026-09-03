@@ -1669,6 +1669,102 @@ async def test_api_existing_workspace_collision_rejected(
 
 
 @pytest.mark.asyncio
+async def test_workspace_membership_grant_idempotency(
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """workspace membership 授予消费 Idempotency-Key（D-2：mutation 模式一致性）。
+
+    - 同 key 同 body 重放 → 200（原结果，零新写）
+    - 同 key 异 body → 409（IdempotencyConflict）
+    """
+    organization_id, workspace_id = uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, workspace_id, workspace_name="Idem"
+    )
+    admin = _org_actor(organization_id, workspace_id=workspace_id)
+    # workspace_admin 绑定：FakePolicyEnforcer 不看角色，但绑定使 actor 语义真实
+    target, other = uuid4(), uuid4()
+    for principal_id in (admin.principal_id, target, other):
+        await _seed_actor_principal(identity_sessions, principal_id)
+
+    app = FastAPI()
+    app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: admin, sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        body = {"principal_id": str(target), "role_bindings": ["agent_builder"]}
+        first = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/memberships",
+            json=body,
+            headers={"Idempotency-Key": "grant-key"},
+        )
+        assert first.status_code == 201, first.text
+
+        replayed = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/memberships",
+            json=body,
+            headers={"Idempotency-Key": "grant-key"},
+        )
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.json() == first.json()
+
+        # 同 key 异 body：不得静默授予第二个主体
+        conflicting = await client.post(
+            f"/api/v1/workspaces/{workspace_id}/memberships",
+            json={"principal_id": str(other), "role_bindings": ["agent_builder"]},
+            headers={"Idempotency-Key": "grant-key"},
+        )
+        assert conflicting.status_code == 409, conflicting.text
+
+    connection = await asyncpg.connect(ADMIN_DSN)
+    try:
+        assert await connection.fetchval(
+            "SELECT count(*) FROM workspace_memberships WHERE workspace_id = $1"
+            " AND principal_id = $2",
+            workspace_id,
+            other,
+        ) == 0, "同 key 异 body 不得产生新授予"
+    finally:
+        await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_membership_listing_requires_matching_workspace_context(
+    migrated_database: None,
+    sessions: async_sessionmaker[AsyncSession],
+    identity_sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    """workspace 上下文 actor 读其他 workspace 的名单 → 404（GUC 纪律，防枚举）。"""
+    organization_id, first_ws, second_ws = uuid4(), uuid4(), uuid4()
+    await _seed_organization_and_workspace(
+        sessions, organization_id, first_ws, workspace_name="First"
+    )
+    second_context = TenantContext(organization_id=organization_id)
+    async with tenant_session(sessions, second_context) as session:
+        await TenantRepository(session, second_context).create_workspace(
+            second_ws, name="Second"
+        )
+    actor = _org_actor(organization_id, workspace_id=first_ws)
+    await _seed_actor_principal(identity_sessions, actor.principal_id)
+
+    app = FastAPI()
+    app.include_router(
+        create_workspaces_router(
+            actor_dependency=lambda: actor, sessions=sessions,
+            policy_enforcer=FakePolicyEnforcer(),
+        )
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(f"/api/v1/workspaces/{second_ws}/memberships")
+        assert response.status_code == 404, response.text
+
+
+@pytest.mark.asyncio
 async def test_api_existing_group_collision_rejected(
     migrated_database: None,
     sessions: async_sessionmaker[AsyncSession],

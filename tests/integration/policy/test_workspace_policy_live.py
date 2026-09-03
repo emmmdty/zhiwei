@@ -276,6 +276,110 @@ class TestWorkspaceLifecycleUnderRealPolicy:
             )
         assert response.status_code == 403, response.text
 
+    async def _owner_created_workspace(self, stack) -> tuple[UUID, UUID]:
+        """journey 前置：owner 创建 workspace 并返回 (owner, workspace_id)。"""
+        owner = uuid4()
+        await _create_principal(stack["identity_sessions"], owner)
+        app = _app(stack, _org_owner(stack, owner))
+        org = stack["organization_id"]
+        workspace_id = uuid4()
+        async with _client(app) as client:
+            response = await client.post(
+                f"/api/v1/organizations/{org}/workspaces",
+                json={"workspace_id": str(workspace_id), "name": "read-authz"},
+                headers={"Idempotency-Key": f"ws-create-{workspace_id}"},
+            )
+            assert response.status_code == 201, response.text
+        return owner, workspace_id
+
+    async def test_membership_listing_read_authorization(self, stack) -> None:
+        """membership 列表读路径授权（ADR-012 决策 4；s1 spec §5 读路径 IDOR）。
+
+        - 普通 member（无任何 workspace 角色）→ 403：member 只能读自身，
+          不得枚举全量成员+角色绑定（D-1 反例：修复前 200 全量）
+        - workspace_admin 绑定在另一 workspace → 403（workspace 作用域不匹配）
+        - org_owner（org 上下文）→ 200
+        - security_admin（org 上下文）→ 200
+        """
+        org = stack["organization_id"]
+        owner, workspace_id = await self._owner_created_workspace(stack)
+
+        member = uuid4()
+        await _create_principal(stack["identity_sessions"], member)
+        other_ws_admin = uuid4()
+        await _create_principal(stack["identity_sessions"], other_ws_admin)
+        security_admin = uuid4()
+        await _create_principal(stack["identity_sessions"], security_admin)
+
+        member_actor = ActorContext(
+            principal_id=member,
+            organization_id=org,
+            role_bindings=(
+                ActorRoleBinding(name="member", scope="org", organization_id=org),
+            ),
+        )
+        other_ws_admin_actor = ActorContext(
+            principal_id=other_ws_admin,
+            organization_id=org,
+            role_bindings=(
+                ActorRoleBinding(
+                    name="workspace_admin",
+                    scope="workspace",
+                    organization_id=org,
+                    workspace_id=uuid4(),  # 绑定在别的 workspace
+                ),
+            ),
+        )
+        security_admin_actor = ActorContext(
+            principal_id=security_admin,
+            organization_id=org,
+            role_bindings=(
+                ActorRoleBinding(name="security_admin", scope="org", organization_id=org),
+            ),
+        )
+
+        async with _client(_app(stack, member_actor)) as client:
+            response = await client.get(f"/api/v1/workspaces/{workspace_id}/memberships")
+        assert response.status_code == 403, response.text
+
+        async with _client(_app(stack, other_ws_admin_actor)) as client:
+            response = await client.get(f"/api/v1/workspaces/{workspace_id}/memberships")
+        assert response.status_code == 403, response.text
+
+        # org_owner（创建者，org 上下文）与 security_admin 可读
+        async with _client(_app(stack, _org_owner(stack, owner))) as client:
+            response = await client.get(f"/api/v1/workspaces/{workspace_id}/memberships")
+        assert response.status_code == 200, response.text
+        listing = response.json()
+        assert any(str(entry["principal_id"]) == str(owner) for entry in listing), listing
+
+        async with _client(_app(stack, security_admin_actor)) as client:
+            response = await client.get(f"/api/v1/workspaces/{workspace_id}/memberships")
+        assert response.status_code == 200, response.text
+
+    async def test_plain_member_cannot_grant_workspace_membership(self, stack) -> None:
+        """非 admin 授予 membership 被真实策略拒绝（manage_workspace_members 反例）。"""
+        org = stack["organization_id"]
+        _owner, workspace_id = await self._owner_created_workspace(stack)
+
+        member, victim = uuid4(), uuid4()
+        await _create_principal(stack["identity_sessions"], member)
+        await _create_principal(stack["identity_sessions"], victim)
+        member_actor = ActorContext(
+            principal_id=member,
+            organization_id=org,
+            role_bindings=(
+                ActorRoleBinding(name="member", scope="org", organization_id=org),
+            ),
+        )
+        async with _client(_app(stack, member_actor)) as client:
+            response = await client.post(
+                f"/api/v1/workspaces/{workspace_id}/memberships",
+                json={"principal_id": str(victim), "role_bindings": ["agent_builder"]},
+                headers={"Idempotency-Key": f"member-grant-{victim}"},
+            )
+        assert response.status_code == 403, response.text
+
 
 class TestWorkspacePolicyDecisionSemantics:
     """决策级回归：冻结矩阵语义的机读快照（真实 OPA bundle）。"""
