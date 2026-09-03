@@ -41,6 +41,8 @@ dependencies = [
     # 只承担 token exchange 与 JWT/JWKS 验证），以及 AES-GCM envelope 密码学。
     "authlib>=1.3.0,<2.0.0",
     "cryptography>=42.0.0",
+    "temporalio>=1.14,<2",
+    "redis>=6,<7",
 ]
 
 [project.optional-dependencies]
@@ -101,3 +103,6 @@ markers = [
     "slow: 需要模型下载或长耗时",
 ]
 addopts = "-m 'not live and not slow'"
+
+[dependency-groups]
+dev = []
