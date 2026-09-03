@@ -23,9 +23,11 @@ from zhiwei.api.policy_gate import (
     append_allowed_audit,
     append_failed_mutation_audit,
     authorize_mutation,
+    authorize_read,
     request_trace,
 )
 from zhiwei.identity.commands import (
+    IDEMPOTENCY_SCOPE_WORKSPACE_MEMBER_ADD,
     IdempotencyRequest,
     NameConflictError,
     ResourceConflictError,
@@ -51,7 +53,12 @@ from zhiwei.persistence.tenant import (
     tenant_session,
 )
 from zhiwei.policy.enforcement import PolicyEnforcer
-from zhiwei.policy.roles import Action, Purpose, ResourceType
+from zhiwei.policy.roles import (
+    WORKSPACE_SCOPED_ROLES,
+    Action,
+    Purpose,
+    ResourceType,
+)
 
 _REQUEST_ERRORS = (
     TenantContextRequired,
@@ -94,9 +101,11 @@ class WorkspaceMembershipView(BaseModel):
     role_bindings: tuple[str, ...]
 
 
-# workspace 作用域角色词汇（与 policies/zhiwei/authz.rego 的
-# workspace_scoped_roles 一致；未知角色在写路径早失败，不进库等读时 403）
-_WORKSPACE_ROLE_VOCABULARY = frozenset({"workspace_admin", "agent_builder"})
+# workspace 作用域角色词汇：单一事实源 policy/roles.py（rego 的
+# workspace_scoped_roles 与之同源）；未知角色在写路径早失败，不进库等读时 403
+_WORKSPACE_ROLE_VOCABULARY = frozenset(
+    role.value for role in WORKSPACE_SCOPED_ROLES
+)
 
 
 class GroupCreated(BaseModel):
@@ -397,10 +406,36 @@ def create_workspaces_router(
     )
     async def list_workspace_memberships(
         workspace_id: UUID,
+        request_scope: Request,
         actor: Annotated[ActorContext, Depends(actor_dependency)],
     ) -> list[WorkspaceMembershipView]:
+        """membership 列表的读路径授权（ADR-012 决策 4；D-1 修复）。
+
+        - workspace 上下文 actor 声明的 workspace 必须与路径一致（GUC 纪律，
+          与 groups 端点同款；不一致 404 防枚举）；
+        - PEP read cell（org.read_memberships）：org_owner/security_admin/
+          本 workspace 的 workspace_admin 可读，member 只有读自身（403）；
+        - GUC 绑定路径 workspace：授权读者包含 org 作用域角色（org_owner/
+          security_admin 的 actor.workspace_id 可为空），不能沿用
+          actor.workspace_id 绑定。
+        """
         if actor.organization_id is None:
             _reject_read(TenantContextRequired("organization context is required"))
+        if actor.workspace_id is not None and actor.workspace_id != workspace_id:
+            _reject_read(
+                TenantScopeError("workspace context does not match target")
+            )
+        _, trace_id = request_trace(request_scope)
+        await authorize_read(
+            enforcer=policy_enforcer,
+            actor=actor,
+            organization_id=actor.organization_id,
+            workspace_id=workspace_id,
+            policy_type=ResourceType.ORG,
+            policy_action=Action.READ_MEMBERSHIPS,
+            resource_id=workspace_id,
+            trace_id=trace_id,
+        )
         context = TenantContext(
             organization_id=actor.organization_id, workspace_id=workspace_id
         )
@@ -466,8 +501,40 @@ def create_workspaces_router(
         context = TenantContext(
             organization_id=actor.organization_id, workspace_id=workspace_id
         )
+        request_digest = canonical_request_digest(
+            "POST", request_scope.url.path, request.model_dump(mode="json")
+        )
         async with tenant_session(sessions, context) as session:
             repository = IdentityRepository(session, context)
+            # 幂等消费（D-2）：同 key 同 digest 重放原结果；同 key 异 digest 409，
+            # 不触发授予（与 add_org_membership 的命令级语义同构，因自然键早退
+            # 位于端点而留在此处）
+            idem_lookup = await repository.lookup_idempotency(
+                scope=IDEMPOTENCY_SCOPE_WORKSPACE_MEMBER_ADD, key=idempotency_key
+            )
+            if idem_lookup is not None:
+                if idem_lookup.request_digest != request_digest:
+                    await append_failed_mutation_audit(
+                        sessions,
+                        actor=actor,
+                        organization_id=actor.organization_id,
+                        workspace_id=workspace_id,
+                        action="workspace.membership.grant",
+                        resource_type="membership",
+                        resource_id=request.principal_id,
+                        error=IdempotencyConflict(
+                            "idempotency key was already used for another request"
+                        ),
+                        request_id=authorization.request_id,
+                        trace_id=authorization.trace_id,
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="idempotency key was already used for another request",
+                    )
+                return JSONResponse(
+                    content=idem_lookup.response, status_code=status.HTTP_200_OK
+                )
             existing = await repository.get_workspace_membership(
                 principal_id=request.principal_id, workspace_id=workspace_id
             )
@@ -484,6 +551,17 @@ def create_workspaces_router(
                     workspace_id=workspace_id,
                     role_bindings=request.role_bindings,
                 )
+                view = _membership_view(membership)
+                claimed = await repository.claim_idempotency(
+                    scope=IDEMPOTENCY_SCOPE_WORKSPACE_MEMBER_ADD,
+                    key=idempotency_key,
+                    request_digest=request_digest,
+                    response=view,
+                )
+                if not claimed.created:
+                    return JSONResponse(
+                        content=claimed.response, status_code=status.HTTP_200_OK
+                    )
                 await append_allowed_audit(
                     session,
                     actor=actor,
@@ -526,7 +604,7 @@ def create_workspaces_router(
                 )
                 _reject_write(error)
         return JSONResponse(
-            content=_membership_view(membership), status_code=status.HTTP_201_CREATED
+            content=view, status_code=status.HTTP_201_CREATED
         )
 
     return router

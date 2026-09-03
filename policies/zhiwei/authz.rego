@@ -23,6 +23,11 @@ matrix := {
         "delegate": {"org_owner"},
         "config_security": {"security_admin"},
         "manage_workspace_members": {"workspace_admin"},
+        # 读路径授权（ADR-012 决策 4，PERMISSIONS §3.1 行 1 依据）：membership/
+        # 角色绑定列表只有 org_owner（org 管理）、security_admin（安全配置）
+        # 与 workspace_admin（限本 workspace——workspace 作用域绑定须匹配
+        # input.workspace_id）可读；member 仅「读自身」，不得枚举全量绑定。
+        "read_memberships": {"org_owner", "security_admin", "workspace_admin"},
         "read_self": {"member"},
         "read_audit": {"auditor"},
     },

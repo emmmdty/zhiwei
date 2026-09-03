@@ -39,6 +39,7 @@ from zhiwei.persistence.repositories import IdempotencyConflict, IdempotencyLook
 IDEMPOTENCY_SCOPE_ORGANIZATION_CREATE = "organization.create"
 IDEMPOTENCY_SCOPE_WORKSPACE_CREATE = "organization.workspace.create"
 IDEMPOTENCY_SCOPE_MEMBER_ADD = "organization.member.add"
+IDEMPOTENCY_SCOPE_WORKSPACE_MEMBER_ADD = "workspace.membership.add"
 IDEMPOTENCY_SCOPE_MEMBER_REMOVE = "organization.member.remove"
 IDEMPOTENCY_SCOPE_GROUP_CREATE = "workspace.group.create"
 

@@ -328,6 +328,48 @@ async def authorize_mutation(
     return MutationAuthorization(decision=decision, request_id=request_id, trace_id=trace_id)
 
 
+async def authorize_read(
+    *,
+    enforcer: PolicyEnforcer,
+    actor: ActorContext,
+    organization_id: UUID,
+    workspace_id: UUID | None,
+    policy_type: ResourceType,
+    policy_action: Action,
+    resource_id: UUID,
+    trace_id: str,
+) -> PolicyDecision:
+    """读路径 PEP（ADR-012 决策 4）：与 mutation 同一输入构造与求值，但不写审计。
+
+    读不产生 mutation 审计义务（spec §3 只要求 mutation 同事务审计）；deny 时
+    与 mutation 同语义 403（fail closed，OPA 不可用/输入非法同样拒绝）。
+    """
+    if actor.organization_id is None or organization_id != actor.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="outside tenant scope"
+        )
+    try:
+        policy_input = _build_policy_input(
+            actor=actor,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            policy_type=policy_type,
+            policy_action=policy_action,
+            resource_id=resource_id,
+            resource_version=1,
+            purpose=Purpose.GENERAL,
+            trace_id=trace_id,
+        )
+        decision = await enforcer.authorize(policy_input)
+    except ValueError:
+        decision = enforcer.deny(REASON_POLICY_INPUT_INVALID)
+    if not decision.allow:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="policy denied"
+        )
+    return decision
+
+
 async def _write_denied_audit(
     *,
     sessions: async_sessionmaker[AsyncSession],

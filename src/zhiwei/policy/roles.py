@@ -68,6 +68,8 @@ class Action(StrEnum):
     DELEGATE = "delegate"
     CONFIG_SECURITY = "config_security"
     MANAGE_WORKSPACE_MEMBERS = "manage_workspace_members"
+    # 读路径授权（ADR-012 决策 4）：membership/角色绑定列表的读 cell
+    READ_MEMBERSHIPS = "read_memberships"
     READ_SELF = "read_self"
     READ_AUDIT = "read_audit"
     # workspace_policy
@@ -144,7 +146,8 @@ class Action(StrEnum):
 RESOURCE_ACTIONS: Mapping[ResourceType, frozenset[Action]] = {
     ResourceType.ORG: frozenset({
         Action.CREATE, Action.MANAGE, Action.DELEGATE, Action.CONFIG_SECURITY,
-        Action.MANAGE_WORKSPACE_MEMBERS, Action.READ_SELF, Action.READ_AUDIT,
+        Action.MANAGE_WORKSPACE_MEMBERS, Action.READ_MEMBERSHIPS,
+        Action.READ_SELF, Action.READ_AUDIT,
     }),
     ResourceType.WORKSPACE_POLICY: frozenset({
         Action.CONFIGURE, Action.CONFIGURE_SECURITY_EGRESS,
