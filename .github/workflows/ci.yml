@@ -1,0 +1,62 @@
+# 全仓 Gate：评测资产 → 静态检查 → 全量测试。
+# 纪律：不调用 live 模型（pytest 默认 deselect live/slow 标记）、不读 .env、
+# 失败即红，不取「常见默认」。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+
+      # 授权/租户隔离集成测试依赖真实 PostgreSQL + OPA；keycloak 仅 S1 手动验证需要，
+      # 不参与默认 Gate。
+      - name: 启动测试栈（postgres + opa）
+        run: docker compose -f deploy/compose/compose.test.yaml up -d --wait postgres opa
+
+      - name: 同步依赖
+        run: uv sync
+
+      # 评测先行：冻结资产先于被测能力校验
+      - name: make evals
+        run: make evals
+
+      - name: make determinism
+        run: make determinism
+
+      - name: ruff
+        run: uv run ruff check .
+
+      - name: pyright
+        run: uv run pyright
+
+      - name: pytest（全量，live/slow 默认排除）
+        run: uv run pytest -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: npm ci
+        working-directory: apps/web
+        run: npm ci
+
+      - name: build
+        working-directory: apps/web
+        run: npm run build
