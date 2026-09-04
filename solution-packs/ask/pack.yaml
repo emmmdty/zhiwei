@@ -1,0 +1,55 @@
+schema_version: 1
+pack_id: ask-v1
+name: Ask
+description: >-
+  Cross-source research and answer pack. Plans and executes research tasks
+  spanning documents, code/GitHub, and structured DB/API sources. Produces
+  evidence-backed answers with claims, conflicts, unknowns, and verification.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- capabilities
+capabilities:
+  - ask_research
+  - claim_management
+  - evidence_verification
+  - conflict_detection
+  - cross_source_synthesis
+
+# ---------------------------------------------------------------- required task primitives
+task_primitives:
+  - Intake
+  - Plan
+  - Clarify
+  - Retrieve
+  - Analyze
+  - Verify
+  - Synthesize
+  - EmitArtifact
+  - Finish
+
+# ---------------------------------------------------------------- core dependencies
+core_deps:
+  - zhiwei.evidence.bundles
+  - zhiwei.evidence.claims
+  - zhiwei.evidence.refs
+  - zhiwei.evidence.verifier
+  - zhiwei.runtime.handlers.verify
+
+# ---------------------------------------------------------------- source connectors
+source_connectors:
+  - files
+  - github
+  - db
+  - api
+
+# ---------------------------------------------------------------- risk profile
+risk:
+  default: medium
+  escalation_rules:
+    - condition: "conflicting_sources > 0"
+      risk: high
+    - condition: "unanswerable == true"
+      risk: low
+    - condition: "acl_revoked == true"
+      risk: high

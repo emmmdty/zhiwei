@@ -1,0 +1,302 @@
+schema_version: 1
+pack_id: reference-knowledge-v1
+name: Reference Knowledge Corpus
+description: >-
+  Synthetic enterprise corpus for knowledge eval suites. Provides frozen document/table
+  sources, code/GitHub fixtures, cross-source conflict scenarios, and ACL/freshness
+  test fixtures. Not a live system — only offline eval assets.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- corpus sources
+sources:
+  documents:
+    - id: doc-data-classification
+      connector: files
+      uri_pattern: docs/specs/data-classification.md
+      sections:
+        - id: section-3
+          title: Classification Level 3
+          content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000001
+      classification: CONFIDENTIAL
+    - id: doc-api-rate-limiting
+      connector: files
+      uri_pattern: docs/specs/api-rate-limiting.md
+      tables:
+        - id: table-defaults
+          title: Default Rate Limits
+          columns: [tier, rpm, burst]
+          rows:
+            - [free, 100, 20]
+            - [pro, 500, 100]
+            - [enterprise, 1000, 500]
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000002
+      classification: PUBLIC
+    - id: doc-auth-flow
+      connector: files
+      uri_pattern: docs/specs/auth-flow.md
+      sections:
+        - id: section-pkce
+          title: PKCE Extension
+          content: >-
+            PKCE uses code_verifier and code_challenge to prevent authorization
+            code interception attacks. The verifier is a random string of 43-128
+            characters; the challenge is SHA-256(verifier).
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000003
+      classification: PUBLIC
+    - id: doc-sla-tiers
+      connector: files
+      uri_pattern: docs/specs/sla-tiers.md
+      tables:
+        - id: table-enterprise
+          title: Enterprise SLA
+          columns: [metric, value]
+          rows:
+            - [uptime, "99.99%"]
+            - [response_time_p99, 200ms]
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000004
+      classification: INTERNAL
+    - id: doc-deployment-checklist
+      connector: files
+      uri_pattern: docs/specs/deployment-checklist.md
+      tables:
+        - id: table-preprod
+          title: Pre-production Checklist
+          columns: [item, owner, status]
+          rows:
+            - [数据备份验证, sre, required]
+            - [SSL证书检查, sre, required]
+            - [ACL权限确认, security, required]
+            - [健康检查端点, platform, required]
+            - [日志级别设置, platform, optional]
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000005
+      classification: INTERNAL
+    - id: doc-jwt-validation
+      connector: files
+      uri_pattern: docs/specs/jwt-validation.md
+      code_blocks:
+        - id: codeblock-verify
+          language: python
+          content: "algorithm = 'RS256'\nverify_signature(token, algorithm)"
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000006
+      classification: PUBLIC
+    - id: doc-data-retention
+      connector: files
+      uri_pattern: docs/specs/data-retention.md
+      sections:
+        - id: section-main
+          title: Retention Policy
+          content: Active data retained for 90 days. Archived data retained for 7 years.
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000007
+      classification: PUBLIC
+    - id: doc-gdpr-compliance
+      connector: files
+      uri_pattern: docs/specs/gdpr-compliance.md
+      sections:
+        - id: section-retention
+          title: GDPR Retention
+          content: Per GDPR Art. 5(1)(e), personal data retention limited to 90 days.
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000008
+      classification: PUBLIC
+    - id: doc-websocket
+      connector: files
+      uri_pattern: docs/specs/websocket.md
+      sections:
+        - id: section-timeout
+          title: Connection Timeout
+          content: "Maximum idle timeout: 300 seconds (updated to 600 in v2)."
+      content_hash: sha256:0000000000000000000000000000000000000000000000000000000000000009
+      classification: PUBLIC
+    - id: doc-feature-flags
+      connector: files
+      uri_pattern: docs/specs/feature-flags.md
+      tables:
+        - id: table-dark-launch
+          title: Dark Launch Flags
+          columns: [flag, default, scope]
+          rows:
+            - [dark_launch, "false", workspace]
+      content_hash: sha256:000000000000000000000000000000000000000000000000000000000000000a
+      classification: PUBLIC
+    - id: doc-batch-processing
+      connector: files
+      uri_pattern: docs/specs/batch-processing.md
+      sections:
+        - id: section-limits
+          title: Processing Limits
+          content: "Recommended maximum batch size: 500 records per invocation."
+      content_hash: sha256:000000000000000000000000000000000000000000000000000000000000000b
+      classification: PUBLIC
+    - id: doc-file-upload
+      connector: files
+      uri_pattern: docs/specs/file-upload.md
+      sections:
+        - id: section-limits
+          title: Upload Limits
+          content: "Maximum upload file size: 50MB. (Note: code constant differs.)"
+      content_hash: sha256:000000000000000000000000000000000000000000000000000000000000000c
+      classification: PUBLIC
+    - id: doc-roles
+      connector: files
+      uri_pattern: docs/specs/roles.md
+      sections:
+        - id: section-list
+          title: Role Definitions
+          content: "Defined roles: admin, editor, viewer, auditor, manager (5 total)."
+      content_hash: sha256:000000000000000000000000000000000000000000000000000000000000000d
+      classification: PUBLIC
+
+  code:
+    repository: zhiwei-core
+    branch: main
+    files:
+      - path: src/knowledge/contracts.py
+        symbols:
+          - name: SourceVersion
+            type: class
+            lines: [89, 153]
+            fields:
+              - name: content_digest
+                validator: "sha256 prefix + 64 hex chars"
+          - name: ACLSnapshot
+            type: class
+            lines: [61, 70]
+          - name: Locator
+            type: class
+            lines: [41, 58]
+      - path: src/knowledge/planner.py
+        symbols:
+          - name: KnowledgePlanner
+            type: class
+            methods:
+              - name: plan
+                lines: [1, 50]
+              - name: generate_candidates
+                lines: [51, 120]
+        imports: [knowledge/contracts, knowledge/query, knowledge/acl, knowledge/freshness]
+      - path: src/runtime/handlers/retrieve.py
+        symbols:
+          - name: RetrieveHandler
+            type: class
+        imports: [knowledge/planner, knowledge/contracts]
+      - path: src/zhiwei/evals/domain.py
+        symbols:
+          - name: sorted_unique_units
+            type: function
+            lines: [74, 84]
+      - path: src/config/constants.py
+        symbols:
+          - name: MAX_UPLOAD_SIZE
+            type: constant
+            value: 104857600
+      - path: src/config/languages.py
+        symbols:
+          - name: LANGUAGES
+            type: constant
+            value: "[python, typescript, go, rust]"
+      - path: src/config/pool.py
+        symbols:
+          - name: MAX_POOL_SIZE
+            type: constant
+            value: 100
+      - path: src/version.py
+        symbols:
+          - name: VERSION
+            type: constant
+            value: "1.2.0"
+      - path: src/knowledge/freshness.py
+        symbols:
+          - name: FreshnessPolicy
+            type: class
+            fields:
+              - name: aging_threshold
+                type: timedelta
+
+  github:
+    repository: zhiwei-core
+    prs:
+      - number: 42
+        title: "Add ACL enforcement"
+        reviews:
+          - id: review-1
+            body: "fail-closed semantics for unknown ACL state"
+          - id: review-2
+            body: "Need integration test for revoked ACL path"
+      - number: 28
+        title: "Fix memory leak in connection pool"
+        body: "Resolved high memory usage after pool cleanup."
+    issues:
+      - number: 17
+        title: "OpenSearch index rebuild strategy"
+        body: "alias switch with zero-downtime rebuild"
+    commits:
+      - sha: abc1234
+        message: "feat(contracts): add REVOKED state to SourceVersionState"
+        diff_files: [src/knowledge/contracts.py]
+    releases:
+      - tag: v1.2.0-rc1
+        version: "1.2.0-rc1"
+
+  db:
+    schemas:
+      - name: public
+        tables:
+          - name: user_roles
+            columns: [id, name, org_id, created_at]
+            row_count: 7
+          - name: query_log
+            columns: [id, query, memory_bytes, timestamp]
+    snapshot_level: replayable
+
+# ---------------------------------------------------------------- ACL fixtures
+acl:
+  organizations:
+    - id: org-a
+      workspaces: [ws-a1, ws-a2]
+    - id: org-b
+      workspaces: [ws-b1]
+  principals:
+    - id: alice@org-a
+      org: org-a
+      clearance: INTERNAL
+    - id: bob@org-b
+      org: org-b
+      clearance: CONFIDENTIAL
+      revoked_at_query_time: true
+  documents:
+    - doc: doc-data-classification
+      classification: CONFIDENTIAL
+      allowed_principals: []  # nobody in test has CONFIDENTIAL
+
+# ---------------------------------------------------------------- freshness fixtures
+freshness:
+  policies:
+    - connector: files
+      aging_threshold: 7d
+    - connector: github
+      aging_threshold: 30d
+    - connector: db
+      aging_threshold: 1d
+  fixtures:
+    - doc: doc-456
+      observed_at: "2026-08-05T00:00:00Z"
+      aging_threshold: 7d
+      expected_status: aged
+    - doc: doc-789
+      observed_at: "2026-09-02T00:00:00Z"
+      aging_threshold: 7d
+      expected_status: fresh
+
+# ---------------------------------------------------------------- metamorphic variants
+metamorphic:
+  rename:
+    description: Source file renamed; locator URI changes but content stays the same.
+  move:
+    description: Source file moved to different directory; locator path changes.
+  update:
+    description: Content updated; ground truth must reflect new value.
+  revoke:
+    description: Source version revoked or ACL removed; query must be refused.
+
+# ---------------------------------------------------------------- sealed digest
+content_digest: sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
