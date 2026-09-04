@@ -4,12 +4,14 @@
 
 ## 项目与事实源
 
-企业 Agent Core 平台。`src/` 尚未实现，当前仓库只有冻结设计与基准评测资产。
+企业 Agent Core 平台。S0–S2 已过阶段 Gate 收口；S3–S8（Models/Context、Capability Hub、
+Knowledge、Evidence/Ask、Memory、Discover/Actions）实现已入库并通过全仓 Gate；S9–S11
+（Eval/Release、Studio、Production Reference）未开始。
 
 事实源优先级（冲突时上位优先）：
 
 1. `docs/superpowers/specs/2026-08-12-zhiwei-enterprise-agent-platform-design.md` — 冻结总设计（架构约束）
-2. `docs/DECISIONS.md` — ADR-001~010（机制级算法，总设计冻结后补齐）
+2. `docs/DECISIONS.md` — ADR-001~012（机制级算法与流程例外，总设计冻结后补齐）
 3. `specs/s0-foundation.md` … `specs/s11-production-reference.md` — 各阶段实现规格
 4. `docs/superpowers/plans/2026-08-12-s*.md` — 任务级执行计划，按 checkbox 逐条推进
 

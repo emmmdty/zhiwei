@@ -5,19 +5,19 @@
 
 ## 当前状态
 
-`release_mode: design_and_benchmark_assets`
+项目按 S0–S11 阶段推进（见 [docs/ROADMAP.md](docs/ROADMAP.md)）：
 
-项目已冻结产品设计、实施规格和评测资产；`src/` 尚未实现。因此当前仓库**不是可运行产品**，
-也不存在模型效果、检索质量、风险发现能力、成本、延迟、吞吐或生产可用性数字。
+- **已完成**：冻结总设计与 ADR-001~012、12 份阶段规格与任务计划、评测资产（`make evals` 110 项
+  validator、`make determinism` 21 个发布资产两次重建逐字节一致）。
+- **S0–S2**（Foundation / Tenancy / Runtime）：阶段 Gate 收口，交接单见 `docs/handoffs/`。
+- **S3–S8**（Models/Context、Capability Hub、Knowledge、Evidence/Ask、Memory、Discover/Actions）：
+  核心实现已入库，通过全仓 Gate：ruff 0、pyright 0、pytest 全量通过（含 OPA + PostgreSQL
+  集成层），CI 在每次 push/PR 复验。
+- **未开始**：S9 Eval/Release、S10 Studio/Third App、S11 Production Reference。
 
-当前仅以下事实有本地证据：
-
-- `make evals`：冻结的 FactQA/Risk 资产通过 110 项 validator。
-- 题集统计单位为 120 行、112 个 independence unit、57 个 template。
-- `make determinism`：21 个发布资产两次干净重建逐字节一致。
-- 四类统计单位故障注入可被 validator 捕获。
-
-这些结果证明的是评测资产纪律，不证明 Agent Core 或 Ask/Discover 已经实现。
+纪律不变：不调用 live 模型；没有 Gate artifact 支撑的数字不写进任何文档。当前不存在模型效果、
+检索质量、成本、延迟、吞吐或生产可用性声明——上述测试结果证明的是实现纪律与契约正确性，
+不构成 Agent 效果证明。
 
 ## 最终产品
 
@@ -85,6 +85,17 @@ make determinism
 allowlist、数据分类、能力 attestation、供应商侧余额关闭和 operator 显式动作；当前已配置的实例见
 [docs/MODELS.md 附录 A](docs/MODELS.md)。历史 prereg 中的配置预算数字属于旧评测方案，不代表实际
 花费或运行结果。
+
+## 运行测试
+
+```bash
+uv sync
+docker compose -f deploy/compose/compose.test.yaml up -d --wait postgres opa
+uv run pytest -q
+```
+
+授权与租户隔离的集成测试依赖 compose 栈中的 PostgreSQL（`127.0.0.1:55432`）与 OPA
+（`127.0.0.1:8181`）；`live`/`slow` 标记默认 deselect，不会发起真实模型请求。
 
 ## 文档入口
 
