@@ -19,13 +19,15 @@ httpx2.alias_httpx()
 # 着色关闭、按非终端渲染，与本地非 tty 捕获一致。
 
 
+_console_init = rich.console.Console.__init__
+
+
 def _plain_console_init(self: rich.console.Console, *args: object, **kwargs: object) -> None:
     kwargs["no_color"] = True
     kwargs["force_terminal"] = False
-    rich.console.Console.__init__orig(self, *args, **kwargs)
+    _console_init(self, *args, **kwargs)
 
 
-rich.console.Console.__init__orig = rich.console.Console.__init__  # type: ignore[attr-defined]
 rich.console.Console.__init__ = _plain_console_init  # type: ignore[assignment,misc]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
