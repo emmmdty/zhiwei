@@ -11,6 +11,10 @@ on:
 jobs:
   backend:
     runs-on: ubuntu-latest
+    env:
+      # CI=true 会让 typer/rich 对 CLI help 强制着色，ANSI 码会切断 CLI
+      # 契约测试的选项子串断言；NO_COLOR 与本地非 tty 行为对齐
+      NO_COLOR: "1"
     steps:
       - uses: actions/checkout@v4
 
