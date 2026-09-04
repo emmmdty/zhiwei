@@ -130,6 +130,13 @@
   `evals/knowledge/` 4 个语料文件尚未注册进 validator，属于 S5 的「评测先行」未完成债务。
 - **流程债务**：该批次整包未提交且混跨 S3–S8 多个 Task，无法按 per-Task 边界补拆提交；
   8 个 spec 要求的安全测试目录与 5 个 E2E Playwright spec 仍缺（审计自认 P2 遗留）。
+- **CI 上线**（GitHub Actions，push/PR 触发）：backend job 与本地 Gate 同口径（compose 测试栈
+  postgres+opa → evals → determinism → ruff → pyright → 全量 pytest），frontend job 跑
+  Node 22 npm build。过程中修复三处 CI 揭示的问题：dev extra 缺失（工具链在
+  optional-dependencies）、runner 注入 FORCE_COLOR 切断 CLI 契约断言（conftest 进程级钉死
+  rich Console）、authlib httpx_client 硬依赖 httpx 未声明（exact sync 后 OIDC import 链断裂，
+  本地 venv 残留包掩盖）。远程仓库 `origin = github.com/emmmdty/zhiwei`，README/AGENTS.md
+  已同步实现状态。
 
 ## 待办
 
