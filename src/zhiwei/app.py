@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from fastapi import FastAPI, Request
 
@@ -232,12 +233,12 @@ def create_app(
         )
 
         def _runs_sessions(
-            actor: ActorContext, workspace_id: Any
+            actor: ActorContext, workspace_id: UUID | None  # TODO: type narrowed in Phase 2 audit
         ) -> Any:
             return app_sessions
 
         async def _runs_workspace_authorizer(
-            actor: ActorContext, workspace_id: Any
+            actor: ActorContext, workspace_id: UUID | None  # TODO: type narrowed in Phase 2 audit
         ) -> None:
             # S1 权威 membership 解析：body workspace 与 header 声明同纪律——
             # 客户端声明只是请求，不是授权事实（ADR-012）。
