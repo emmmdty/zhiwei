@@ -4,8 +4,8 @@
   "verdict": "FEASIBLE",
   "environment": {
     "python": "3.11.15",
-    "httpx": "0.28.1",
-    "openai": "2.54.0",
+    "httpx": "2.12.0",
+    "openai": "3.8.0",
     "network": "loopback 127.0.0.1 only + in-process httpx.MockTransport"
   },
   "scenarios": [
@@ -123,21 +123,21 @@
         {
           "id": "response_not_buffered",
           "ok": true,
-          "detail": "首末 delta 间隔 0.148s > 0.08s，说明 capture transport 未缓冲响应",
+          "detail": "首末 delta 间隔 0.147s > 0.08s，说明 capture transport 未缓冲响应",
           "timing_dependent": true
         },
         {
           "id": "same_capture_point_as_non_stream",
           "ok": true,
-          "detail": "POST http://127.0.0.1:57776/v1/chat/completions"
+          "detail": "POST http://127.0.0.1:57902/v1/chat/completions"
         }
       ],
       "facts": {
         "delta_arrival_offsets_s": [
-          0.0067,
-          0.055,
-          0.1047,
-          0.1549
+          0.0076,
+          0.0544,
+          0.1046,
+          0.1547
         ],
         "wire_body_utf8": "{\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}],\"model\":\"spike-model\",\"stream\":true,\"temperature\":0.0}",
         "wire_body_sha256": "sha256:0f20f836e54c7c5bb208a77a1c5bf76e521d967c8c4a60bf817c8aff4523f9e9"

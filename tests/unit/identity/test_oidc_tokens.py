@@ -15,7 +15,7 @@ import json
 import time
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import pytest
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa

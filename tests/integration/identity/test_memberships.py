@@ -29,7 +29,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fixtures.policy_fake import FakePolicyEnforcer
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError

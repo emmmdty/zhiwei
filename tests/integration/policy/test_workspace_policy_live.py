@@ -21,11 +21,11 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
-import httpx
+import httpx2 as httpx
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from zhiwei.api.workspaces import create_workspaces_router

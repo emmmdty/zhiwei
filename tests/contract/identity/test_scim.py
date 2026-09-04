@@ -27,7 +27,7 @@ from uuid import uuid4
 import pytest
 from fastapi import FastAPI
 from fixtures.policy_fake import FakePolicyEnforcer
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from zhiwei.identity.domain import ActorContext

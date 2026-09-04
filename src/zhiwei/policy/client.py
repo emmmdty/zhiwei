@@ -39,7 +39,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-import httpx
+import httpx2 as httpx
 from pydantic import ValidationError
 
 from zhiwei.contracts.canonical import digest

@@ -31,7 +31,7 @@ from uuid import UUID, uuid4
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from zhiwei.api.runs import create_runs_router

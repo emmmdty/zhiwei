@@ -27,7 +27,7 @@ from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
-import httpx
+import httpx2 as httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes

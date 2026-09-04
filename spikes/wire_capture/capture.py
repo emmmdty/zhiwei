@@ -15,7 +15,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import dataclass, field
 
-import httpx
+import httpx2 as httpx
 
 # 不进 manifest、也不落盘的请求头。凭据与会随重试变化的遥测头分开列，便于在证据里区分二者。
 _SECRET_HEADERS = frozenset({"authorization", "api-key", "x-api-key", "cookie", "proxy-authorization"})

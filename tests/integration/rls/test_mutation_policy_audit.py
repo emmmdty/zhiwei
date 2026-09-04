@@ -46,7 +46,7 @@ from urllib.parse import parse_qs, urlparse
 from uuid import UUID, uuid4
 
 import asyncpg
-import httpx
+import httpx2 as httpx
 import pytest
 import pytest_asyncio
 from alembic import command

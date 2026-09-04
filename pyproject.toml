@@ -21,9 +21,9 @@ dependencies = [
     # PostgreSQL 只用异步驱动：Alembic 的 env.py 走 async engine，避免同一进程内维护两套
     # 连接语义（同步/异步各一份 DSN、各一套 tenant context 设置路径）。
     "asyncpg>=0.30.0,<1.0.0",
-    "httpx>=0.28.1",
-    "openai>=2.0.0,<3.0.0",
-    "anthropic>=0.70.0,<1.0.0",
+    "httpx2>=2.5.0",
+    "openai>=3.0.0,<4.0.0",
+    "anthropic>=1.0.0,<2.0.0",
     "sqlglot>=28.0.0,<29.0.0",
     "typer>=0.20.0,<1.0.0",
     "python-dotenv>=1.1.0,<2.0.0",
@@ -51,11 +51,15 @@ evals = ["openpyxl>=3.1.0", "reportlab>=4.0.0"]
 retrieval = [
     "rank-bm25>=0.2.2",
     "sentence-transformers>=5.0.0,<6.0.0",
+    "tiktoken>=0.9.0",
+    "datasketch>=1.6.0",
+]
+mcp = [
+    "mcp>=2.1.0",
 ]
 dev = [
     "pytest>=9.0.2",
-    "pytest-asyncio>=1.2.0",
-    "pytest-httpx>=0.36.2",
+    "pytest-asyncio>=0.24.0",
     "pytest-cov>=7.0.0",
     "ruff>=0.14.0",
     "pyright>=1.1.400",
@@ -98,11 +102,14 @@ extraPaths = ["evals/scripts", "src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# --import-mode=importlib：tests/ 目录树中 __init__.py 不均匀（既有目录无、新增目录有），prepend
+# 模式下同名顶层包（models/capabilities/evidence/knowledge/memory/context…）会互相抢占
+# sys.modules，全量收集时炸出 ModuleNotFoundError。importlib 按路径导入，不依赖 sys.path 插入顺序。
 markers = [
     "live: 需要真实 LLM/网络（默认不跑）",
     "slow: 需要模型下载或长耗时",
 ]
-addopts = "-m 'not live and not slow'"
+addopts = "-m 'not live and not slow' --import-mode=importlib"
 
 [dependency-groups]
 dev = []

@@ -21,7 +21,7 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from httpx import AsyncClient
+from httpx2 import AsyncClient
 
 from zhiwei.agents.task_graph import TaskGraph, TaskGraphNode
 from zhiwei.api.events import create_events_router

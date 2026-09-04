@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 import openai
 from capture import CaptureTransport, PinnedBody, PreSendRejected, WireCapture
 from mock_endpoint import EndpointConfig, MockEndpoint
