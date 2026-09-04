@@ -12,15 +12,12 @@ jobs:
   backend:
     runs-on: ubuntu-latest
     env:
-      # runner 侧可能导出 FORCE_COLOR，其优先级高于 NO_COLOR；两者同时归位，
-      # CLI help 才是纯文本，与本地非 tty 捕获一致
+      # conftest.py 会在 pytest 进程级移除 FORCE_COLOR/置 NO_COLOR，这里是双保险：
+      # runner 注入的 FORCE_COLOR 优先级高于 NO_COLOR，单靠 NO_COLOR 会被压过
       NO_COLOR: "1"
       FORCE_COLOR: ""
     steps:
       - uses: actions/checkout@v4
-
-      - name: 诊断着色相关环境变量
-        run: env | grep -iE 'color|term=' || true
 
       - uses: astral-sh/setup-uv@v5
         with:
