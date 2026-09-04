@@ -27,7 +27,7 @@ class ImmutableObjectConflict(ObjectStoreError):
 
 
 class ObjectMetadata(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str
     size_bytes: int = Field(ge=0)
@@ -39,7 +39,7 @@ class ImmutableObjectMetadata(ObjectMetadata):
 
 
 class PromotionResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     key: str
     created: bool
@@ -50,7 +50,7 @@ class PromotionResult(BaseModel):
 class ObjectNamespace(BaseModel):
     """Explicit tenant scope for every physical object operation."""
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     organization_id: UUID
     workspace_id: UUID

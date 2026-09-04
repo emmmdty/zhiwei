@@ -119,7 +119,7 @@ class ProjectionMismatch(RuntimeError):
 
 
 class EventAppendResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     event_id: UUID
     sequence_no: int
@@ -128,7 +128,7 @@ class EventAppendResult(BaseModel):
 
 
 class ProjectionRebuildResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: UUID
     sequence_no: int

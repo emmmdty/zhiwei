@@ -24,6 +24,7 @@ class ApprovalStatus(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     REVOKED = "revoked"
+    EXPIRED = "expired"
 
 
 class ApprovalError(RuntimeError):

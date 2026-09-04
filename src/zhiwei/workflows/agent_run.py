@@ -299,9 +299,6 @@ class AgentRunWorkflow:
                 decision = self._approval_decisions[task_id]
                 await self._record_approval_outcome(input, graph, task_id, decision)
                 continue
-                decision = self._approval_decisions[task_id]
-                await self._record_approval_outcome(input, graph, task_id, decision)
-                continue
 
             # 串行节点逐个执行；并行只读节点并发分派、按 stable task id 顺序收集。
             for task_id in serial:

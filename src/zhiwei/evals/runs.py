@@ -224,7 +224,7 @@ class SealEmptyCommand(BaseModel):
 class EvalRunSealedPayload(BaseModel):
     """`eval.run.sealed` canonical event 的 payload schema。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     eval_run_id: UUID
     manifest_id: UUID
@@ -234,7 +234,7 @@ class EvalRunSealedPayload(BaseModel):
 class _DatasetPayload(BaseModel):
     """`eval.dataset` artifact schema；只做注册，内容由 canonical 字节本身保证。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     registered_units: list[dict[str, str]] | None = None
     samples: list[str] | None = None
@@ -243,17 +243,17 @@ class _DatasetPayload(BaseModel):
 class _TestReportPayload(BaseModel):
     """`gate.test-report` artifact schema；结构由 seal 流程校验。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class _SealedRunPayload(BaseModel):
     """`eval.sealed-run` artifact schema；内容由 sealing.verify_sealed_artifact 复算。"""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
 
 class CreatedEvalRun(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: UUID
     eval_run_id: UUID
@@ -266,7 +266,7 @@ class CreatedEvalRun(BaseModel):
 
 
 class SealedEvalRun(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     run_id: UUID
     eval_run_id: UUID
