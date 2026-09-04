@@ -32,17 +32,6 @@ jobs:
         # evals extra：资产重建脚本（openpyxl/reportlab）；dev extra：pytest/ruff/pyright
         run: uv sync --extra evals --extra dev
 
-      - name: 诊断着色（临时）
-        run: |
-          env | grep -i color || true
-          uv run python - <<'EOF'
-          import os
-          print("pytest视角:", {k: repr(v) for k, v in os.environ.items() if "COLOR" in k.upper()})
-          import rich, typer
-          print("rich", rich.__version__, "typer", typer.__version__)
-          EOF
-          uv run zhiwei --help 2>&1 | head -3 | cat -v
-
       # 评测先行：冻结资产先于被测能力校验
       - name: make evals
         run: make evals
