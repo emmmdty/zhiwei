@@ -22,6 +22,9 @@ dependencies = [
     # 连接语义（同步/异步各一份 DSN、各一套 tenant context 设置路径）。
     "asyncpg>=0.30.0,<1.0.0",
     "httpx2>=2.5.0",
+    # authlib.integrations.httpx_client 硬 import httpx（其 metadata 未声明该依赖）；
+    # 与 httpx2 并存：openai/anthropic/mcp 与捕获层走 httpx2，authlib OIDC 集成走 httpx
+    "httpx>=0.28.1",
     "openai>=3.0.0,<4.0.0",
     "anthropic>=1.0.0,<2.0.0",
     "sqlglot>=28.0.0,<29.0.0",
