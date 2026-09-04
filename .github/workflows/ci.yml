@@ -24,8 +24,8 @@ jobs:
         run: docker compose -f deploy/compose/compose.test.yaml up -d --wait postgres opa
 
       - name: 同步依赖
-        # evals extra 提供 openpyxl/reportlab（资产重建脚本依赖）
-        run: uv sync --extra evals
+        # evals extra：资产重建脚本（openpyxl/reportlab）；dev extra：pytest/ruff/pyright
+        run: uv sync --extra evals --extra dev
 
       # 评测先行：冻结资产先于被测能力校验
       - name: make evals
