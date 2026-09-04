@@ -41,6 +41,41 @@ apps/web/src/features/{workbench,runs,approvals}/
 - Task node 声明 typed input/output、dependencies、parallel safety、required capability、budget、failure policy、
   completion obligations。
 - FixturePlanner 通过正式 Planner port 输出 TaskGraphPatch，不允许 workflow 中硬编码演示路径。
+
+### 3.2 TaskGraphPatch
+
+`TaskGraphPatch` 是 FixturePlanner（及未来正式 Planner）输出的图修改指令：
+
+```python
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class MergeStrategy(str, Enum):
+    APPEND = "append"
+    LAST_WRITE_WINS = "last_write_wins"
+    CONFLICT_PRESERVING = "conflict_preserving"
+
+
+@dataclass(frozen=True)
+class EdgePatch:
+    """Edge modification instruction."""
+    source: str  # source task ID
+    target: str  # target task ID
+    action: str  # "add" | "remove"
+
+
+@dataclass(frozen=True)
+class TaskGraphPatch:
+    """Output of FixturePlanner: incremental graph modification."""
+    add_nodes: list[TaskNode]  # nodes to add
+    remove_nodes: list[str]  # node IDs to remove
+    update_edges: list[EdgePatch]  # edge modifications
+    merge_strategy: MergeStrategy | None  # strategy declaration for parallel writes
+```
+
+Planner 输出的 patch 必须通过发布期校验：环检测、merge 策略完整性、depth 约束。
+未通过校验的 patch 不得应用于运行中的 TaskGraph。
 - TaskHandlerRegistry 以 primitive + handler version 注册；validate 阶段检查完整性。S2 提供 core/fixture
   handlers，后续 S3-S7 通过相同 registry 注册正式 handler，禁止 Solution Pack 直接访问 DB/provider。
 - 只读独立 task 可并行，按 stable id 合并；unknown/write 串行。
@@ -57,6 +92,28 @@ apps/web/src/features/{workbench,runs,approvals}/
   conflict 时 `Synthesize` 不得产出 Fact 类 claim，只能产出 Inference 或触发 Clarify——该降级是
   运行时结构性门，必须有实现与 integration 级测试，不允许只存在于文档。
 - ChildTask 收窄 scope/budget/depth/deadline，返回 typed TaskResult；delegation chain 持久化。
+
+### 3.1 ContextSlice
+
+`ContextSlice` 是父 Agent 委托子 Agent 时传递的最小上下文。它必须严格收窄，不泄露父级内部状态：
+
+```python
+from dataclasses import dataclass, field
+from datetime import timedelta
+
+
+@dataclass(frozen=True)
+class ContextSlice:
+    """Minimal context passed to child agents during delegation."""
+    allowed_tools: list[str]  # tool allowlist for child
+    data_scope: DataScope  # data access boundaries (subset of parent's)
+    budget: TokenBudget  # token budget allocated to child
+    deadline: timedelta  # max execution time
+    output_schema: dict | None  # expected output format, None if unconstrained
+```
+
+**禁止包含**：父级 transcript、未授权工具、原始凭据、personal memory。违反此约束的委托在
+发布期即被拒绝（AgentVersion 校验），运行时由 delegation handler 再次断言。
 - **委托终止界**（[ADR-008](../docs/DECISIONS.md#adr-008) 及 2026-09-03 可判定化增补）：三层界共同
   覆盖全部反馈路径——① 发布前对委托依赖图（AgentVersion 的 delegate 依赖 + SolutionPack 依赖 +
   agent-as-tool provider 边）做**环检测**，任何环发布失败（含 A→B→A 与经 tool provider 交替构成

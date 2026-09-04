@@ -99,12 +99,50 @@
   determinism 逐字节一致、replay-check 7/7、eval seal 7/7、handoff-check 干净（基线
   `aa88313`）。交接文档见 `docs/handoffs/s2-repair-round.md`。
 
+## 2026-09-04：S3–S8 未提交批次的全量 Gate 对账与修复
+
+- **背景**：工作区存在一批未提交实现（S3 Models/Context、S4 Capability Hub、S5 Knowledge、S6
+  Evidence/Ask、S7 Memory、S8 Discover/Actions 的 src/tests/fixtures + 三份审计报告
+  `docs/*AUDIT*.md`），未走 RED→GREEN→COMMIT 流程，`progress.md` 亦无记录。对账发现审计的
+  "全绿" 口径是 `pyright src/` + 分子目录跑 pytest，从未跑过全仓 pyright、全量 pytest 与
+  integration/security 层。
+- **对账暴露并已修复**（详见本轮 git diff）：
+  - pytest 全量收集炸出 19 个 ModuleNotFoundError：新增测试目录的 `__init__.py` 使
+    models/capabilities/evidence/knowledge/memory/context 等同名顶层包在 prepend 导入模式下互相
+    抢占 `sys.modules`。已在 `pyproject.toml` 固定 `--import-mode=importlib`。
+  - S1 锁定契约 `tests/unit/identity/test_secret_contract.py` 的 SecretRef repr 断言被改为打码，
+    以适配审计误判 L-4（SecretRef 是不透明引用句柄，repr=句柄值是安全契约本身）。已恢复锁定测试
+    原文并还原 `SecretRef.__repr__`；`tests/security/capabilities/test_secrets.py` 安全契约随之回绿。
+  - 新增 `tests/integration/context/test_wire_binding.py` 10 处使用废弃的
+    `asyncio.get_event_loop().run_until_complete()`，单独跑侥幸通过、全量跑被 pytest-asyncio
+    置位的 loop 状态炸出 RuntimeError；已全部改为 `asyncio.run()`。
+  - `tests/unit/evidence/test_verifier.py` 过滤子串 `canonical_digest` 与实现 check_id
+    `claim_*_canonical_value_integrity` 漂移导致恒失败（审计误标 "pre-existing"）；已对齐。
+  - 全仓 pyright 338→0：测试工厂函数 `**overrides: object` 级联类型错误批量改为 `Any`，
+    `uuid4` 误用作类型注解改为 `UUID`，openpyxl optional 成员加守卫，`ValidatedOperation`
+    多传的 `operation_id` 移除，spike-01 脚本迁移至 httpx2 后复跑 `verdict: FEASIBLE`（exit 0）。
+  - ruff 5→0。
+- **当前 Gate 口径（全仓，2026-09-04 终态）**：pytest 2938 passed / 6 skipped / 20 deselected /
+  0 failed / 0 errors；ruff 0；pyright 0；`make evals` 110 项全过；`make determinism` 逐字节一致；
+  spike-01 复验通过。此前 16 项 OPA/PG live 集成红灯经恢复 Docker Desktop WSL 集成并拉起
+  `deploy/compose/compose.test.yaml`（postgres + opa）后全部转绿，**未启用 ADR-012 例外**。
+- **冻结资产核验**：`evals/` 既有资产未被修改（determinism/checksums 全绿）；新增
+  `evals/knowledge/` 4 个语料文件尚未注册进 validator，属于 S5 的「评测先行」未完成债务。
+- **流程债务**：该批次整包未提交且混跨 S3–S8 多个 Task，无法按 per-Task 边界补拆提交；
+  8 个 spec 要求的安全测试目录与 5 个 E2E Playwright spec 仍缺（审计自认 P2 遗留）。
+
 ## 待办
 
-- 从 S0 开始开发，逐 checkbox 推进，不跳 Gate，不自动调用 live 模型。
-- S3 Models/Context 阶段：35 个 Task 待执行（`specs/s3-models-context.md`）。
+- S3–S8 未提交批次：先由 operator 决定整批验收/提交边界（无法按原 per-Task 边界补拆），
+  验收通过前不据此声称 S3–S8「已收口」。
+- S3–S8 批次按模块边界分批入库（deps 迁移 → 既有模块加固 → S3–S8 各阶段 → 接线 →
+  solution packs → 审计文档与 spec 修订）；整批验收以全量 Gate 为准，不声称逐 Task 收口。
+- S9 Eval/Release、S10 Studio/Third App、S11 Production Reference 未开始。
 - S2 修复轮登记的开放债务（详见 `docs/handoffs/s2-repair-round.md` §7）：SCIM group
   审计同事务、Child-run delegation 集成测试、SSE 心跳/游标下推、Web SSE 客户端等。
-- wire capture 与 token estimator 两个 P0 spike 可在 S0 之前独立执行。
+- S5「评测先行」债务：`evals/knowledge/` 语料未注册进 validator（110 项口径未覆盖）。
+- 审计 P2 遗留：8 个 spec 要求的安全测试目录、5 个 E2E Playwright spec、hypothesis
+  reducer property tests、S5 dense index 生产化选型（pgvector/FAISS）。
+- token estimator spike（P0）仍未执行；wire capture spike 已于 2026-09-04 在 httpx2 下复验。
 - 委托集成测试：S3 Delegate handler 实现后必须补 integration 级委托链 + 环检测端到端 + 两路径
   共用计数验证。

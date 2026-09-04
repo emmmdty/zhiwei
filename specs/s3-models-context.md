@@ -33,6 +33,54 @@ tests/{contract/models,unit/context,integration/context}/
   失败即拒绝发送。该 transport 是唯一出网路径。
 - ContextManifest/TransitionManifest schema、version、canonical JSON、verify CLI 与 tamper errors 固定。
 - context overflow 先缩 recoverable/conversation，再 task split/allowed model；authoritative 不完整则拒绝。
+
+### 3.1 MemoryPort Protocol
+
+Context Compiler 需要从 S7 Memory 服务检索和提交记忆片段。以下协议定义 S3 对 S7 的依赖接口：
+
+```python
+from dataclasses import dataclass
+from typing import Protocol
+
+
+@dataclass(frozen=True)
+class MemoryFragment:
+    """A single memory retrieval result."""
+    fragment_id: str
+    content: str
+    source: str  # workspace | entity | lesson
+    relevance_score: float
+    classification: str  # DataClassification value
+    token_count: int
+
+
+@dataclass(frozen=True)
+class MemoryCandidate:
+    """A memory submission for dedup/merge evaluation."""
+    content: str
+    source_run_id: str
+    entity_refs: list[str]
+    classification: str
+    ttl: timedelta | None = None
+
+
+class MemoryPort(Protocol):
+    """Interface that S3 Context Compiler requires from S7 Memory."""
+
+    async def get_memory_tokens(
+        self, workspace_id: str, query: str, budget: int
+    ) -> list[MemoryFragment]:
+        """Retrieve memory fragments within the given token budget."""
+        ...
+
+    async def propose_candidate(self, candidate: MemoryCandidate) -> str:
+        """Submit a memory candidate for dedup/merge; returns candidate ID."""
+        ...
+```
+
+调用约束：Context Compiler 在 Retrieve primitive 期间调用 `get_memory_tokens`，budget 来自
+TaskNode 的 token budget 减去已分配 authoritative/conversational 份额后剩余值；返回 fragment
+的 classification 不得高于当前 Run 的 data classification ceiling，否则 fail closed 拒绝加载。
 - **压缩上界与恢复路径**（[ADR-007](../docs/DECISIONS.md#adr-007)）：降级链每级最多 `max_compaction_attempts`
   （默认 3）次，达上界即 refusal，不允许循环压缩；尝试记录写入 manifest。refusal 有两条留痕出口：
   显式授权降级（展示将丢弃的 authoritative 清单 → 确认 → 新 Attempt 标 `authoritative_waived` → 该

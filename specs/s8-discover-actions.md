@@ -26,6 +26,19 @@ ProgramVersion 固定 risk charter、sources/entities、exclusions、triggers、
 standard、recipients、budget、approval/action policy 和 service identity。activate/deactivate/version change 有
 audit；后台 run 不继承创建者 session/token/personal memory。
 
+### 3.1 Trigger → Runtime integration
+
+DiscoveryProgram 的所有 trigger（schedule、webhook、source delta）**必须**通过 S2 Runtime 的
+`StartRun` 命令发起执行，不得绕过。这确保：
+
+- **Canonical event tracking**：每次 trigger 引发的执行都产生完整的 Run event 序列，
+  可被 SSE/REST projection 消费。
+- **Approval enforcement**：涉及副作用的 action 必须经审批路径，绕过 Runtime 无法执行审批门禁。
+- **Evidence contract compliance**：Evidence 生成和验证必须绑定到具体 Run/Attempt，
+  无 Run 的 evidence 无法追溯来源。
+- **Service identity inheritance**：后台 run 使用 DiscoveryProgram 的 service identity，
+  不继承触发者的 session/token/personal memory。
+
 ## 4. Pipeline contracts
 
 ```text
@@ -45,6 +58,36 @@ falsification）：`FalsificationResult` 不是一段自由文本，而是一组
 RiskHypothesis
   → 生成 N 个 typed NegativeProbe：「若此假设为假，应观察到 X」
   → X 归约为 {metric, entity_scope, window, comparator, threshold} 之类可机器求值的结构
+
+### 4.1 NegativeProbe model
+
+```python
+from dataclasses import dataclass
+from enum import Enum
+
+
+class Comparator(str, Enum):
+    LT = "lt"
+    GT = "gt"
+    EQ = "eq"
+    NEQ = "neq"
+    GTE = "gte"
+    LTE = "lte"
+
+
+@dataclass(frozen=True)
+class NegativeProbe:
+    """A structured falsification probe against a RiskHypothesis."""
+    metric: str  # what is being measured
+    entity_scope: EntityScope  # what entities are covered
+    window: TimeWindow  # temporal bounds for observation
+    comparator: Comparator  # comparison operator
+    threshold: float  # threshold value
+    expected_outcome: str  # what would disprove the hypothesis
+```
+
+Probe 的求值必须由确定性组件完成（见 §4 三条硬约束之「模型只提出、不判定」）。
+每个 probe 结果作为独立 EvidenceRef 附加到 Hypothesis，不可合并或省略。
   → 逐个执行，每个 probe 结果作为独立 EvidenceRef 附加
   → 序贯累积证据并控制 Type-I error
   → 未被推翻且证据充分 → human triage；被推翻 → 终止并保留完整证伪轨迹

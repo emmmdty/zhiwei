@@ -58,6 +58,26 @@ artifacts、execution summary、verification、next actions。
 - 一个 reference task 必须同时使用 code/GitHub、document 和 DB/API Evidence。
 - 用户可把 Answer/selected Evidence 创建或附加到 Case；不复制 transcript。
 
+### 4.1 Case lifecycle
+
+Case 遵循以下状态机：
+
+```text
+created → active → triaged → resolved → archived
+```
+
+| 状态 | 触发 | 说明 |
+| --- | --- | --- |
+| `created` | 用户创建 Case | 初始状态，可附加 Evidence/Answer |
+| `active` | 有 Agent 正在处理 | Case 被分配给 Ask/Discover 任务 |
+| `triaged` | 人工分类完成 | severity/category/owner 确定 |
+| `resolved` | Resolution 已应用 | 修复/缓解/确认误报均已记录 |
+| `archived` | 用户或策略归档 | 不可逆，只读访问 |
+
+**跨 App 可见性**：Ask App 只能访问 `created`/`active`/`triaged` 状态的 Case；
+Discover App 可访问全部状态（含 `resolved`/`archived` 用于模式学习）。
+状态转换必须写入 Case 的 canonical event log，不允许静默跳变。
+
 ## 5. Workbench
 
 三栏 UI：App/Case navigation；主 Ask 交互与 structured artifact；Run/Evidence/Tool/Context/Cost/Memory panels。
