@@ -191,6 +191,30 @@
   Object Store/Temporal payload/Redis/log/trace 四个持久化面测试待补（当前覆盖 PG event +
   projection + 内存投影 + 编译产物）。
 
+## 2026-09-06：S9 Eval/Release/Observability 全阶段执行与多轮验收
+
+- **执行**（执行 subagent 分波，RED→GREEN 按 Task 边界提交）：T1 campaign/六模式 bindings
+  （migration 0013）∥ T3 外部/盲测/变形适配器 ∥ T6 telemetry/costs（migration 0014，otel-api/sdk
+  按 spec 入 deps）→ T2 统计/scorer 隔离/ROI 指标密封/eval.report → T4 release/claims/rollout
+  （migration 0015 + API 路由）→ T5 strict checker/attestation/CLI Gate 命令 → T7 web 四 feature +
+  e2e → 补 `api/evals.py`（spec §2 漏派缺口）→ T8 README claims 绑定 + 权威 Gate 证据。A 档冻结
+  契约 10 文件由设计方先行 RED 提交（统计数值/治理规则/红线扫描/ledger 语义）。
+- **验收**（多轮独立 + 交叉检验 subagent）：R1 三路分域独立验收揪出 4 组实质缺陷（live 门
+  model_copy 绕过、checker 相邻数字逃逸、bound_value 写路径不可达、UI report 缺必填 scope）→
+  修复轮全绿；R2 红队（修复探针复执行 + 跨域 bypass + 变异检验）+ 对照（spec/plan 逐节、claim
+  溯源 11/11、例外台账核对）揪出 NEW-1 可利用发现（claim_id 夹带数字）与 3 处未登记 GAP →
+  R2 修复轮（charset 三层拒绝、FailureCode 补 5 码、demo 面、traceparent+10 层 span 接线、
+  security-v1 suite 14 单元、canonical run timeline trace journey）；设计方冻结补钉 offline 边
+  变异缺口。R3 权威终轮由 operator 亲自执行。
+- **终态 Gate（2026-09-06，已验证）**：pytest 3776 passed/0 failed；ruff/pyright 0；evals 822、
+  determinism ✓；13 密封件 verify 14/14（含 security-v1）；Claim Registry 11 条（README claims
+  块 0 findings/strict）；attest dry-run 无副作用；e2e 8/8。报告 `artifacts/gates/s9/report.md`
+  （§14 权威终轮 + §15 验收轮记录 + §16 例外增量）、交接单
+  `docs/handoffs/s9-eval-release-observability.md`、plan 35/35 checkbox。
+- **登记**：Reliability/Performance suite（解锁 S11 runner）、报告延迟列（随 live 密封）两新例外；
+  跟踪项：/route suspended advisory、policy ResourceContext 结构性缺口、TaskFailed machine code
+  生产方、bindings/human 生产消费者接线。
+
 ## 待办
 
 - ~~S3–S8 未提交批次：先由 operator 决定整批验收/提交边界~~（2026-09-05 已关闭：批次

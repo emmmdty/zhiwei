@@ -337,3 +337,57 @@ a4a78e5 docs(claims): bind README claim table to sealed artifacts (S9)  — READ
 
 （报告与 sealed-runs.json 属 artifacts/ gitignore 范围，按既有 gate artifact 惯例
 `git add -f` 纳入。）
+
+---
+
+## 14. 权威终轮（R2 修复后，operator 记录 2026-09-06）
+
+R1/R2 验收轮发现并修复缺陷后，清库重密封的全部权威证据（本轮为 Gate 最终口径，
+替代 §3–§7 的复执行轮 digest；绑定值口径不变）：
+
+| 项 | 结果 |
+| --- | --- |
+| `make evals` / `make determinism` | 822 项全过 / 26 资产逐字节一致（R2 后复跑） |
+| `uv run ruff check .` / `uv run pyright` | 0 / 0 errors（HEAD f3d5ba7） |
+| `uv run pytest -q`（全量单进程） | **3776 passed / 6 skipped / 20 deselected / 0 failed** |
+| 清库 + `alembic upgrade head` | `0015_release_claims`（migrator DSN） |
+| 密封（`--mode offline`，legacy=fixture，均 `--seal`） | runtime-contract-v1 7/7 · factqa-v1 120/120 · knowledge ×4 15/15/12/11 · enterprise-memory-v1 12/12 · numeric-risk-v1 22/22 · discover-blind-v1 5/5 · ask-v1 6/6 · **security-v1 14/14（R2-B 新增）** · legacy-assets 26/26 · external-status longmemeval→planned/unavailable |
+| `eval verify --all-sealed`（migrator DSN） | **checked=14 / verified=14 / failures=[]**，exit 0 |
+| Claim Registry seeding（`deploy/seed_s9_gate_claims.py`） | 11 条（10 offline_verified + 1 planned）；bound_value 已改走 R2-F4 的 `ClaimRegistryService.bind_value`（seal digest 匹配校验，直列 UPDATE 移除） |
+| `release check --strict`（migrator DSN，默认面 README+docs+demo） | 50 files / **findings=0** / exit 0；surface 明细含 demo missing=true（如实） |
+| `release attest --dry-run` | signed=false / content files=49 / 无任何文件写出 |
+| e2e | eval-release-observability 4/4（R2 后 8/8 含 runtime-approval）· tenancy 13/13 既有口径 |
+
+密封 digest 全量记录见同目录 `sealed-runs.json`（本轮权威版，13 entries）。
+
+## 15. 验收轮记录（多轮独立 subagent + 交叉检验）
+
+- **R1 独立验收（3 路分域）**：T1–T3 ACCEPT-WITH-DEFECTS（live 门 `model_copy`
+  绕过 MEDIUM；runner docstring 过claim LOW）；T4/T4b ACCEPT；T5
+  ACCEPT-WITH-DEFECTS（checker 相邻数字逃逸 MEDIUM；bound_value 写路径不可达
+  MEDIUM）；T6/T8 ACCEPT；T7 ACCEPT-WITH-DEFECTS（report 调用缺必填 scope
+  MAJOR；e2e mock 保真度两处）。
+- **缺陷修复轮**（`21887ce`/`c3a1b14`）：F1 live 门改为消费点全路径校验
+  （`ensure_live_gate`）；F3 相邻数字必须等于 bound_value 否则
+  UNSUPPORTED_NUMBER；F4 新增 `ClaimRegistryService.bind_value`（唯一写入口，
+  digest 匹配强制）；F5 UI report 需显式 5 项 scope 输入 + e2e mock 对齐生产
+  （422/409/report:null）；F2/F6 文档与重复包裹修正。全量 3706 passed。
+- **R2 交叉检验（2 路）**：红队复执行全部修复探针（live 门 5 消费点、checker
+  全格式、bind_value 机器可读拒绝、租户穿越、attest 无钥拒绝）全部 SECURE；
+  变异检验 4 项 3 红 1 存活（offline 边缺 fixture 拒绝钉——已由设计方冻结测试
+  `07e2ed3` 补钉）；NEW-1 可利用发现（claim_id 数字空格夹带）。对照轮：模块
+  27/27、Gate 命令 6/6、claim 溯源 11/11 端到端、3 处未登记 GAP。
+- **R2 修复轮**（`7c2bc40`/`f3d5ba7` + `eb8b28f`/`7bf0ab8`）：
+  claim_id charset 约束（三层拒绝）、FailureCode 补 5 个设计 §12 码、
+  release check 默认面加 demo（missing 如实上报）、W3C traceparent 进 API
+  中间件 + 10 层 span 接线（metadata-only、默认 no-op）、security-v1 suite
+  （14 单元走生产安全缝、负控制验证）、canonical run timeline trace journey。
+- **R3 delta 复核**：见 §14 权威终轮（全量 3776 passed + 门禁命令全绿）。
+
+## 16. 例外/未执行项（ADR-012 登记，R2 后增量）
+
+| 阻塞项 | 根因 | 解锁条件 | 复执行时点 |
+| --- | --- | --- | --- |
+| Reliability/Performance 层级 suite 未建 | 需确定性负载/故障 runner 环境 | S11-T5/T6（确定性故障 runner + 固定负载 runner）落地后按资产冻结流程建 suite | S11 |
+| 报告工件延迟列 | 离线确定性路径无 wall-clock 语义（live 才有意义），spec §8 延迟披露随 live 密封件产生 | operator live 授权 | live suite 首封 |
+| live/shadow/human suite、外部四件套、S4/S6/S7/S8 e2e、hidden reasoning 四测试 | 同 §11 既有登记，本轮不变 | 同 §11 | 同 §11 |

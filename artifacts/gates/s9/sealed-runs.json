@@ -1,219 +1,109 @@
 [
   {
+    "suite": "legacy-assets",
     "mode": "fixture",
-    "run_status": "succeeded",
-    "eval_run_status": "sealed",
-    "registered_units": 0,
-    "verified": true,
-    "run_id": "1022e081-4965-4a75-962d-b7ff7e2c6163",
-    "eval_run_id": "bd4cff23-6f06-4a5e-b523-0c092c6895be",
-    "manifest_id": "7b6da641-c196-4301-b596-bc9819ca6de3",
-    "seal_digest": "sha256:448d61b3461f892f6143e518afc1166111b49898ea1f4f8a9406e62d39ee66e2"
-  },
-  {
-    "mode": "fixture",
-    "executor": "legacy",
-    "registered_units": 26,
-    "terminal_units": 26,
-    "eval_run_id": "1d0a0030-3799-42a0-a8b1-10ddae56c3b6",
-    "organization_id": "beb56536-f6ad-4d65-aad1-4f92726e2523",
-    "workspace_id": "f8757321-02dc-4b81-be71-758f0e2abd68",
-    "sealed": true,
-    "seal_digest": "sha256:6123091f74207be708e2ddff8beacc8caa8ff956219312130a0e633a97a239b6"
+    "eval_run_id": "fe56022e-59d9-4a93-a446-e5437b4c2936",
+    "organization_id": "3f4b6918-9bb6-4efa-9d9b-9522cb477f9c",
+    "workspace_id": "dbb3ae2e-5586-4a24-80b9-3a565e670632",
+    "seal_digest": "sha256:bbe7763f260af77d8767d111bfedcf66e37e6ce29e6401540fe18bad3ff630d3"
   },
   {
     "suite": "runtime-contract-v1",
     "mode": "offline",
-    "executor": "agent-runtime",
-    "registered_units": 7,
-    "terminal_units": 7,
-    "status_counts": {
-      "completed": 7
-    },
-    "eval_run_id": "4753fa0d-f88f-47b2-8906-c72dc443f619",
-    "organization_id": "89a1376b-b9c6-41a8-ba50-0079e7364dc3",
-    "workspace_id": "ff5ff40e-12a5-457c-b5d5-14974ed39513",
-    "sealed": true,
-    "seal_digest": "sha256:a0b9de6e63156d202eb2a3fe22da3e85abac77b95600acd15253da23b2c454a2"
-  },
-  {
-    "suite": "knowledge-doc-v1",
-    "mode": "offline",
-    "executor": "knowledge-retrieval",
-    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
-    "corpus_digest": "sha256:209d480ede352b35738f0e469ea3f13daded8fee334e10caba769bced9a54da5",
-    "registered_units": 15,
-    "terminal_units": 15,
-    "status_counts": {
-      "completed": 15
-    },
-    "eval_run_id": "7eb70d75-5b2a-482f-9f78-515f43bf8363",
-    "organization_id": "24696885-e971-4362-a854-be992b541a18",
-    "workspace_id": "194e0d9d-514e-4d3d-9aa7-4d73af84a88e",
-    "sealed": true,
-    "seal_digest": "sha256:bba1ce84ff6d8f81c37f1c350f9f2b3d8aed1c4a8985aad5cbece5d2dca7d915"
-  },
-  {
-    "suite": "knowledge-code-github-v1",
-    "mode": "offline",
-    "executor": "knowledge-retrieval",
-    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
-    "corpus_digest": "sha256:60c2fbc356dc642fdbd7ba673c9aedefe71c746dbf2db1dc0b2383881d29a3ba",
-    "registered_units": 15,
-    "terminal_units": 15,
-    "status_counts": {
-      "completed": 15
-    },
-    "eval_run_id": "a42b0356-a4e1-4e86-90b0-00958ba5c01b",
-    "organization_id": "8dc92191-f0da-4fe9-bb15-3730f54ba657",
-    "workspace_id": "fa82f73b-5960-4402-9bac-c86852e6e945",
-    "sealed": true,
-    "seal_digest": "sha256:db214ad95b973a0f797796d42e14518cd1d62935e8fddacee543726765f24479"
-  },
-  {
-    "suite": "knowledge-cross-source-v1",
-    "mode": "offline",
-    "executor": "knowledge-retrieval",
-    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
-    "corpus_digest": "sha256:a4672f97f4339f584082678ed2e45ad0f6c43fb5f89f1d26df139080c82cd1f2",
-    "registered_units": 12,
-    "terminal_units": 12,
-    "status_counts": {
-      "completed": 12
-    },
-    "eval_run_id": "ca0ecb93-c60c-463a-83da-cc769a5eadbc",
-    "organization_id": "a09baa3e-7d70-4243-a75f-90fd24850ece",
-    "workspace_id": "dae93a12-b387-4356-b9af-7ef01822bc32",
-    "sealed": true,
-    "seal_digest": "sha256:cef42d9b1e6c588ed5920224b024e14f94cd9c3f82f258f34fc7dbd325bf52fc"
-  },
-  {
-    "suite": "knowledge-acl-freshness-v1",
-    "mode": "offline",
-    "executor": "knowledge-retrieval",
-    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
-    "corpus_digest": "sha256:956f3eecba1a64da1eed068d56e6843d3939bf42c0d4af3e5abe4282353cbb71",
-    "registered_units": 11,
-    "terminal_units": 11,
-    "status_counts": {
-      "completed": 11
-    },
-    "eval_run_id": "9a1c25bd-d297-452a-8a5a-c7d5b4c39500",
-    "organization_id": "1d5e3753-4870-43e9-8727-f7cf5ce894e2",
-    "workspace_id": "1800b32b-2aa5-44c4-aed6-9b66460b01d5",
-    "sealed": true,
-    "seal_digest": "sha256:2a26e7ff300578ca55661f27ac522cd39c4e646a299dd6461633ade7a3698ecc"
-  },
-  {
-    "suite": "enterprise-memory-v1",
-    "mode": "offline",
-    "executor": "memory-lifecycle",
-    "production_path": "WriteMemoryCandidateHandler->MemoryPolicy->CandidateQueue-ConfirmationWorkflow-ConflictManager-ForgetManager",
-    "registered_units": 12,
-    "terminal_units": 12,
-    "status_counts": {
-      "completed": 12
-    },
-    "eval_run_id": "162382ec-f0ce-4445-b47a-35b8f2f7c51a",
-    "organization_id": "158a5ec5-2ec3-4197-9da2-63917a8fc57e",
-    "workspace_id": "8413d8bb-5c86-4043-b9ec-89126deaab86",
-    "sealed": true,
-    "seal_digest": "sha256:f80afbd188afe9b5ccbff55bf72e93c472e5de6cc15abf5cadc43d454833b813"
+    "eval_run_id": "f1c8ff76-4b56-42f6-8cb4-d2e06c11548c",
+    "organization_id": "d07c4e9b-06ce-453c-9500-fee19c364f62",
+    "workspace_id": "0211cfe3-2a2a-4f32-bb69-d47a4961893b",
+    "seal_digest": "sha256:2947a70b4dde61bbb032dae30e1d709c8466a31c142c7148012bae44d0092633"
   },
   {
     "suite": "factqa-v1",
     "mode": "offline",
-    "executor": "evidence-sql-replay",
-    "production_path": "FrozenSnapshotReplay->QueryReplayRef->EvidenceVerifier",
-    "registered_units": 120,
-    "terminal_units": 120,
-    "status_counts": {
-      "completed": 120
-    },
-    "eval_run_id": "551f9c26-0f3a-41e8-bd7b-9858c752d9b2",
-    "organization_id": "10f1385e-83e3-4725-9e32-ecefb7334b5a",
-    "workspace_id": "cc52cfdc-d15b-4cc6-b9af-84879919b64e",
-    "sealed": true,
-    "seal_digest": "sha256:6dd34cdac27d66f2be829c6e362f27b47eede983577dad8b8057667a8e8e4278"
+    "eval_run_id": "276bef4f-7193-4c63-b7ef-5d90abca1138",
+    "organization_id": "c09b2f51-ad76-4efa-97e6-61c3390d62a6",
+    "workspace_id": "47392338-1d0a-472d-a295-ebfb13de79c1",
+    "seal_digest": "sha256:e70b8f9d5a2cb5bf1420b1fff15b6b0536789eec588572bb603ad195d479960e"
+  },
+  {
+    "suite": "knowledge-doc-v1",
+    "mode": "offline",
+    "eval_run_id": "bfb54279-8b95-4097-ac2d-0b3b4ce65201",
+    "organization_id": "ffe64bf3-4cea-41b6-b6e0-107505afc687",
+    "workspace_id": "c696ddb4-3e8e-4ec1-9265-c956528c33e5",
+    "seal_digest": "sha256:51d475daf86b520a015d877dedd1c2bac415454e60c524ee226a76c2b1fee8d4"
+  },
+  {
+    "suite": "knowledge-code-github-v1",
+    "mode": "offline",
+    "eval_run_id": "e652bd9b-dba5-4b28-826a-31db25d4f304",
+    "organization_id": "1b100e85-25ad-430e-a664-c6a1543ab730",
+    "workspace_id": "a4badb2d-d7ad-4f5f-bfcc-b1d05931dc3a",
+    "seal_digest": "sha256:9454e651926af1bacab037e26e68599b5ced756ce470604ca59f3fce5f95042f"
+  },
+  {
+    "suite": "knowledge-cross-source-v1",
+    "mode": "offline",
+    "eval_run_id": "12260c43-f152-4367-9cf0-1c9d2784bc64",
+    "organization_id": "fa044f09-6d9b-4f81-8ab1-38b59c1012c2",
+    "workspace_id": "d2b65f90-80d9-40e0-a994-c7b8ce900519",
+    "seal_digest": "sha256:acb0cf8ba72980216495c9af5a2d054ab4f7742138d67a1d12573b099dad0a19"
+  },
+  {
+    "suite": "knowledge-acl-freshness-v1",
+    "mode": "offline",
+    "eval_run_id": "eec3794b-b08d-4590-ae28-b26e8d80b764",
+    "organization_id": "d2ad3557-0ff2-42d9-8b65-b40dd88e110c",
+    "workspace_id": "514881f9-2c9c-48c5-bb50-6418e2adfe2c",
+    "seal_digest": "sha256:6d823d955c34bb89651071716ec776e52901b70b9987839398a8dba41b6d536e"
+  },
+  {
+    "suite": "enterprise-memory-v1",
+    "mode": "offline",
+    "eval_run_id": "290d8a20-b713-4537-bab5-b003298e08f6",
+    "organization_id": "75aac593-701e-4fe4-a894-1659c4d11803",
+    "workspace_id": "7329f177-4451-4c3c-a7da-3b2c39dc8966",
+    "seal_digest": "sha256:b11b7770d3f52ddfbe4dc797c08b046c49cb2de026965f7b0669b13f7ed1881d"
   },
   {
     "suite": "numeric-risk-v1",
     "mode": "offline",
-    "executor": "numeric-detector-pack",
-    "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult",
-    "registered_units": 22,
-    "terminal_units": 22,
-    "status_counts": {
-      "completed": 22
-    },
-    "eval_run_id": "25a6f15d-a853-41a1-8419-83cb5cc5a6f3",
-    "organization_id": "64a3ad26-fbc4-43d1-9207-807b8fdee6ee",
-    "workspace_id": "1ecf6d6f-928d-447f-9d1f-2d040a096c5e",
-    "sealed": true,
-    "seal_digest": "sha256:60590e1bb8c67795df22c8d4bc2e28361dd58f2075aa930472fc606d88d36e68"
+    "eval_run_id": "85c2a244-c6f9-4757-833a-65652eb11caf",
+    "organization_id": "b23e3335-abaa-4d5e-9637-ab6b1232c7c0",
+    "workspace_id": "8c2afb8f-fc4e-4694-a7a3-e3fa4e155d85",
+    "seal_digest": "sha256:343f0a92332b4a7f4f630cfe084581d3273f3d9681cbcdc5d80a48cedcd2038c"
   },
   {
     "suite": "discover-blind-v1",
     "mode": "offline",
-    "executor": "numeric-detector-pack",
-    "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult",
-    "registered_units": 5,
-    "terminal_units": 5,
-    "status_counts": {
-      "completed": 5
-    },
-    "eval_run_id": "15c9af47-06a1-417b-9451-9350dee2f6fc",
-    "organization_id": "9eca29d7-96e1-4ca1-ae09-ca652846cfea",
-    "workspace_id": "7599e8d8-512c-4a74-b968-1277c258deea",
-    "sealed": true,
-    "seal_digest": "sha256:c218111db49988823f902e66b4742af9dd903ebeb7a60b960ac641ce00b12c9c"
+    "eval_run_id": "5e205f8c-4fb4-45bf-93af-e72846bcc76e",
+    "organization_id": "70e48895-406f-4d97-8c29-4b656ff80fa7",
+    "workspace_id": "a7ceb2ac-09d8-4080-94e6-06528a895835",
+    "seal_digest": "sha256:0eae689de77ac0a3fd17ef0a5dfca2aac41767c1ac857732fc488b3698186915"
   },
   {
     "suite": "ask-v1",
     "mode": "offline",
-    "executor": "agent-runtime",
-    "production_path": "RunCommandService->AgentRunWorkflow->AskTaskGraph",
-    "registered_units": 6,
-    "terminal_units": 6,
-    "status_counts": {
-      "completed": 6
-    },
-    "eval_run_id": "60bc3587-6cf1-4cf1-91eb-f788d9870e51",
-    "organization_id": "b973dc9a-f912-4b62-bfc4-afeb0c0ac6a7",
-    "workspace_id": "1b39f5e2-7c15-43cf-8c97-b2f5c72871cd",
-    "sealed": true,
-    "seal_digest": "sha256:fbb351f9793e32a5fd92ac14403f13243c470fa926ead16bffa07f4c8a5b1b07"
+    "eval_run_id": "34833217-071f-4dd3-9d4f-52a2163eba27",
+    "organization_id": "a220a52b-a216-4ffc-8ab7-ada1cff25dfb",
+    "workspace_id": "1e84ac17-cc59-4226-ad20-fc8dd075cc9d",
+    "seal_digest": "sha256:76ca27b375c23a99552f81eefbba34dcec985465d03f01f2685e9bbf6a8be27a"
+  },
+  {
+    "suite": "security-v1",
+    "mode": "offline",
+    "eval_run_id": "96f6e5a7-bfed-4209-b40d-e005261834a7",
+    "organization_id": "f4105107-ebb6-4deb-a0f6-01ffbd84e8ce",
+    "workspace_id": "12179202-e6f7-4fdb-90ac-784083dd7ea4",
+    "seal_digest": "sha256:e0f9814d1cd0e621ea8f093e19f04492149bd6abbc7a95b8a1dcf5b9861c69f9"
   },
   {
     "suite": "longmemeval-adapter",
-    "benchmark": "longmemeval",
-    "external_status": "unavailable",
-    "reasons": [
-      {
-        "code": "missing_file",
-        "path": "evals/external/longmemeval/LICENSE",
-        "detail": "数据许可文件缺失"
-      },
-      {
-        "code": "missing_file",
-        "path": "evals/external/longmemeval/VERSION",
-        "detail": "数据版本文件缺失"
-      },
-      {
-        "code": "missing_data_dir",
-        "path": "evals/external/longmemeval/data",
-        "detail": "数据目录不存在"
-      }
-    ],
-    "run_kind": "none",
     "claim": {
       "benchmark": "longmemeval",
       "claim_status": "planned/unavailable"
     },
-    "eval_run_id": "63891d88-69ff-425f-9e42-6cc24c5bbaf9",
-    "organization_id": "a3b839ea-91a5-4dfe-943d-fea97163f2c1",
-    "workspace_id": "707becc6-39a4-4f32-b34a-53a61588b4dc",
-    "sealed": true,
-    "seal_digest": "sha256:a6774a896c9b1060a9927be46bf9d15fa48ad8b81996db0dcd467f7d93e338f4"
+    "eval_run_id": "572b59bd-eb10-45f0-b3b5-11636b77f19c",
+    "organization_id": "84f5a6cd-fd3b-441e-92da-f567babae216",
+    "workspace_id": "1e70cf29-666c-4508-bb49-1919f7dd8ff9",
+    "seal_digest": "sha256:570b872a2bf7a0dc7c5c4c184898b497f5574b120c860980d9c3f461b380824b"
   }
 ]

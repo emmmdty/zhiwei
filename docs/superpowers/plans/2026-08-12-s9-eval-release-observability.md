@@ -15,12 +15,12 @@
 **Files:** Modify `src/zhiwei/evals/{domain.py,datasets.py,suites.py,runs.py}`, `src/zhiwei/evals/executors/`; create
 `src/zhiwei/evals/{campaigns.py,bindings.py}`, `migrations/versions/0009_evals_release.py`, `tests/unit/evals/`.
 
-- [ ] Start from S0 immutable versions/sealing and S2 Agent Runtime executor; test fixture/replay/offline/live/shadow/human
+- [x] Start from S0 immutable versions/sealing and S2 Agent Runtime executor; test fixture/replay/offline/live/shadow/human
   bindings all preserve the same Run/TaskGraph identity.
-- [ ] Test campaign child partition/exact coverage, frozen sample/unit registry, every terminal status and resume.
-- [ ] Extend existing repositories/services with code/config/model/source/attempt/prereg manifests; do not create duplicate
+- [x] Test campaign child partition/exact coverage, frozen sample/unit registry, every terminal status and resume.
+- [x] Extend existing repositories/services with code/config/model/source/attempt/prereg manifests; do not create duplicate
   Dataset/Suite/EvalRun models or an eval-specific Agent path.
-- [ ] Suggested commit: `feat(evals): extend runtime eval campaigns and modes`.
+- [x] Suggested commit: `feat(evals): extend runtime eval campaigns and modes`.
 
 ### Task 2: Implement scorer isolation, statistics and sealing
 
@@ -29,11 +29,11 @@
 `src/zhiwei/evals/sealing.py`,
 `tests/contract/evals/`, `tests/integration/evals/test_sealing.py`.
 
-- [ ] Test scorer input excludes hidden target/generator internals and sealed artifact fully recomputes.
-- [ ] Implement deterministic scorers, paired/unit-aware statistics, CI/multiplicity and full failure denominators.
-- [ ] Add human/judge protocol fields for rubric/blinding/order/calibration/agreement.
-- [ ] Fault-inject missing/duplicate/wrong independence unit, corrupted sample and partial/provider error.
-- [ ] Suggested commit: `feat(evals): seal reproducible unit-aware reports`.
+- [x] Test scorer input excludes hidden target/generator internals and sealed artifact fully recomputes.
+- [x] Implement deterministic scorers, paired/unit-aware statistics, CI/multiplicity and full failure denominators.
+- [x] Add human/judge protocol fields for rubric/blinding/order/calibration/agreement.
+- [x] Fault-inject missing/duplicate/wrong independence unit, corrupted sample and partial/provider error.
+- [x] Suggested commit: `feat(evals): seal reproducible unit-aware reports`.
 
 ### Task 3: Add external/blind/metamorphic adapters
 
@@ -41,20 +41,20 @@
 `src/zhiwei/evals/external/{longmemeval.py,locomo.py}` adapters,
 `tests/contract/evals/test_external_adapters.py`.
 
-- [ ] Implement version/license/checksum preflight and explicit unavailable status; do not download restricted data silently.
-- [ ] Keep external scores separate from internal suites and enforce scope labels.
-- [ ] Add blind holdout key access boundary and metamorphic/fault suite registration.
-- [ ] Suggested commit: `feat(evals): add scoped external and blind diagnostics`.
+- [x] Implement version/license/checksum preflight and explicit unavailable status; do not download restricted data silently.
+- [x] Keep external scores separate from internal suites and enforce scope labels.
+- [x] Add blind holdout key access boundary and metamorphic/fault suite registration.
+- [x] Suggested commit: `feat(evals): add scoped external and blind diagnostics`.
 
 ### Task 4: Implement Agent release and Claim Registry
 
 **Files:** Create `src/zhiwei/agents/{release.py,claims.py,rollout.py}`, `src/zhiwei/api/{evals.py,releases.py,claims.py}`,
 `tests/integration/release/`.
 
-- [ ] Test draft→sandbox→evaluated→review→staged→published→deprecated/retired and role separation.
-- [ ] Test immutable dependency manifest, cohort canary, rollback for new Runs and security suspend override.
-- [ ] Implement Claim states planned/implemented/offline/live/retired; only sealed artifacts upgrade status.
-- [ ] Suggested commit: `feat(release): govern versions and public claims`.
+- [x] Test draft→sandbox→evaluated→review→staged→published→deprecated/retired and role separation.
+- [x] Test immutable dependency manifest, cohort canary, rollback for new Runs and security suspend override.
+- [x] Implement Claim states planned/implemented/offline/live/retired; only sealed artifacts upgrade status.
+- [x] Suggested commit: `feat(release): govern versions and public claims`.
 
 ### Task 5: Build strict release checker and attestation
 
@@ -62,39 +62,39 @@
 modify `src/zhiwei/cli/evals.py`; create `tests/contract/cli/{test_eval_cli.py,test_release_cli.py}`,
 `tests/contract/release/test_claim_scan.py`.
 
-- [ ] Seed README/docs/demo fixtures with fabricated number, fixture-as-live and stale artifact; require deterministic failures.
-- [ ] Implement template substitution from Claim Registry, artifact link/digest validation and scope/date/environment checks.
-- [ ] Generate provenance attestation separately from content hash; dry-run never signs/publishes.
-- [ ] Register `eval verify|report` and `release check|attest`; test `--help`, fabricated claim failures, sealed fixture and
+- [x] Seed README/docs/demo fixtures with fabricated number, fixture-as-live and stale artifact; require deterministic failures.
+- [x] Implement template substitution from Claim Registry, artifact link/digest validation and scope/date/environment checks.
+- [x] Generate provenance attestation separately from content hash; dry-run never signs/publishes.
+- [x] Register `eval verify|report` and `release check|attest`; test `--help`, fabricated claim failures, sealed fixture and
   attestation dry-run.
-- [ ] Suggested commit: `feat(release): block unsupported claims`.
+- [x] Suggested commit: `feat(release): block unsupported claims`.
 
 ### Task 6: Implement OpenTelemetry, failures and Cost Ledger
 
 **Files:** Create `src/zhiwei/telemetry/{traces.py,metrics.py,logs.py,redaction.py,failures.py,costs.py}`,
 `deploy/observability/`, `tests/security/telemetry_redaction/`.
 
-- [ ] Freeze span/failure/cost schemas and GenAI semantic-convention revision.
-- [ ] Instrument API/Run/Task/model/retrieval/memory/tool/policy/approval/evidence/eval with W3C propagation.
-- [ ] Implement reserve/reconcile and price source/confidence including retry/child/tool cost.
-- [ ] Scan prompt/result/secret/PII sentinels; default telemetry contains metadata/digests only.
-- [ ] Suggested commit: `feat(observability): trace governed runs and costs`.
+- [x] Freeze span/failure/cost schemas and GenAI semantic-convention revision.
+- [x] Instrument API/Run/Task/model/retrieval/memory/tool/policy/approval/evidence/eval with W3C propagation.
+- [x] Implement reserve/reconcile and price source/confidence including retry/child/tool cost.
+- [x] Scan prompt/result/secret/PII sentinels; default telemetry contains metadata/digests only.
+- [x] Suggested commit: `feat(observability): trace governed runs and costs`.
 
 ### Task 7: Build Eval/Release/Observability Web flows
 
 **Files:** Create `apps/web/src/features/{evals,releases,observability,costs}/`,
 `apps/web/e2e/eval-release-observability.spec.ts`.
 
-- [ ] Build real suite/run/resume/seal/report, version diff/Gate/canary/rollback and trace/cost/failure journeys.
-- [ ] Display run mode, model/source/version/date/environment and incomplete/unknown values; no placeholder success.
-- [ ] Verify Auditor read-only and cross-tenant trace/artifact isolation.
-- [ ] Suggested commit: `feat(web): expose eval release and observability evidence`.
+- [x] Build real suite/run/resume/seal/report, version diff/Gate/canary/rollback and trace/cost/failure journeys.
+- [x] Display run mode, model/source/version/date/environment and incomplete/unknown values; no placeholder success.
+- [x] Verify Auditor read-only and cross-tenant trace/artifact isolation.
+- [x] Suggested commit: `feat(web): expose eval release and observability evidence`.
 
 ### Task 8: Re-run all claims under strict Gate
 
 **Files:** Update release-safe README tables/templates only from generated artifacts; create `artifacts/gates/s9/` output.
 
-- [ ] Run all offline layered suites, available external/blind/fault suites and legacy asset checks.
-- [ ] Run `zhiwei eval verify --all-sealed`, strict release check and attestation dry-run.
-- [ ] Ensure 120/112/57, Risk and `$43.0231552` remain narrowly labeled; no production SLO yet.
-- [ ] Run S9 Gate. Suggested commit: `test(release): seal evidence-backed claim registry`.
+- [x] Run all offline layered suites, available external/blind/fault suites and legacy asset checks.
+- [x] Run `zhiwei eval verify --all-sealed`, strict release check and attestation dry-run.
+- [x] Ensure 120/112/57, Risk and `$43.0231552` remain narrowly labeled; no production SLO yet.
+- [x] Run S9 Gate. Suggested commit: `test(release): seal evidence-backed claim registry`.
