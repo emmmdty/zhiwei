@@ -1,0 +1,4 @@
+suite_id: change-brief-v1
+corpus_ref: evals/change-brief/
+# 声明值：实际冻结语料与 suite 资产由 S10-T7 落库（evals/ 为冻结资产层）。
+registered_unit_count_hint: 6

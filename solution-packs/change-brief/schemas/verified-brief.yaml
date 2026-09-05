@@ -1,0 +1,156 @@
+schema_id: verified-brief
+version: 1
+schema:
+  type: object
+  description: >-
+    Verified change brief emitted by the pack. code_refs/github_refs mirror the
+    Evidence ref vocabulary (zhiwei.evidence.refs CodeRef/GitHubRef) so briefs
+    are traceable to evidence without app-specific ref types.
+  required:
+    - affected_symbols
+    - affected_dependencies
+    - affected_tests
+    - related_prs
+    - related_issues
+    - related_checks
+    - risks
+    - unknowns
+    - code_refs
+    - github_refs
+  properties:
+    affected_symbols:
+      type: array
+      description: Code symbols touched or impacted by the change
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          kind:
+            type: string
+            enum: [function, class, module, constant]
+          file_path:
+            type: string
+          line_start:
+            type: integer
+            minimum: 1
+          line_end:
+            type: integer
+            minimum: 1
+    affected_dependencies:
+      type: array
+      description: Dependencies impacted by the change
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          version_constraint:
+            type: string
+          impact:
+            type: string
+            enum: [direct, transitive, potential]
+    affected_tests:
+      type: array
+      description: Tests expected to cover or break with the change
+      items:
+        type: object
+        properties:
+          test_id:
+            type: string
+          path:
+            type: string
+          expected_status:
+            type: string
+            enum: [pass, fail, skip]
+    related_prs:
+      type: array
+      description: Related pull requests
+      items:
+        type: object
+        properties:
+          repository:
+            type: string
+          pr_number:
+            type: integer
+            minimum: 1
+    related_issues:
+      type: array
+      description: Related issues
+      items:
+        type: object
+        properties:
+          repository:
+            type: string
+          issue_number:
+            type: integer
+            minimum: 1
+    related_checks:
+      type: array
+      description: CI checks associated with the change
+      items:
+        type: object
+        properties:
+          name:
+            type: string
+          status:
+            type: string
+            enum: [passed, failed, pending]
+    risks:
+      type: array
+      description: Risks introduced or highlighted by the change
+      items:
+        type: object
+        properties:
+          description:
+            type: string
+          severity:
+            type: string
+            enum: [low, medium, high]
+    unknowns:
+      type: array
+      description: Questions the analysis could not answer
+      items:
+        type: string
+    code_refs:
+      type: array
+      description: Evidence refs mirroring CodeRef (file_path/line span/digest)
+      items:
+        type: object
+        required: [file_path, line_start, line_end, code_digest]
+        properties:
+          file_path:
+            type: string
+            minLength: 1
+          line_start:
+            type: integer
+            minimum: 1
+          line_end:
+            type: integer
+            minimum: 1
+          code_digest:
+            type: string
+            minLength: 1
+    github_refs:
+      type: array
+      description: Evidence refs mirroring GitHubRef (repository/commit/PR/path)
+      items:
+        type: object
+        required: [repository]
+        properties:
+          repository:
+            type: string
+            minLength: 1
+          commit_sha:
+            type: string
+          path:
+            type: string
+          line_start:
+            type: integer
+            minimum: 1
+          line_end:
+            type: integer
+            minimum: 1
+          pr_number:
+            type: integer
+            minimum: 1

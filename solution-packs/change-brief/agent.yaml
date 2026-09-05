@@ -1,0 +1,69 @@
+schema_version: 1
+agent_id: change-brief-agent-v1
+name: Change Brief Agent
+description: >-
+  Produces a verified change brief for a GitHub commit or PR. Retrieves code
+  knowledge, analyzes impact, verifies claims, and emits the brief artifact.
+  Uses only Core task primitives and CodeRef/GitHubRef evidence.
+version: 1
+frozen_at: 2026-09-06
+
+# ---------------------------------------------------------------- input contract
+input:
+  required:
+    - repository
+    - commit_or_pr
+  properties:
+    repository:
+      type: string
+      description: GitHub repository (owner/name) the change belongs to
+    commit_or_pr:
+      type: object
+      description: Change trigger reference
+      properties:
+        kind:
+          type: string
+          enum: [commit, pull_request]
+        ref:
+          type: string
+          description: Commit SHA or PR number (as string)
+      required: [kind, ref]
+
+# ---------------------------------------------------------------- output contract
+output:
+  properties:
+    status:
+      type: string
+      enum: [completed, partial, abstained, failed]
+    brief:
+      type: object
+      description: VerifiedBrief (schemas/verified-brief.yaml)
+    artifact_id:
+      type: string
+      description: Artifact ID of the emitted brief
+    run_id:
+      type: string
+      description: Runtime run ID
+
+# ---------------------------------------------------------------- lifecycle
+lifecycle:
+  initial: idle
+  transitions:
+    - from: idle
+      to: retrieving
+      trigger: change_received
+    - from: retrieving
+      to: analyzing
+      trigger: knowledge_retrieved
+    - from: analyzing
+      to: verifying
+      trigger: impact_analyzed
+    - from: verifying
+      to: synthesizing
+      trigger: verification_passed
+    - from: verifying
+      to: failed
+      trigger: verification_failed
+    - from: synthesizing
+      to: completed
+      trigger: brief_emitted
