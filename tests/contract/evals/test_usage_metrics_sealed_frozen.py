@@ -99,8 +99,8 @@ class TestUsageMetricsInSealedArtifact:
     def test_metric_values_match_computation(self) -> None:
         payload, _ = _build(usage=_usage())
         metrics = payload["usage_metrics"]
-        # 1.0*500 + 0.1*200 + 4.0*1000 = 4700
-        assert metrics["weighted_tokens"] == 4700.0
+        # 1.0*500 + 0.1*200 + 4.0*1000 = 4520（ADR-002 权重：1.0/0.1/4.0）
+        assert metrics["weighted_tokens"] == 4520.0
         # 300/700
         assert metrics["authoritative_token_share"] == 300 / 700
 

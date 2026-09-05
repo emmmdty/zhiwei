@@ -24,20 +24,24 @@ class TestScorerInputIsolation:
     def test_hidden_target_field_is_rejected(self) -> None:
         # 隐藏目标（数据集答案之外的生成器内部状态）不允许进入评分输入面。
         with pytest.raises(ValidationError):
-            ScorerInput(
-                unit=_unit(),
-                output={"answer": "42"},
-                reference={"answer": "42"},
-                hidden_target="the-real-answer",
+            ScorerInput.model_validate(
+                {
+                    "unit": {"sample_id": "s-1", "unit_id": "u-1"},
+                    "output": {"answer": "42"},
+                    "reference": {"answer": "42"},
+                    "hidden_target": "the-real-answer",
+                }
             )
 
     def test_generator_internals_are_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            ScorerInput(
-                unit=_unit(),
-                output={"answer": "42"},
-                reference={"answer": "42"},
-                generator_state={"temperature": 0.0},
+            ScorerInput.model_validate(
+                {
+                    "unit": {"sample_id": "s-1", "unit_id": "u-1"},
+                    "output": {"answer": "42"},
+                    "reference": {"answer": "42"},
+                    "generator_state": {"temperature": 0.0},
+                }
             )
 
     def test_visible_surface_is_constructible(self) -> None:
