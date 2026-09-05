@@ -705,6 +705,51 @@ class EvalRun(Base):
             ],
             name="fk_eval_runs_suite_version",
         ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "campaign_id"],
+            [
+                "eval_campaigns.organization_id",
+                "eval_campaigns.workspace_id",
+                "eval_campaigns.id",
+            ],
+            name="fk_eval_runs_campaign",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "prereg_manifest_id"],
+            [
+                "artifact_manifests.organization_id",
+                "artifact_manifests.workspace_id",
+                "artifact_manifests.id",
+            ],
+            name="fk_eval_runs_prereg_manifest",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "model_manifest_id"],
+            [
+                "artifact_manifests.organization_id",
+                "artifact_manifests.workspace_id",
+                "artifact_manifests.id",
+            ],
+            name="fk_eval_runs_model_manifest",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "source_manifest_id"],
+            [
+                "artifact_manifests.organization_id",
+                "artifact_manifests.workspace_id",
+                "artifact_manifests.id",
+            ],
+            name="fk_eval_runs_source_manifest",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "attempt_manifest_id"],
+            [
+                "artifact_manifests.organization_id",
+                "artifact_manifests.workspace_id",
+                "artifact_manifests.id",
+            ],
+            name="fk_eval_runs_attempt_manifest",
+        ),
         UniqueConstraint("organization_id", "workspace_id", "id", name="uq_eval_runs_scope_id"),
     )
 
@@ -714,6 +759,11 @@ class EvalRun(Base):
     run_id: Mapped[UUID | None] = mapped_column(Uuid)
     dataset_version_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
     eval_suite_version_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    campaign_id: Mapped[UUID | None] = mapped_column(Uuid, index=True)
+    prereg_manifest_id: Mapped[UUID | None] = mapped_column(Uuid)
+    model_manifest_id: Mapped[UUID | None] = mapped_column(Uuid)
+    source_manifest_id: Mapped[UUID | None] = mapped_column(Uuid)
+    attempt_manifest_id: Mapped[UUID | None] = mapped_column(Uuid)
     mode: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     code_digest: Mapped[str] = mapped_column(String(71), nullable=False)
@@ -752,6 +802,45 @@ class EvalSample(Base):
     result_digest: Mapped[str | None] = mapped_column(String(71))
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EvalCampaign(Base):
+    """S9 eval campaign：一个冻结 suite 注册单位的划分计划；子运行挂在 eval_runs.campaign_id。
+
+    suite_id/version 是逻辑标识（与 eval_suite_versions 同构，不建 FK）；status 只由
+    全部子运行 sealed 推导，completed 是终态。
+    """
+
+    __tablename__ = "eval_campaigns"
+    __table_args__ = (
+        CheckConstraint("version > 0", name="version"),
+        CheckConstraint("unit_count >= 0", name="unit_count"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_eval_campaigns_workspace",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_eval_campaigns_scope_id"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    suite_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    unit_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 

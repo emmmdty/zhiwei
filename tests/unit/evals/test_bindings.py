@@ -11,6 +11,8 @@ from uuid import UUID
 
 import pytest
 from pydantic import ValidationError
+
+from zhiwei.contracts.canonical import digest
 from zhiwei.evals.bindings import (
     AgentIdentity,
     BindingSet,
@@ -20,8 +22,6 @@ from zhiwei.evals.bindings import (
     ToolBinding,
     assert_identity_invariant,
 )
-
-from zhiwei.contracts.canonical import digest
 from zhiwei.evals.domain import EvalMode
 
 IDENTITY = AgentIdentity(
@@ -65,8 +65,11 @@ def test_all_six_modes_bind_substitutions_onto_one_shared_identity() -> None:
 def test_implicit_live_construction_is_refused() -> None:
     with pytest.raises(ValueError, match="for_live"):
         BindingSpec(mode=EvalMode.LIVE, identity=IDENTITY, model=_model(EvalMode.LIVE))
+    # 字符串原始输入与枚举输入走同一个 before 校验器，同样不得隐式构造 live。
     with pytest.raises(ValueError, match="for_live"):
-        BindingSpec(mode="live", identity=IDENTITY, model=_model(EvalMode.LIVE))
+        BindingSpec.model_validate(
+            {"mode": "live", "identity": IDENTITY, "model": _model(EvalMode.LIVE)}
+        )
 
 
 def test_for_live_requires_an_explicit_non_empty_operator_token() -> None:

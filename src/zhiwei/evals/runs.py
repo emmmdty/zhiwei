@@ -196,7 +196,12 @@ class EvalRunState:
 
 
 class CreateEvalRunCommand(BaseModel):
-    """创建一次评测运行；dataset_payload 是需写入 ObjectStore 的 canonical 内容。"""
+    """创建一次评测运行；dataset_payload 是需写入 ObjectStore 的 canonical 内容。
+
+    campaign_id 与可选 manifest ids 是 S9 的冻结输入：campaign 子运行经 campaign_id
+    关联；manifest ids 冻结在创建时写入列，之后不可改写（sealed payload 结构不动，
+    密封复核走既有 eval.sealed-run 协议）。
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -206,6 +211,11 @@ class CreateEvalRunCommand(BaseModel):
     code_digest: str
     config_digest: str
     schema_digest: str
+    campaign_id: UUID | None = None
+    prereg_manifest_id: UUID | None = None
+    model_manifest_id: UUID | None = None
+    source_manifest_id: UUID | None = None
+    attempt_manifest_id: UUID | None = None
 
 
 class SealEmptyCommand(BaseModel):
@@ -280,6 +290,13 @@ class SealedEvalRun(BaseModel):
     terminal_units: int
     organization_id: UUID
     workspace_id: UUID
+    # S9 冻结引用：来自 eval_runs 列（创建时冻结），不进入 sealed payload——
+    # eval.sealed-run 协议保持向后兼容，旧载荷仍可复核。
+    campaign_id: UUID | None = None
+    prereg_manifest_id: UUID | None = None
+    model_manifest_id: UUID | None = None
+    source_manifest_id: UUID | None = None
+    attempt_manifest_id: UUID | None = None
 
 
 class EvalFoundationService:
@@ -360,6 +377,11 @@ class EvalFoundationService:
             run_id=run_id,
             dataset_version_id=dataset_version_id,
             eval_suite_version_id=suite_version.id,
+            campaign_id=command.campaign_id,
+            prereg_manifest_id=command.prereg_manifest_id,
+            model_manifest_id=command.model_manifest_id,
+            source_manifest_id=command.source_manifest_id,
+            attempt_manifest_id=command.attempt_manifest_id,
             mode=command.mode.value,
             status="running",
             code_digest=command.code_digest,
@@ -658,6 +680,11 @@ class EvalFoundationService:
             terminal_units=len(sealed_state.outcomes),
             organization_id=self._context.organization_id,
             workspace_id=self._workspace_id,
+            campaign_id=eval_run.campaign_id,
+            prereg_manifest_id=eval_run.prereg_manifest_id,
+            model_manifest_id=eval_run.model_manifest_id,
+            source_manifest_id=eval_run.source_manifest_id,
+            attempt_manifest_id=eval_run.attempt_manifest_id,
         )
 
     async def _load_eval_run(self, eval_run_id: UUID, *, for_update: bool) -> EvalRun:
