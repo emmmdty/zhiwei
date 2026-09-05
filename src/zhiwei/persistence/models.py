@@ -820,6 +820,9 @@ class EvalCampaign(Base):
         CheckConstraint("version > 0", name="version"),
         CheckConstraint("unit_count >= 0", name="unit_count"),
         CheckConstraint("schema_version > 0", name="schema_version"),
+        CheckConstraint(
+            "status IN ('running', 'partial', 'completed')", name="campaign_status"
+        ),
         ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
