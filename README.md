@@ -19,6 +19,36 @@
 检索质量、成本、延迟、吞吐或生产可用性声明——上述测试结果证明的是实现纪律与契约正确性，
 不构成 Agent 效果证明。
 
+## 公开声明（Claim Registry 绑定）
+
+下表数字只以 `{{claim:ID}}` marker 出现，渲染值由 Claim Registry 中 artifact-verified 的
+claim 从 sealed EvalRun 填充（`zhiwei release check` 扫描本块；无 artifact 支撑的数字会被
+拦截）。口径（mode/model/version/date/corpus/environment）以各 claim 的 registry scope
+为权威，本块不重复抄写。
+
+<!-- claims:start -->
+<!-- 口径：mode=offline · model=reference-fixture · environment=offline-fixture ·
+     口径日期 2026-09-05。全部为离线确定性执行，不是 live 模型效果，也不是平台总证据。 -->
+
+| 声明（语料内口径） | 绑定值（sealed artifact） |
+| --- | --- |
+| 抗污染事实问答语料内回归（corpus-internal，非平台总证据） | {{claim:factqa-v1.accuracy}} |
+| 知识文档检索判分（corpus-internal） | {{claim:knowledge-doc-v1.retrieval}} |
+| 代码与 GitHub 检索判分（corpus-internal） | {{claim:knowledge-code-github-v1.retrieval}} |
+| 跨源检索判分（corpus-internal） | {{claim:knowledge-cross-source-v1.retrieval}} |
+| 知识 ACL 与新鲜度判分（corpus-internal） | {{claim:knowledge-acl-freshness-v1.retrieval}} |
+| 企业记忆生命周期判分（corpus-internal） | {{claim:enterprise-memory-v1.pass}} |
+| 数值风险发现 planted-target recall（冻结合成经营数据内口径） | {{claim:numeric-risk-v1.recall-d0}} |
+| Discover blind 快照判分（corpus-internal） | {{claim:discover-blind-v1.blind-pass}} |
+| Agent Runtime 生产契约单位终态 | {{claim:runtime-contract-v1.contract-pass}} |
+| Ask 行为契约单位终态 | {{claim:ask-v1.contract-pass}} |
+<!-- claims:end -->
+
+外部基准（LongMemEval 等）数据/许可未就绪，相应 claim 保持 planned，不在上表出现。历史
+资产数字（120/112/57、Risk planted、`$43.0231552`）维持 docs 中的窄口径标注（语料内部
+边界，不升级为平台总证据），见 [docs/BENCHMARK.md](docs/BENCHMARK.md) 与
+[docs/RISK_EVAL.md](docs/RISK_EVAL.md)。生产 SLO 不存在：S11 未开始前不作任何可用性承诺。
+
 ## 最终产品
 
 知微是 Web-first、多用户、多工作空间的企业 Agent 应用平台：
