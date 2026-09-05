@@ -55,6 +55,11 @@ from zhiwei.evals.runs import (
     EvalSchemaRegistry,
     SealEmptyCommand,
 )
+from zhiwei.evals.security_suites import (
+    SECURITY_UNIT_CATEGORIES,
+    SECURITY_V1,
+    resolve_security_suite,
+)
 from zhiwei.object_store.manifests import ArtifactManifestCommand
 from zhiwei.object_store.ports import ObjectNamespace
 from zhiwei.object_store.posix import PosixObjectStore
@@ -78,16 +83,21 @@ _S6_SUITE_NAMES = frozenset({FACTQA_V1, ASK_V1_SUITE})
 _S7_SUITE_NAMES = frozenset({ENTERPRISE_MEMORY_V1})
 # S8 suite：numeric-risk-v1（冻结资产）与 discover-blind-v1（代码定义 blind 快照）。
 _S8_SUITE_NAMES = frozenset(RISK_SUITE_NAMES)
+# S9 suite：security-v1（Security 层级行为契约，代码定义 units；Reliability/Performance
+# 层级按 ADR-012 例外机制登记为 S11 未开工，不在本 suite 集）。
+_S9_SECURITY_SUITE_NAMES = frozenset({SECURITY_V1})
 # suite 解析集：eval run 只接受注册在案的 suite；未知 suite 在触碰任何 runtime 依赖
 # （DB/ObjectStore）之前 fail closed。knowledge suite 见 zhiwei.evals.knowledge_suites，
 # S6 suite（factqa-v1 / ask-v1）见 _S6_SUITE_NAMES，S7 memory suite 见 memory_suites，
-# S8 risk suite 见 zhiwei.evals.risk_suites。
+# S8 risk suite 见 zhiwei.evals.risk_suites，S9 security suite 见 security_suites。
 _KNOWN_SUITES: frozenset[str] = frozenset(
     {"legacy-assets", "runtime-contract-v1"}
-) | KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES
+) | KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES
 # executor 由注册表绑定生产路径的 suite（指定 empty/agent-runtime 会落账伪造结果
 # 或走错执行面，进入执行前拒绝）。
-_REGISTRY_BOUND_SUITES = KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES
+_REGISTRY_BOUND_SUITES = (
+    KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES
+)
 
 # seal-empty 的 test report 证据范围：S0 eval 单元与 CLI 契约测试。
 # 不含 integration/foundation/test_empty_run.py——该文件本身会调用 seal-empty，纳入会递归。
@@ -595,6 +605,36 @@ async def _memory_suite_flow(
     )
 
 
+async def _security_suite_flow(
+    sessions: Any,
+    context: TenantContext,
+    store: PosixObjectStore,
+    *,
+    mode: EvalMode,
+    seal: bool,
+) -> dict[str, Any]:
+    """security-v1：代码定义的 fail-closed 安全 units 经生产 security 路径执行。"""
+    from zhiwei.evals.executors.security import SecurityGateExecutor
+
+    suite = resolve_security_suite(SECURITY_V1)
+    await _prepare_s6_tenant(sessions, context, suite.name)
+    executor = SecurityGateExecutor(suite)
+    outcomes = [await executor.execute(unit) for unit in suite.registered_units]
+    return await _s6_suite_bookkeeping(
+        sessions,
+        context,
+        store,
+        suite=suite.name,
+        mode=mode,
+        seal=seal,
+        outcomes=outcomes,
+        registered_units=suite.registered_units,
+        executor_name=suite.executor_kind,
+        production_path=suite.production_path,
+        dataset_extra={"unit_categories": sorted(SECURITY_UNIT_CATEGORIES)},
+    )
+
+
 async def _prepare_s6_tenant(sessions: Any, context: TenantContext, suite: str) -> None:
     """S6 suite 的 tenant 准备：org/workspace 行必须先于生产命令路径存在。"""
     if context.workspace_id is None:
@@ -1036,6 +1076,12 @@ def run(
     if suite == ENTERPRISE_MEMORY_V1:
         payload = asyncio.run(
             _memory_suite_flow(sessions, context, store, mode=mode, seal=seal)
+        )
+        _emit_json(payload)
+        return
+    if suite == SECURITY_V1:
+        payload = asyncio.run(
+            _security_suite_flow(sessions, context, store, mode=mode, seal=seal)
         )
         _emit_json(payload)
         return

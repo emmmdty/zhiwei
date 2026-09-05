@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from zhiwei.evals.domain import RegisteredUnit, SampleStatus
+from zhiwei.evals.domain import RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.executors.security import SecurityGateExecutor
 from zhiwei.evals.security_suites import (
     PRODUCTION_SECURITY_PATH,
@@ -85,7 +85,7 @@ def test_production_path_is_declared() -> None:
 
 async def _outcomes(
     overrides: dict[str, dict[str, object]] | None = None,
-) -> dict[str, str]:
+) -> dict[str, SampleOutcome]:
     suite = resolve_security_suite(SECURITY_V1)
     executor = SecurityGateExecutor(suite, fixture_overrides=overrides)
     return {

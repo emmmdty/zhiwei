@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { RunEventTimeline } from "../observability/RunEventTimeline";
 import { ApprovalsView } from "../approvals/ApprovalsView";
 
 interface TaskState {
@@ -63,6 +64,8 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
         ))}
       </ul>
       <ApprovalsView runId={runId} onSessionExpired={onSessionExpired} />
+      {/* S9 R2-B trace journey（plan Task 7）：canonical event 时间线（元数据 only） */}
+      <RunEventTimeline runId={runId} onSessionExpired={onSessionExpired} />
     </section>
   );
 }

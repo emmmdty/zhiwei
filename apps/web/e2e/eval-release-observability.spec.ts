@@ -1000,10 +1000,11 @@ test.describe("S9 trace journey (canonical run timeline)", () => {
     const rows = timeline.getByRole("row");
     await expect(rows).toHaveCount(7); // header + 6 canonical events
 
-    // metadata 列：sequence、digest 前缀（event_id 前 8 位）、task ref
-    await expect(timeline.getByText("1a2b3c4d")).toBeVisible();
-    await expect(timeline.getByText("task-a")).toBeVisible();
-    const headerCells = timeline.getByRole("row").first().getByRole("cell");
+    // metadata 列：sequence、digest 前缀（event_id 前 8 位，每行都有）、task ref
+    await expect(timeline.getByText("1a2b3c4d")).toHaveCount(6);
+    // task ref 仅任务事件携带（3 行任务事件 + run 详情投影的 task 行各一）
+    await expect(timeline.getByText("task-a")).toHaveCount(3);
+    const headerCells = timeline.getByRole("columnheader");
     await expect(headerCells.filter({ hasText: "Seq" })).toHaveCount(1);
     await expect(headerCells.filter({ hasText: "Event type" })).toHaveCount(1);
     await expect(headerCells.filter({ hasText: "Digest" })).toHaveCount(1);
