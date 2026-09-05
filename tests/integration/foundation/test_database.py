@@ -75,6 +75,10 @@ REQUIRED_TABLES = {
     "eval_campaigns",
     "cost_reservations",
     "cost_reconciliations",
+    # S9-T4（0015）：agent release 治理面 + claim registry（FORCE RLS、org+ws 作用域）
+    # 四轮 RED 机制修订登记：REQUIRED_TABLES 契约随新表扩展（0011 同款）。
+    "agent_releases",
+    "claim_registry",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -99,6 +103,9 @@ WORKSPACE_TABLES = {
     "eval_campaigns",
     "cost_reservations",
     "cost_reconciliations",
+    # S9-T4（0015）：release 与 claim 行均为 workspace 作用域租户数据
+    "agent_releases",
+    "claim_registry",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
@@ -155,6 +162,11 @@ MUTABLE_COLUMNS = {
     # S9（0013）：campaign status 由「全部子运行 sealed」推导的完成转移 + updated_at；
     # 划分内容列（suite_id/version/unit_count）冻结不可变（列级 UPDATE，无表级授权）
     "eval_campaigns": {"status", "updated_at"},
+    # S9-T4（0015）：release 只有生命周期转移列可变——manifest payload/digest 冻结
+    # 不可变（无 UPDATE 路径），活跃 rollout 策略仅被 rollback 改 default pin
+    # （cohort 不重写）；claim 只有状态机/证据/绑定值列可变，statement/scope 冻结
+    "agent_releases": {"rollout_policy", "state", "updated_at"},
+    "claim_registry": {"bound_value", "evidence", "status", "updated_at"},
     "organizations": {"policy_ref", "retention_policy", "status"},
     "outbox": {
         "attempts",
