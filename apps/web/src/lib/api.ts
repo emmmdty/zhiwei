@@ -40,9 +40,10 @@ export function generateIdempotencyKey() {
 async function request<T>(
   method: string,
   path: string,
-  body?: unknown
+  body?: unknown,
+  extraHeaders?: Record<string, string>
 ): Promise<T> {
-  const headers: Record<string, string> = { ..._tenantHeaders };
+  const headers: Record<string, string> = { ..._tenantHeaders, ...extraHeaders };
   if (body !== undefined) {
     headers["Content-Type"] = "application/json";
   }
@@ -82,9 +83,14 @@ async function request<T>(
 }
 
 export const api = {
-  get: <T>(path: string) => request<T>("GET", path),
-  post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
-  put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
-  patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
-  delete: <T>(path: string) => request<T>("DELETE", path),
+  get: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>("GET", path, undefined, headers),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>("POST", path, body, headers),
+  put: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>("PUT", path, body, headers),
+  patch: <T>(path: string, body?: unknown, headers?: Record<string, string>) =>
+    request<T>("PATCH", path, body, headers),
+  delete: <T>(path: string, headers?: Record<string, string>) =>
+    request<T>("DELETE", path, undefined, headers),
 };

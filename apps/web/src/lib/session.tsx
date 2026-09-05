@@ -31,6 +31,20 @@ interface MembershipRow {
   role_bindings: string[];
 }
 
+// 镜像 src/zhiwei/policy/roles.py LEGACY_ROLE_ALIASES：membership 里存储的是
+// 历史自由字符串（bootstrap 写 "owner"，邀请 UI 发 "builder"），PEP 求值前经
+// normalize_role 归一。前端角色判定必须消费同一归一结果，否则 bootstrapped
+// owner 的 isOwner 恒 false（s1-t6 §5-3 N-2）。未知字符串保持原样——权限仍由
+// server PEP 强制，前端归一只影响导航显隐。
+const LEGACY_ROLE_ALIASES: Record<string, string> = {
+  owner: "org_owner",
+  builder: "agent_builder",
+};
+
+function normalizeRoleName(name: string): string {
+  return LEGACY_ROLE_ALIASES[name] ?? name;
+}
+
 interface MeResponse {
   principal: { id: string };
   organizations: { id: string; status: string }[];
@@ -75,7 +89,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
             (m) => m.principal_id === me.principal.id
           );
           role_bindings = (mine?.role_bindings ?? []).map((name) => ({
-            name,
+            name: normalizeRoleName(name),
             scope: "org" as const,
           }));
         } catch {

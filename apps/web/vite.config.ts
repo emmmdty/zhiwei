@@ -8,9 +8,23 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://127.0.0.1:8000",
-      "/auth": "http://127.0.0.1:8000",
-      "/scim": "http://127.0.0.1:8000",
+      "/api": {
+        target: "http://127.0.0.1:8000",
+        // 本地 e2e：后端 CSRF 门禁要求 Origin == scheme://netloc（同源部署语义），
+        // 代理必须同时改写 Host（changeOrigin）与 Origin，等价生产反向代理管道。
+        changeOrigin: true,
+        headers: { origin: "http://127.0.0.1:8000" },
+      },
+      "/auth": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+        headers: { origin: "http://127.0.0.1:8000" },
+      },
+      "/scim": {
+        target: "http://127.0.0.1:8000",
+        changeOrigin: true,
+        headers: { origin: "http://127.0.0.1:8000" },
+      },
     },
   },
 });

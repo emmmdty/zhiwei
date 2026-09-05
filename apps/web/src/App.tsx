@@ -84,11 +84,17 @@ function Organizations({
   user: SessionUser;
   onSessionExpired: () => Promise<void>;
 }) {
+  const { refresh } = useSession();
   const [orgs, setOrgs] = useState<OrgRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const isOwner = hasRole(user, "org_owner");
+  // 首登用户的 bootstrap 入口：零角色且无组织上下文时可见（operator 2026-09-05
+  // journey 修订裁决）。导航显隐仅是入口可见性，权限仍由 PEP 的
+  // bootstrap_org_create（零角色 + 零 active org）在服务端强制。
+  const canBootstrap =
+    isOwner || (user.role_bindings.length === 0 && user.organization_id === null);
 
   const load = async () => {
     setLoading(true);
@@ -114,7 +120,7 @@ function Organizations({
 
   return (
     <section>
-      {isOwner && (
+      {canBootstrap && (
         <>
           <button onClick={() => setShowCreate(true)}>Create organization</button>
           {showCreate && (
@@ -126,7 +132,12 @@ function Organizations({
                     organization_id: crypto.randomUUID(),
                   });
                   setShowCreate(false);
-                  load();
+                  // bootstrap 后 principal 才有第一个 membership：先 refresh()
+                  // 让 /me 解析出新 org context（tenant header 全局注入），
+                  // 再拉 org 列表——否则后续 mutation 带陈旧/缺失
+                  // X-ZhiWei-Organization 被 PEP 拒绝（s1-t6 §5 N-3）。
+                  await refresh();
+                  await load();
                 } catch (err) {
                   if (err instanceof SessionExpiredError) return onSessionExpired();
                   setError(err instanceof Error ? err.message : String(err));
@@ -170,7 +181,7 @@ function Workspaces({
   const [wsName, setWsName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isOwner = hasRole(user, "org_owner");
-  const isBuilder = hasRole(user, "builder");
+  const isBuilder = hasRole(user, "agent_builder");
   const isApprover = hasRole(user, "approver");
   const isAuditor = hasRole(user, "auditor");
 
@@ -263,6 +274,11 @@ interface MemberRow {
   role_bindings: string[];
 }
 
+interface GroupRow {
+  id: string;
+  name: string;
+}
+
 function Members({
   user,
   orgId,
@@ -275,12 +291,14 @@ function Members({
   onSessionExpired: () => Promise<void>;
 }) {
   const [members, setMembers] = useState<MemberRow[]>([]);
+  const [groups, setGroups] = useState<GroupRow[]>([]);
   const [showInvite, setShowInvite] = useState(false);
   const [principalId, setPrincipalId] = useState("");
   const [role, setRole] = useState("member");
   const [showGroup, setShowGroup] = useState(false);
   const [groupName, setGroupName] = useState("");
   const [pendingRemove, setPendingRemove] = useState<string | null>(null);
+  const [selectedPrincipal, setSelectedPrincipal] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isOwner = hasRole(user, "org_owner");
 
@@ -296,9 +314,26 @@ function Members({
     }
   };
 
+  const loadGroups = async () => {
+    try {
+      // workspace 上下文由后端从路径资源推导（PEP 判定 + RLS 对齐），
+      // 前端不声明 X-ZhiWei-Workspace——header 声明语境要求 workspace
+      // membership 行，org 作用域角色没有。
+      const list = await api.get<GroupRow[]>(`/api/v1/workspaces/${wsId}/groups`);
+      setGroups(list);
+    } catch (e) {
+      if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   useEffect(() => {
     load();
   }, [orgId]);
+
+  useEffect(() => {
+    loadGroups();
+  }, [wsId]);
 
   return (
     <section>
@@ -353,6 +388,7 @@ function Members({
                   });
                   setShowGroup(false);
                   setGroupName("");
+                  await loadGroups();
                 } catch (err) {
                   if (err instanceof SessionExpiredError) return onSessionExpired();
                   setError(err instanceof Error ? err.message : String(err));
@@ -368,11 +404,28 @@ function Members({
           )}
         </>
       )}
+      {groups.length > 0 && (
+        <section>
+          <h3>Groups</h3>
+          <ul>
+            {groups.map((g) => (
+              <li key={g.id}>{g.name}</li>
+            ))}
+          </ul>
+        </section>
+      )}
       <ul>
         {members.map((m) => (
           <li key={m.principal_id}>
-            {m.principal_id}
-            {isOwner && (
+            {/* journey 语义：先点击成员行选中，再出现该成员的 Remove member——
+                移除按钮按选中态渲染，避免每行一个导致的歧义。 */}
+            <button
+              className="member-row"
+              onClick={() => setSelectedPrincipal(m.principal_id)}
+            >
+              {m.principal_id}
+            </button>
+            {isOwner && selectedPrincipal === m.principal_id && (
               <>
                 <button onClick={() => setPendingRemove(m.principal_id)}>Remove member</button>
                 {pendingRemove === m.principal_id && (
@@ -385,6 +438,7 @@ function Members({
                             `/api/v1/organizations/${orgId}/members/${m.principal_id}`
                           );
                           setPendingRemove(null);
+                          setSelectedPrincipal(null);
                           load();
                         } catch (err) {
                           if (err instanceof SessionExpiredError) return onSessionExpired();
