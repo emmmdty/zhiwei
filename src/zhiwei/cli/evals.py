@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from zhiwei.config.settings import Settings, load_settings
 from zhiwei.contracts.canonical import canonical_json, digest, digest_bytes
 from zhiwei.evals.ask_contracts import ASK_V1_SUITE
+from zhiwei.evals.change_brief_suites import CHANGE_BRIEF_V1
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.executors import EmptyExecutor, LegacyExecutor
 from zhiwei.evals.executors.knowledge import KnowledgeRetrievalExecutor
@@ -86,17 +87,21 @@ _S8_SUITE_NAMES = frozenset(RISK_SUITE_NAMES)
 # S9 suite：security-v1（Security 层级行为契约，代码定义 units；Reliability/Performance
 # 层级按 ADR-012 例外机制登记为 S11 未开工，不在本 suite 集）。
 _S9_SECURITY_SUITE_NAMES = frozenset({SECURITY_V1})
+# S10 suite：change-brief-v1（ChangeBrief 第三 App 行为契约，冻结语料 evals/change-brief/，
+# executor 由 pack runtime 构造 handler 注册表——specs/s10 §4 公共扩展点证明）。
+_S10_CHANGE_BRIEF_SUITE_NAMES = frozenset({CHANGE_BRIEF_V1})
 # suite 解析集：eval run 只接受注册在案的 suite；未知 suite 在触碰任何 runtime 依赖
 # （DB/ObjectStore）之前 fail closed。knowledge suite 见 zhiwei.evals.knowledge_suites，
 # S6 suite（factqa-v1 / ask-v1）见 _S6_SUITE_NAMES，S7 memory suite 见 memory_suites，
-# S8 risk suite 见 zhiwei.evals.risk_suites，S9 security suite 见 security_suites。
+# S8 risk suite 见 zhiwei.evals.risk_suites，S9 security suite 见 security_suites，
+# S10 change-brief suite 见 change_brief_suites。
 _KNOWN_SUITES: frozenset[str] = frozenset(
     {"legacy-assets", "runtime-contract-v1"}
-) | KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES
+) | KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES | _S10_CHANGE_BRIEF_SUITE_NAMES
 # executor 由注册表绑定生产路径的 suite（指定 empty/agent-runtime 会落账伪造结果
 # 或走错执行面，进入执行前拒绝）。
 _REGISTRY_BOUND_SUITES = (
-    KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES
+    KNOWLEDGE_SUITE_NAMES | _S6_SUITE_NAMES | _S7_SUITE_NAMES | _S8_SUITE_NAMES | _S9_SECURITY_SUITE_NAMES | _S10_CHANGE_BRIEF_SUITE_NAMES
 )
 
 # seal-empty 的 test report 证据范围：S0 eval 单元与 CLI 契约测试。
@@ -802,6 +807,50 @@ async def _ask_suite_flow(
     )
 
 
+async def _change_brief_suite_flow(
+    sessions: Any,
+    context: TenantContext,
+    store: PosixObjectStore,
+    *,
+    mode: EvalMode,
+    seal: bool,
+) -> dict[str, Any]:
+    """change-brief-v1：冻结行为语料经生产 Runtime 命令路径执行（真实 Temporal dev server）。
+
+    executor 由 pack runtime 构造 handler 注册表（specs/s10 §4 公共扩展点）；
+    corpus digest 进 dataset payload，使密封 artifact 可回溯到冻结语料字节。
+    """
+    from zhiwei.evals.change_brief_suites import resolve_change_brief_suite
+    from zhiwei.evals.executors.change_brief import (
+        ChangeBriefPackExecutor,
+        build_change_brief_environment,
+    )
+
+    suite = resolve_change_brief_suite(CHANGE_BRIEF_V1)
+    await _prepare_s6_tenant(sessions, context, suite.name)
+    environment = await build_change_brief_environment(
+        sessions=sessions, context=context, suite=suite
+    )
+    try:
+        executor = ChangeBriefPackExecutor(environment, suite)
+        outcomes = [await executor.execute(unit) for unit in suite.registered_units]
+    finally:
+        await environment.aclose()
+    return await _s6_suite_bookkeeping(
+        sessions,
+        context,
+        store,
+        suite=suite.name,
+        mode=mode,
+        seal=seal,
+        outcomes=outcomes,
+        registered_units=suite.registered_units,
+        executor_name=suite.executor_kind,
+        production_path=suite.production_path,
+        dataset_extra={"corpus_digest": suite.corpus_digest, "pack_id": "change-brief"},
+    )
+
+
 async def _risk_suite_flow(
     sessions: Any,
     context: TenantContext,
@@ -1082,6 +1131,12 @@ def run(
     if suite == SECURITY_V1:
         payload = asyncio.run(
             _security_suite_flow(sessions, context, store, mode=mode, seal=seal)
+        )
+        _emit_json(payload)
+        return
+    if suite == CHANGE_BRIEF_V1:
+        payload = asyncio.run(
+            _change_brief_suite_flow(sessions, context, store, mode=mode, seal=seal)
         )
         _emit_json(payload)
         return
