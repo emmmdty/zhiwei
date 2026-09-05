@@ -30,8 +30,17 @@ from zhiwei.runtime.handlers.model_actions import (
     PlanModelHandler,
     SynthesizeModelHandler,
 )
+from zhiwei.telemetry.traces import (
+    GENAI_SEMCONV_REVISION,
+    SpanNames,
+    metadata_attributes,
+    start_span,
+)
 
 logger = logging.getLogger(__name__)
+
+# span 属性：标注本平台 span 遵循的 GenAI semconv 快照（telemetry/traces.py 冻结值）。
+GENAI_SEMCONV_REVISION_ATTRIBUTE = "zhiwei.genai_semconv_revision"
 
 _MODEL_HANDLERS = {
     "Plan": PlanModelHandler(),
@@ -117,6 +126,23 @@ class ModelActivity:
         Returns ModelActivityOutput with the handler result, routing
         decision, and weighted token cost.
         """
+        # S9-T6 唯一埋点：model 域 span（metadata only）。默认 NoOp provider 下
+        # 零副作用；operator 配置 exporter 后 span 经 W3C context 关联 run/task。
+        with start_span(
+            SpanNames.MODEL,
+            metadata_attributes(
+                {
+                    "run_id": input.run_id,
+                    "task_id": input.task_id,
+                    "attempt_id": input.attempt_id,
+                    "task_type": input.task_type,
+                    GENAI_SEMCONV_REVISION_ATTRIBUTE: GENAI_SEMCONV_REVISION,
+                }
+            ),
+        ):
+            return self._execute(input)
+
+    def _execute(self, input: ModelActivityInput) -> ModelActivityOutput:
         routing_request = self._build_routing_request(input)
         decision = self._router.route(routing_request)
 

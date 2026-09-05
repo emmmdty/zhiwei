@@ -18,17 +18,12 @@ from uuid import UUID, uuid4
 
 import asyncpg
 import pytest
+import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import select
-from zhiwei.persistence.costs import CostLedgerRepository
-from zhiwei.telemetry.costs import (
-    COST_RESERVED_EVENT_TYPE,
-    CostLedgerError,
-    PersistentCostLedger,
-    ReserveRequest,
-)
 
+from zhiwei.persistence.costs import CostLedgerRepository
 from zhiwei.persistence.database import create_database_engine, create_session_factory
 from zhiwei.persistence.models import (
     AuditEvent,
@@ -38,6 +33,12 @@ from zhiwei.persistence.models import (
     OutboxMessage,
 )
 from zhiwei.persistence.tenant import TenantContext, tenant_session
+from zhiwei.telemetry.costs import (
+    COST_RESERVED_EVENT_TYPE,
+    CostLedgerError,
+    PersistentCostLedger,
+    ReserveRequest,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ADMIN_DSN = os.environ.get(
@@ -103,7 +104,8 @@ def _migrated() -> None:
     command.upgrade(config, "head")
 
 
-@pytest.fixture
+# pytest-asyncio：async fixture 需显式装饰器（纯 @pytest.fixture 不处理协程）。
+@pytest_asyncio.fixture
 async def tenant() -> _Tenant:
     instance = _Tenant(organization_id=uuid4(), workspace_id=uuid4())
     await _insert_tenant_rows(instance.organization_id, instance.workspace_id)

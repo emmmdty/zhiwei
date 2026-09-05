@@ -46,6 +46,10 @@ dependencies = [
     "cryptography>=42.0.0",
     "temporalio>=1.14,<2",
     "redis>=6,<7",
+    # S9-T6 observability：只引入 API+SDK 本体；exporter 默认 no-op/non-recording，
+    # 任何导出目标是显式部署配置（deploy/observability/），进程默认零网络副作用。
+    "opentelemetry-api>=1.44",
+    "opentelemetry-sdk>=1.44",
 ]
 
 [project.optional-dependencies]

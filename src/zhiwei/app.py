@@ -28,6 +28,7 @@ from zhiwei.api.auth import (
 )
 from zhiwei.api.events import create_events_router
 from zhiwei.api.memberships import create_memberships_router
+from zhiwei.api.observability import create_observability_router
 from zhiwei.api.organizations import create_organizations_router
 from zhiwei.api.runs import create_runs_router
 from zhiwei.api.scim import create_scim_router
@@ -212,6 +213,16 @@ def create_app(
             identity_sessions=identity_sessions,
             policy_enforcer=policy_enforcer,
             issuer=oidc_issuer,
+        )
+    )
+
+    # S9-T6：observability 读面（cost summary / failure taxonomy）。读路径 PEP
+    # 在 router 内前置（org.read_audit），组合期只接线、不做授权决策。
+    app.include_router(
+        create_observability_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            policy_enforcer=policy_enforcer,
         )
     )
 

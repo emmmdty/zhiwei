@@ -6,6 +6,7 @@ The migration is deliberately self-contained; these models are runtime mappings,
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
@@ -22,6 +23,7 @@ from sqlalchemy import (
     Integer,
     LargeBinary,
     MetaData,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -1250,6 +1252,98 @@ class MemoryLifecycleEventRow(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
     payload_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CostReservationRow(Base):
+    """S9 cost ledger 预订行（0014）：CostLedger.reserve 的持久层投影。
+
+    只追加、不可变（无 UPDATE/DELETE 授权）：reserve 是一次性事实，纠正通过
+    reconcile 的 variance 如实记录，不原地改写金额。金额用 NUMERIC(18,6)——
+    浮点会让金额逐字节不可复算，破坏「账本可审计」。
+    """
+
+    __tablename__ = "cost_reservations"
+    __table_args__ = (
+        CheckConstraint("amount_usd >= 0", name="cost_reservation_amount"),
+        CheckConstraint(
+            "price_confidence IN ('exact', 'estimated')",
+            name="cost_reservation_price_confidence",
+        ),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_cost_reservations_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "run_id"],
+            ["runs.organization_id", "runs.workspace_id", "runs.id"],
+            name="fk_cost_reservations_run",
+            ondelete="CASCADE",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    run_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    amount_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    price_source: Mapped[str] = mapped_column(String(255), nullable=False)
+    price_confidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CostReconciliationRow(Base):
+    """S9 cost ledger 对账行（0014）：CostLedger.reconcile 的持久层投影。
+
+    variance 允许为负（节省）与超限（ROI 指标不是门禁，ADR-002）；分项成本
+    （retry/child/tool external）独立列存放，不并入主消耗口径。每个预订至多
+    一条 reconcile（唯一约束 = 域层 double-reconcile 拒绝的数据面备份）。
+    """
+
+    __tablename__ = "cost_reconciliations"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_cost_reconciliations_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["reservation_id"],
+            ["cost_reservations.id"],
+            name="fk_cost_reconciliations_reservation",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "reservation_id",
+            name="uq_cost_reconciliations_reservation",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    reservation_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    reserved_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    actual_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    variance_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    retry_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    child_run_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    tool_external_cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 6), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

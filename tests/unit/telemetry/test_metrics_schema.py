@@ -41,14 +41,17 @@ class TestInstrumentConstants:
 class TestMetricsFacade:
     def test_default_facade_is_noop(self) -> None:
         # 未 opt-in：add/record 不安装 provider、不产生任何后端副作用。
-        from opentelemetry.metrics import NoOpMeterProvider, get_meter_provider
+        # 契约是「无 SDK 后端」，不是「对象必须是 NoOpMeterProvider」——
+        # opentelemetry-api 未配置时返回惰性 proxy provider（行为等同 no-op）。
+        from opentelemetry.metrics import get_meter_provider
+        from opentelemetry.sdk.metrics import MeterProvider as SdkMeterProvider
 
         before = get_meter_provider()
         facade = MetricsFacade()
         facade.increment(METRIC_RUNS_STARTED, {"run_id": "r-1"})
         facade.record(METRIC_TASK_DURATION, 0.5, {"task_id": "t-1"})
         assert get_meter_provider() is before
-        assert isinstance(before, NoOpMeterProvider)
+        assert not isinstance(before, SdkMeterProvider)
 
     def test_facade_strips_body_keys_before_instrument(self) -> None:
         from opentelemetry.sdk.metrics import MeterProvider
@@ -57,12 +60,10 @@ class TestMetricsFacade:
         reader = InMemoryMetricReader()
         facade = MetricsFacade(meter_provider=MeterProvider(metric_readers=[reader]))
         facade.increment(METRIC_RUNS_STARTED, {"run_id": "r-1", "prompt": "leak"})
+        metrics_data = reader.get_metrics_data()
+        assert metrics_data is not None
         points = (
-            reader.get_metrics_data()
-            .resource_metrics[0]
-            .scope_metrics[0]
-            .metrics[0]
-            .data.data_points
+            metrics_data.resource_metrics[0].scope_metrics[0].metrics[0].data.data_points
         )
         assert points[0].attributes == {"run_id": "r-1"}
 

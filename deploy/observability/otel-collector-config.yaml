@@ -1,0 +1,73 @@
+# S9-T6 OTel Collector 参考配置：默认 metadata-only 管道。
+#
+# 管道语义与 src/zhiwei/telemetry/redaction.py 对齐：
+# - redaction/metadata 处理器删除正文键（双保险：SDK 出口已剥离，collector 再剥一次，
+#   防未升级的 emitter 或第三方 instrumentation 直接入 collector）；
+# - 默认 exporter 是 file——任何网络 exporter（otlphttp/otlp 至远端）是 operator 的
+#   显式变更，开启前须复核数据分类（classification ceiling）与网络分区（network zone）。
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  batch:
+    timeout: 2s
+  # 正文键删除清单 = telemetry/redaction.py DEFAULT_BODY_KEYS（键名逐字一致）。
+  attributes/metadata_only:
+    actions:
+      - key: prompt
+        action: delete
+      - key: messages
+        action: delete
+      - key: result
+        action: delete
+      - key: completion
+        action: delete
+      - key: tool_args
+        action: delete
+      - key: tool_result
+        action: delete
+      - key: input_values
+        action: delete
+      - key: output_values
+        action: delete
+      - key: response
+        action: delete
+      - key: reasoning
+        action: delete
+      - key: error
+        action: delete
+      - key: reason
+        action: delete
+  resource/metadata_only:
+    attributes:
+      - key: zhiwei.genai_semconv_revision
+        action: upsert
+        value: genai-semconv-1.36.0
+
+exporters:
+  # 默认落本机文件（卷内 JSON lines）；不开网络出口。
+  file/metadata:
+    path: /var/lib/otel/traces/signals.json
+    rotation:
+      max_megabytes: 100
+      max_backups: 3
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [attributes/metadata_only, resource/metadata_only, batch]
+      exporters: [file/metadata]
+    metrics:
+      receivers: [otlp]
+      processors: [attributes/metadata_only, batch]
+      exporters: [file/metadata]
+    logs:
+      receivers: [otlp]
+      processors: [attributes/metadata_only, batch]
+      exporters: [file/metadata]
