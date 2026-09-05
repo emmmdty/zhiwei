@@ -95,17 +95,35 @@ def recheck_after_hydration(
     return result
 
 
+def check_acl_snapshot(
+    snapshot: ACLSnapshot,
+    context: ACLContext,
+) -> ACLCheckResult:
+    """Check a principal against one ACL snapshot under the current ACL context.
+
+    ADR-006 的公共判定入口：Evidence 可见性等「按当前 ACL 重新校验」的消费方
+    统一走这里，不复制 deny-override/unknown 语义（第二套实现是禁止的）。
+    """
+    return _check_acl(snapshot, context)
+
+
 def _check_acl(
     snapshot: ACLSnapshot,
     context: ACLContext,
 ) -> ACLCheckResult:
     """Check if a principal has access based on the ACL snapshot.
 
-    Checks denied first (deny overrides allow).
+    Checks denied first (deny overrides allow). The query-time context deny
+    list is part of the CURRENT ACL (ADR-006): it must override an index-time
+    snapshot grant, otherwise「ACL revoked between index and query time」
+    无从表达——corpus 场景 KT-AF-002 首次暴露了这一缺口。
     """
     principal_str = str(context.principal_id)
 
-    if principal_str in snapshot.denied_principals:
+    if (
+        principal_str in snapshot.denied_principals
+        or principal_str in context.denied_principals
+    ):
         return ACLCheckResult(
             version_id="",
             allowed=False,
