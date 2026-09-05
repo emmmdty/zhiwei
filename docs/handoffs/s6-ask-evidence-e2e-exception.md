@@ -36,3 +36,11 @@
 - `ls apps/web/src/features/` → 无 ask/evidence/cases
 - `grep -rin "evidence\|ask\|case" apps/web/src/` → 零 UI 命中（仅 task_id 等字段误命中）
 - mock 模式可行性参照：`apps/web/e2e/runtime-approval.spec.ts` 3/3 passed
+
+## Operator 确认（ADR-012 §2 要求项，2026-09-05 补登记）
+
+- **确认人**：operator（本轮清理指令确认，2026-09-05 会话记录）
+- **确认内容**：本例外四要素齐全、根因为被测前端能力缺失（非环境阻塞），同意维持
+  「有条件收口」；复执行时点（最迟并入 S10 Studio 阶段 Gate 清单）确认有效。
+- **同步核验**：S1 tenancy e2e 已于 2026-09-05 真实栈全绿（13/13，见
+  s1-tenancy-e2e-repair.md），S2 runtime-approval mock 3/3——mock 通道先例持续有效。

@@ -193,17 +193,19 @@
 
 ## 待办
 
-- S3–S8 未提交批次：先由 operator 决定整批验收/提交边界（无法按原 per-Task 边界补拆），
-  验收通过前不据此声称 S3–S8「已收口」。
+- ~~S3–S8 未提交批次：先由 operator 决定整批验收/提交边界~~（2026-09-05 已关闭：批次
+  已分两波入库（`976bf05`…`7a2c3fd`），整批验收通过，见 `docs/handoffs/s3-s8-batch-acceptance.md`）。
 - S3–S8 批次按模块边界分批入库（deps 迁移 → 既有模块加固 → S3–S8 各阶段 → 接线 →
-  solution packs → 审计文档与 spec 修订）；整批验收以全量 Gate 为准，不声称逐 Task 收口。
+  solution packs → 审计文档与 spec 修订）；~~整批验收以全量 Gate 为准，不声称逐 Task 收口~~
+  （已验收；逐 Task 收口口径不变）。
 - S9 Eval/Release、S10 Studio/Third App、S11 Production Reference 未开始。
 - S2 修复轮登记的开放债务（详见 `docs/handoffs/s2-repair-round.md` §7）：SCIM group
   审计同事务、Child-run delegation 集成测试、SSE 心跳/游标下推、Web SSE 客户端等。
 - ~~S5「评测先行」债务：`evals/knowledge/` 语料未注册进 validator~~（2026-09-04 已关闭：
   validator 口径 110 → 822 项、冻结资产 26 个）。
-- 审计 P2 遗留余项：S4/S6/S7/S8 的 E2E Playwright spec（例外条目已登记，待对应前端 features）、
-  hypothesis reducer property tests、S5 dense index 生产化选型（pgvector/FAISS）。
+- 审计 P2 遗留余项：S4/S6/S7/S8 的 E2E Playwright spec（例外条目已登记，待对应前端
+  features，operator 已确认维持有条件收口）、hypothesis reducer property tests、
+  S5 dense index 生产化选型（pgvector/FAISS）。
 - S3–S8 补全轮登记的实现缺口（详见各 Wave 交付报告）：Ask task_graph.yaml 输入模板未在生产
   workflow 实现图内数据流（ask-v1 经场景数据驱动生产 handler）；Case 仓储仍为 InMemory
   （canonical 事件已落账，PG 表未建）；discover trigger watermark 为进程内状态（跨重启重置）；
@@ -214,3 +216,25 @@
   已于 2026-09-04 在 httpx2 下复验。
 - 委托集成测试：S3 Delegate handler 实现后必须补 integration 级委托链 + 环检测端到端 + 两路径
   共用计数验证。
+
+## 2026-09-05：残余项清理与 S1 e2e 真实栈修复（ADR-014）
+
+- **测试隔离缺陷（progress.md 2026-09-04 登记）判定消解**：现 HEAD 下以 5 种脏库口径
+  （3 次全量 + 2 次定向交错，含 CLI eval seal 弄脏后复跑）均无法复现
+  DeadlockDetectedError/状态污染——随第二波修复（`7a2c3fd` 等） incidental 消解；转为
+  观察项（再现时按 ADR-012 登记例外）。
+- **S1 tenancy e2e 真实栈修复并首次全绿（13/13）**：六项根因（s1-t6 §5）全部收敛——
+  §5-1 真实缺陷为 authlib×httpx2 类体系混用（`_AuthlibTransportCompat` 适配层 +
+  生产同构 RED 契约测试）；N-1/N-4 种子层解法（裸 principal + 可复现 seed/realm/serve
+  artifact）；N-2/N-3/N-5 前端归一/refresh/group 渲染；operator 逐项裁决入库为
+  **ADR-014**（bootstrap×journey 不可满足矛盾、group 矩阵补 org_owner、journey 最小
+  修订），全程记录见 `docs/handoffs/s1-tenancy-e2e-repair.md`。
+- **流程项关闭**：4 份 S4/S6/S7/S8 e2e 例外条目补 operator 确认登记（ADR-012 §2）；
+  S3–S8 整批验收通过（`docs/handoffs/s3-s8-batch-acceptance.md`）；S1 e2e 例外解锁、
+  S2 runtime-approval 例外条件关闭（3/3 复验）。
+- **终态 Gate（2026-09-05，干净库，已验证）**：pytest 3312 passed/0 failed（+ADR-014
+  契约测试）；ruff/pyright 0；evals 822、determinism ✓；e2e 16 passed（tenancy 13 +
+  runtime-approval 3）。
+- 环境提示：全量 pytest 会重建 schema（`migrated_database` fixture），e2e 前必须重新
+  seed；本机若宿主原生 postgres 占用 55432，compose 容器端口映射为空、实际连接的是宿主
+  实例（详见 s1-tenancy-e2e-repair.md §3）。

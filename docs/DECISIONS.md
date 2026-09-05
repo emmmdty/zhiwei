@@ -1001,3 +1001,74 @@ S3–S8 批量实现入库后（2026-09-04 全仓审计），逐条按 spec Gate
 | wire capture 保真性（ADR-001，**P0**） | httpx transport 层在流式/重试/大 body 下能否稳定取得最终 body；四类篡改语料全捕获 | 改用自建反向代理捕获，manifest 通过 correlation id 关联；不降级为 SDK 层 hook |
 | token estimator 校准（ADR-002，**P0**） | 对每个 endpoint/model 用回传 usage 回归本地估算，误差分布是否稳定收敛 | 该 profile 的 context fit 判定固定为最保守档，并在 profile 上标注 `calibrated_estimate` |
 | SCIP 多语言索引（**P1**） | 目标语言各自的 SCIP indexer 能否在受控构建环境产出索引 | 降级 tree-sitter + 精确搜索；**必须同时声明 CodeRef 精度损失**（symbol 级降为 span 级） |
+
+## ADR-014：S1 tenancy e2e 修复轮 —— bootstrap×journey 矛盾、group 矩阵与 authlib×httpx2 兼容
+
+日期：2026-09-05　状态：已接受（operator 本轮逐项裁决，执行方实施，独立 subagent 交叉验收）
+
+### 问题
+
+S1 tenancy e2e（`apps/web/e2e/tenancy.spec.ts`）自落盘起 13/13 failed（s1-t6 §5 登记的
+六项根因全部未解）。本轮以真实 Keycloak（compose identity profile）+ 真实 OPA + 真实
+PG bring-up 后逐项收敛，暴露三类事实：
+
+1. **§5-1 的真实形态不是 redirect_uri 缺失**：`_oauth_client()` 自 `9c43335` 起即在
+   client 构造传入 redirect_uri，authlib 对 authorization_code grant 自动携带该字段，
+   冻结 FakeIdP（强制校验 redirect_uri，test_oidc.py:246）全部通过即为证明。真实缺陷
+   在 httpx2 迁移（`976bf05`）后的**类体系混用**：authlib 的 httpx_client 集成基于真实
+   httpx（`alias_httpx` 只在 pytest 进程生效），生产进程里 authlib 构造的 Request 携带
+   同步 ByteStream，注入的 httpx2 异步 transport 断言
+   `isinstance(request.stream, AsyncByteStream)`（httpx2/_transports/default.py:372）
+   ——真实 Keycloak 下 token/refresh/revoke 一律 AssertionError。MockTransport 不做该
+   断言，掩盖缺陷。最小反例：tests/security/identity/test_oidc_transport_compat.py
+   （生产同构子进程，authlib 真实 httpx × 严格 httpx2 transport）。
+2. **frozen journey 与 frozen Rego 的两处不可满足矛盾**（真实 OPA 双向实证）：
+   a. bootstrap 要求 `count(actor.roles)==0`（bare user → allow=True；org_owner →
+      False），而 journey 的 signIn 断言要求 owner 登录后立即看到角色文本——同一
+      principal 不可能同时满足两份冻结契约；
+   b. spec §4 journey 写「Owner 创建 group」，但冻结矩阵
+      `workspace_policy.configure_workspace` 仅允许 workspace_admin（authz.rego:37），
+      真实 OPA 对 org_owner 判 deny。
+3. **种子不可复现（N-4）**：journey 依赖的 5 个 principal/UUID 在仓库内零支撑
+   （realm 模板仅 alice；`fd1b9dab-*` 等仅存在于 spec 文件）。
+
+### 决策（operator 2026-09-05 逐项裁决）
+
+1. **N-1 采「种子层解法」**：seed 脚本只建裸 principal（零 membership），owner 首登
+   零角色 → bootstrap 放行（候选 1 语义不变）；Rego 与 journey 的授权语义零改动。
+   配套 N-4：`deploy/seed_identity_e2e.py`（幂等自纠）+
+   realm-template.json 固定 7 用户（5 journey + newuser + alice），用户 id 即 OIDC sub，
+   external_identities.subject = KC user id。
+2. **journey 最小修订（operator 批准）**：signIn 断言 `.or()` 兼容「有角色显角色 /
+   首登显 Create organization 入口」两态（`.first()` 解 strict mode）；empty-state 改用
+   新增种子用户 newuser-oidc；loading 测试对 orgs GET 注入延迟（本地栈毫秒级完成，
+   原断言必然错过窗口）；「removes a member」移至角色 journey 之后（原顺序先删除
+   member 再跑 Member journey，状态流自毁）。
+3. **group 矩阵补 org_owner（operator 批准）**：
+   `workspace_policy.configure_workspace: {workspace_admin} → {workspace_admin, org_owner}`
+   ——保留 workspace_admin 现有权限（workspace 作用域绑定须匹配 input.workspace_id），
+   补齐 org 所有者对自身 org 下 workspace 的配置权（与 configure 已给 org_owner 一致）。
+   同步 authz_test.rego allowed_cells 与 PERMISSIONS.md §3.1。workspace 创建/组策略的
+   既有映射不变（ADR-012 反例 4 裁决不变）。
+4. **authlib×httpx2 适配层**：`OIDCService._oauth_client` 的注入 transport 经
+   `_AuthlibTransportCompat` 双向归一——请求流归一为 httpx2 异步流（过真实 transport
+   断言）；响应整体重建为真实 httpx.Response（real httpx 的 send/aclose 只认自身类体
+   系）；oauth client timeout 传标量（跨类体系 Timeout 对象会污染
+   extensions["timeout"]，破坏 httpcore2 的 connect 超时算术）。测试进程内 httpx 已被
+   alias 成 httpx2，适配层 isinstance 恒真、退化为直通——冻结 OIDC 契约路径不变。
+5. **端点 RLS 上下文回退语义**：group 端点 RLS 上下文 = workspace 作用域 actor 必须
+   与路径对齐（跨 scope 404/403 纵深防御保留，冻结测试
+   test_api_workspaces_and_groups_endpoints_enforce_scope 继续约束）；org 作用域
+   actor（无 workspace 声明）落到路径 workspace——授权由 PEP 矩阵按 org 角色判定
+   （决策 3），RLS 与被操作资源对齐。
+
+### 后果
+
+- 2026-09-05 全量复验（干净库）：pytest 3312 passed/0 failed；ruff/pyright 0；
+  `make evals` 822 项、determinism 逐字节一致；tenancy.spec.ts **13/13 passed**（历史
+  首次）、runtime-approval.spec.ts 3/3 —— S1 e2e 例外条目（Keycloak leg）解锁关闭，
+  S1 Gate 的 e2e 项转绿。e2e 前置：真实栈 bring-up（compose identity profile +
+  `deploy/seed_identity_e2e.py` + `deploy/serve_identity_e2e.py`），种子重置于每次
+  e2e 前（pytest 全量会重建 schema，见 s1-tenancy-e2e-repair.md §5）。
+- 遗留（不阻塞）：前端对 group 列表的空态展示、AuditLog 仍为占位（S1 未交付
+  audit-events 端点）；live attestation 与生产 egress 接线维持「计划实现」登记。
