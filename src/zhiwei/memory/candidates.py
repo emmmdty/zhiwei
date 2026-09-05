@@ -59,6 +59,31 @@ class DedupKey:
         )
 
 
+def merge_evidence(
+    existing: MemoryRecord, incoming: MemoryRecord, *, now: datetime
+) -> MemoryRecord:
+    """ADR-009 同键证据合并（纯函数，域层唯一实现）。
+
+    追加 source_refs（按 source_id 去重保序）、observed_at 取较晚、confidence 取
+    较大；status 保持 existing 原值——状态提升由调用方（队列/仓储）按域语义决定。
+    """
+    existing_source_ids = {sr.source_id for sr in existing.source_refs}
+    new_sources = tuple(
+        sr for sr in incoming.source_refs if sr.source_id not in existing_source_ids
+    )
+    merged_sources = existing.source_refs + new_sources
+    merged_observed = max(existing.observed_at, incoming.observed_at, key=ensure_utc)
+    merged_confidence = max(existing.confidence, incoming.confidence)
+    return existing.model_copy(
+        update={
+            "source_refs": merged_sources,
+            "observed_at": merged_observed,
+            "confidence": merged_confidence,
+            "updated_at": now,
+        }
+    )
+
+
 @dataclass(slots=True)
 class CandidateQueue:
     """In-memory candidate queue with dedup and TTL expiry.
@@ -116,29 +141,7 @@ class CandidateQueue:
 
         追加 source_refs、更新 observed_at、提升 confidence。
         """
-        existing = self.records[key]
-
-        # Merge source_refs (append, preserving order, dedup by source_id)
-        existing_source_ids = {sr.source_id for sr in existing.source_refs}
-        new_sources = tuple(
-            sr for sr in new_record.source_refs if sr.source_id not in existing_source_ids
-        )
-        merged_sources = existing.source_refs + new_sources
-
-        # Update observed_at to the later of the two
-        merged_observed = max(existing.observed_at, new_record.observed_at, key=ensure_utc)
-
-        # Boost confidence: take the max of the two
-        merged_confidence = max(existing.confidence, new_record.confidence)
-
-        merged = existing.model_copy(
-            update={
-                "source_refs": merged_sources,
-                "observed_at": merged_observed,
-                "confidence": merged_confidence,
-                "updated_at": now,
-            }
-        )
+        merged = merge_evidence(self.records[key], new_record, now=now)
         self.records[key] = merged
         return merged
 

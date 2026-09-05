@@ -13,8 +13,10 @@ from sqlalchemy import (
     CHAR,
     JSON,
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -1020,3 +1022,146 @@ class ApprovalRequestRow(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     replaced_by: Mapped[UUID | None] = mapped_column(Uuid)
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class MemoryRecordRow(Base):
+    """S7 memory 记录持久层（0012）：DATA_MODEL §6 MemoryRecord 的投影。
+
+    status 状态机 candidate/confirmed/superseded/revoked/expired，不原地覆盖：
+    内容列（scope/type/subject/key/canonical_value 等）无 UPDATE 授权且由终态
+    触发器守护；可变更列仅为生命周期转移列与 ADR-009 证据合并列（source_refs/
+    observed_at/confidence）。纠正创建新记录并把原记录置 superseded；
+    candidate 去重由 partial unique 索引在数据面强制（队列收敛的最后一道防线）。
+    """
+
+    __tablename__ = "memory_records"
+    __table_args__ = (
+        CheckConstraint("scope IN ('user', 'team', 'case')", name="memory_scope"),
+        CheckConstraint(
+            "type IN ('preference', 'fact', 'decision', 'episode', 'lesson')",
+            name="memory_type",
+        ),
+        CheckConstraint(
+            "sensitivity IN ('low', 'medium', 'high')", name="memory_sensitivity"
+        ),
+        CheckConstraint(
+            "status IN ('candidate', 'confirmed', 'superseded', 'revoked', 'expired')",
+            name="memory_status",
+        ),
+        CheckConstraint("confidence >= 0 AND confidence <= 1", name="memory_confidence"),
+        CheckConstraint("version > 0", name="memory_version"),
+        CheckConstraint("acl_version > 0", name="memory_acl_version"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        CheckConstraint(
+            "(status = 'superseded') = (superseded_by IS NOT NULL)",
+            name="memory_superseded_pairing",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_memory_records_workspace",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "uq_memory_records_candidate_dedup",
+            "organization_id",
+            "workspace_id",
+            "dedup_hash",
+            unique=True,
+            postgresql_where=text("status = 'candidate'"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    scope_subject_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    type: Mapped[str] = mapped_column(String(32), nullable=False)
+    subject: Mapped[str] = mapped_column(Text, nullable=False)
+    key: Mapped[str] = mapped_column(Text, nullable=False)
+    canonical_value: Mapped[str] = mapped_column(Text, nullable=False)
+    source_refs: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    valid_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    confidence: Mapped[float] = mapped_column(Float, nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    author_ref: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    approver_ref: Mapped[UUID | None] = mapped_column(Uuid)
+    conflict_refs: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    retention_policy: Mapped[str] = mapped_column(String(64), nullable=False)
+    allowed_profile_refs: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    acl_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    superseded_by: Mapped[UUID | None] = mapped_column(Uuid)
+    revoked_reason: Mapped[str | None] = mapped_column(Text)
+    tombstone: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    dedup_hash: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MemoryLifecycleEventRow(Base):
+    """S7 memory 生命周期台账（0012）：记录级状态转移 + 审计的追加式持久层。
+
+    Run 内的 candidate/refusal 走 canonical_events；Run 外的转移（steward
+    confirm、supersede、TTL expire）落本表 + audit_events（同事务）。幂等键为
+    (record_id, action, payload_digest)：一次性转移重放与同证据合并重试均不会
+    产生第二行。
+    """
+
+    __tablename__ = "memory_lifecycle_events"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_memory_lifecycle_events_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["record_id"],
+            ["memory_records.id"],
+            name="fk_memory_lifecycle_events_record",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "record_id",
+            "action",
+            "payload_digest",
+            name="uq_memory_lifecycle_events_transition",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    record_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -8,6 +8,7 @@ or be forbidden based on scope, type, sensitivity, and profile policy.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -56,6 +57,17 @@ _FORBIDDEN_VALUE_PATTERNS: tuple[str, ...] = (
     "retrieval instruction",
 )
 
+# Unauthorized PII: 未经授权个人信息禁止写入（S7 spec §3）。确定性词面 + 12–19 位
+# 数字串（证件/卡号长度段）；memory 是长期存储，宁可漏存也不可错存受控个人信息。
+_PII_SUBJECT_PATTERNS: tuple[str, ...] = (
+    "national id",
+    "id card",
+    "social security",
+    "passport",
+    "credit card",
+)
+_PII_DIGIT_RUN_PATTERN = re.compile(r"\b\d{12,19}\b")
+
 
 def evaluate_write_policy(
     *,
@@ -91,6 +103,19 @@ def evaluate_write_policy(
                 decision=WritePolicyDecision.FORBIDDEN,
                 reason=f"canonical_value contains forbidden pattern: {pattern}",
             )
+
+    # Unauthorized PII check
+    for pattern in _PII_SUBJECT_PATTERNS:
+        if pattern in subject_lower:
+            return WritePolicyResult(
+                decision=WritePolicyDecision.FORBIDDEN,
+                reason=f"subject contains unauthorized PII pattern: {pattern}",
+            )
+    if _PII_DIGIT_RUN_PATTERN.search(canonical_value):
+        return WritePolicyResult(
+            decision=WritePolicyDecision.FORBIDDEN,
+            reason="canonical_value contains id/card-like number (unauthorized PII)",
+        )
 
     # Case memory: timeline/evidence/action/resolution auto-record
     if scope == MemoryScope.CASE:

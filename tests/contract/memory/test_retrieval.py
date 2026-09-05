@@ -16,6 +16,7 @@ from uuid import UUID
 import pytest
 
 from zhiwei.contracts.identifiers import new_id
+from zhiwei.identity.domain import PrincipalKind
 from zhiwei.memory.domain import (
     MemoryRecord,
     MemoryScope,
@@ -529,6 +530,7 @@ class TestMemoryActivity:
             organization_id=str(_ORG_ID),
             workspace_id=str(_WS_ID),
             principal_id=str(_USER_A),
+            principal_kind=PrincipalKind.USER,
             action="retrieve",
             query={"text": "vim", "top_k": 5},
             filters={"organization_id": str(_ORG_ID), "workspace_id": str(_WS_ID)},
@@ -547,6 +549,7 @@ class TestMemoryActivity:
             organization_id=str(_ORG_ID),
             workspace_id=str(_WS_ID),
             principal_id=str(_USER_A),
+            principal_kind=PrincipalKind.USER,
             action="write",
             memory={
                 "organization_id": str(_ORG_ID),
@@ -576,6 +579,7 @@ class TestMemoryActivity:
             organization_id=str(_ORG_ID),
             workspace_id=str(_WS_ID),
             principal_id=str(_USER_A),
+            principal_kind=PrincipalKind.USER,
             action="write",
             memory={
                 "organization_id": str(_ORG_ID),
@@ -604,6 +608,7 @@ class TestMemoryActivity:
             organization_id=str(_ORG_ID),
             workspace_id=str(_WS_ID),
             principal_id=str(_USER_A),
+            principal_kind=PrincipalKind.USER,
             action="unknown",
         )
         result = await activity.execute(input_data)

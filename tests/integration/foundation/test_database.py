@@ -67,6 +67,10 @@ REQUIRED_TABLES = {
     "organization_bootstrap_claims",
     # S2-T7（0011）：审批旅程持久层（FORCE RLS、org+ws 作用域）
     "approval_requests",
+    # S7（0012）：memory 生命周期持久层（FORCE RLS、org+ws 作用域）。
+    # 四轮 RED 机制修订登记：REQUIRED_TABLES 契约随新表扩展（0011 同款）。
+    "memory_records",
+    "memory_lifecycle_events",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -84,6 +88,9 @@ WORKSPACE_TABLES = {
     "workspace_memberships",
     # S2-T7（0011）：审批请求是 workspace 作用域租户数据（org+ws GUC RLS）
     "approval_requests",
+    # S7（0012）：memory 记录与生命周期台账均为 workspace 作用域租户数据
+    "memory_records",
+    "memory_lifecycle_events",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
@@ -116,6 +123,19 @@ MUTABLE_COLUMNS = {
     "agent_definitions": {"lifecycle", "name"},
     # S2-T7（0011）：审批决策 CAS 只允许这四列（列级 UPDATE，无表级授权）
     "approval_requests": {"decided_at", "decided_by", "decision_reason", "status"},
+    # S7（0012）：memory 生命周期转移列 + ADR-009 证据合并列（列级 UPDATE，
+    # 无表级授权）；内容列不可变——状态机不原地覆盖
+    "memory_records": {
+        "approver_ref",
+        "confidence",
+        "observed_at",
+        "revoked_reason",
+        "source_refs",
+        "status",
+        "superseded_by",
+        "tombstone",
+        "updated_at",
+    },
     "canonical_projections": {
         "head_event_digest",
         "sequence_no",

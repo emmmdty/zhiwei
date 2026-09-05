@@ -36,6 +36,7 @@ class FilterStatus(StrEnum):
     PASS = "pass"
     REJECTED_ORG = "rejected_org"
     REJECTED_WORKSPACE = "rejected_workspace"
+    REJECTED_SCOPE = "rejected_scope"
     REJECTED_SCOPE_SUBJECT = "rejected_scope_subject"
     REJECTED_ACL = "rejected_acl"
     REJECTED_SENSITIVITY = "rejected_sensitivity"
@@ -54,6 +55,7 @@ class HardFilters:
     organization_id: UUID | None = None
     workspace_id: UUID | None = None
     scope_subject_id: UUID | None = None
+    excluded_scopes: frozenset[MemoryScope] = field(default_factory=frozenset)
     allowed_principals: frozenset[str] = field(default_factory=frozenset)
     max_sensitivity: SensitivityLevel | None = None
     allowed_statuses: frozenset[MemoryStatus] | None = None
@@ -100,21 +102,25 @@ def apply_hard_filters(
     if filters.workspace_id is not None and record.workspace_id != filters.workspace_id:
         return FilterStatus.REJECTED_WORKSPACE
 
+    if record.scope in filters.excluded_scopes:
+        return FilterStatus.REJECTED_SCOPE
+
     if (
         filters.scope_subject_id is not None
         and record.scope_subject_id != filters.scope_subject_id
     ):
         return FilterStatus.REJECTED_SCOPE_SUBJECT
 
-    # ACL check: principal must be in allowed_principals or scope is user-owner
-    if filters.allowed_principals:
-        author_str = str(record.author_ref)
-        scope_subject_str = str(record.scope_subject_id)
+    # ACL：personal memory 的可见性由 scope-subject 过滤决定；team/case memory 的
+    # 可见性必须被显式授权（author 或 scope subject 命中 principal 集）——ACL 上下文
+    # 缺失/为空不是授权，一律 fail closed（「ACL 不确定——一律拒绝」纪律）。
+    if record.scope != MemoryScope.USER:
+        principals = filters.allowed_principals or frozenset()
         has_access = (
-            author_str in filters.allowed_principals
-            or scope_subject_str in filters.allowed_principals
+            str(record.author_ref) in principals
+            or str(record.scope_subject_id) in principals
         )
-        if not has_access and record.scope != MemoryScope.USER:
+        if not has_access:
             return FilterStatus.REJECTED_ACL
 
     if filters.max_sensitivity is not None:
