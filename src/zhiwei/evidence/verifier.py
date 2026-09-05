@@ -21,6 +21,11 @@ from zhiwei.evidence.claims import (
     QuoteClaim,
     RecommendationClaim,
 )
+from zhiwei.evidence.errors import (
+    ClaimLevelViolationError,
+    CopyFrozenBindingError,
+    EvidenceError,
+)
 from zhiwei.evidence.refs import (
     EvidenceRef,
     QueryReplayRef,
@@ -37,6 +42,26 @@ class VerifyExitCode(IntEnum):
     CLAIM_SPAN = 5
     DIGEST_ARTIFACT = 6
     AUTHORIZATION = 7
+
+
+def map_load_error(exc: BaseException) -> VerifyExitCode:
+    """把 bundle 载入期的类型化异常映射到 spec §3 的稳定退出码。
+
+    异常层级的归属是「违规发生在哪一层」而不是「异常从哪个类抛出」：
+    - ClaimLevelViolationError：claim 类型不被证据等级支撑 → claim/span（5）；
+    - CopyFrozenBindingError：copy_frozen 绑定缺失 → replay/value（4）；
+    - 其余 EvidenceError（ref 字段/变体非法、bundle 结构非法）与 pydantic
+      ValidationError 都是输入/schema 问题 → input/schema（2）。
+    调用方对非 Evidence 的未知异常自行 fail closed（CLI 落保留码 70，
+    不把内部错误伪装成对 bundle 的判定）。
+    """
+    if isinstance(exc, ClaimLevelViolationError):
+        return VerifyExitCode.CLAIM_SPAN
+    if isinstance(exc, CopyFrozenBindingError):
+        return VerifyExitCode.REPLAY_VALUE
+    if isinstance(exc, EvidenceError):
+        return VerifyExitCode.INPUT_SCHEMA
+    return VerifyExitCode.INPUT_SCHEMA
 
 
 class VerifyCheck:

@@ -12,6 +12,7 @@ from typing import Annotated, Literal
 import click
 import typer
 
+from zhiwei.cli.evidence import verify_evidence
 from zhiwei.context.manifests import ContextManifest, TransitionManifest
 from zhiwei.evidence.context_verify import (
     VerificationResult,
@@ -27,7 +28,22 @@ from zhiwei.models.presend import WireCapture, digest_bytes
 
 app = typer.Typer(help="验证上下文清单与线绑定完整性", no_args_is_help=True, pretty_exceptions_enable=False)
 
+# S6：`verify evidence` 与 `verify context` 同属 verify 命令组（specs/s6 §7 Gate 命令面）。
+app.command("evidence", help="对 Evidence bundle 分层验证（稳定退出码 0/2-7，spec s6 §3）")(verify_evidence)
+
 OUTPUT_FORMAT = Annotated[Literal["text", "json"], typer.Option("--format", help="输出格式")]
+
+# spec s3 §6 Gate 的「全部验证场景」：valid + 五类篡改 + transition。
+# --all 按此顺序逐个执行；顺序稳定使 text 汇总与 Gate 产物可逐字节比对。
+ALL_SCENARIOS: tuple[str, ...] = (
+    "valid",
+    "tampered-ir",
+    "tampered-body",
+    "tampered-inventory",
+    "tampered-profile",
+    "send-after-capture",
+    "transition",
+)
 
 
 def _build_fixture_manifest() -> ContextManifest:
@@ -84,14 +100,29 @@ def _build_fixture_transition() -> TransitionManifest:
 
 @app.command("context")
 def verify_context(
+    ctx: typer.Context,
     output_format: OUTPUT_FORMAT = "json",
     scenario: Annotated[
         Literal["valid", "tampered-ir", "tampered-body", "tampered-inventory",
                 "tampered-profile", "send-after-capture", "transition"],
         typer.Option("--scenario", help="验证场景"),
     ] = "valid",
+    run_all: Annotated[
+        bool,
+        typer.Option("--all", help="依次执行全部验证场景并汇总：全部 PASS 才 exit 0"),
+    ] = False,
 ) -> None:
     """验证上下文清单完整性：valid 检查全部通过，tampered-* 检测篡改。"""
+    if run_all and _scenario_explicitly_given(ctx):
+        # fail closed：--all 是聚合语义，与显式限定单一场景并存属于歧义输入，
+        # 静默取其一会让「到底验证了什么」无法从命令行回答。
+        click.echo("--all 与显式 --scenario 互斥，请二选一", err=True)
+        raise typer.Exit(1)
+
+    if run_all:
+        _run_all_scenarios(output_format)
+        return
+
     try:
         result = _run_scenario(scenario)
     except Exception as exc:
@@ -114,6 +145,59 @@ def verify_context(
         click.echo("\n".join(lines))
 
     if not result.ok:
+        raise typer.Exit(1)
+
+
+def _scenario_explicitly_given(ctx: typer.Context) -> bool:
+    """区分「用户显式传了 --scenario」与「参数默认值」：默认 valid 与 --all 并存是合法的。
+
+    按 enum name 比较而非身份比较：typer 内嵌了自己的 click fork，其 ParameterSource
+    与 click 包的同名枚举不是同一类型，身份比较永远为 False。
+    """
+    source = ctx.get_parameter_source("scenario")
+    return source is not None and source.name == "COMMANDLINE"
+
+
+def _failed_scenario_result(scenario: str, exc: Exception) -> VerificationResult:
+    """把场景执行异常折叠成 FAIL 结果，保证 --all 聚合时 7 个场景都有汇总条目。"""
+    return VerificationResult(
+        ok=False,
+        checks=[{"id": "scenario_execution", "ok": False, "detail": str(exc)}],
+        manifest_id=None,
+    )
+
+
+def _run_all_scenarios(output_format: str) -> None:
+    """逐场景执行并汇总；单场景异常不中断聚合，否则失败面无法完整呈现。"""
+    results: list[tuple[str, VerificationResult]] = []
+    for name in ALL_SCENARIOS:
+        try:
+            results.append((name, _run_scenario(name)))
+        except Exception as exc:
+            results.append((name, _failed_scenario_result(name, exc)))
+
+    all_ok = all(result.ok for _, result in results)
+    if output_format == "json":
+        click.echo(json.dumps({
+            "ok": all_ok,
+            "scenarios": [
+                {
+                    "scenario": name,
+                    "ok": result.ok,
+                    "checks": len(result.checks),
+                    "checks_failed": sum(1 for c in result.checks if not c["ok"]),
+                }
+                for name, result in results
+            ],
+        }, ensure_ascii=False, indent=2))
+    else:
+        passed = sum(1 for _, result in results if result.ok)
+        lines = [f"scenarios: {passed}/{len(results)} passed"]
+        for name, result in results:
+            lines.append(f"  {name}: {'PASS' if result.ok else 'FAIL'}")
+        click.echo("\n".join(lines))
+
+    if not all_ok:
         raise typer.Exit(1)
 
 

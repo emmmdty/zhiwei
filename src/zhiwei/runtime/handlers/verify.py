@@ -12,7 +12,12 @@ import logging
 from typing import Any
 
 from zhiwei.evidence.bundles import EvidenceBundle
-from zhiwei.evidence.verifier import VerifyExitCode, VerifyResult, verify_bundle
+from zhiwei.evidence.verifier import (
+    VerifyExitCode,
+    VerifyResult,
+    map_load_error,
+    verify_bundle,
+)
 from zhiwei.runtime.handlers.base import TaskHandler, TaskInput, TaskOutput
 
 logger = logging.getLogger(__name__)
@@ -69,13 +74,15 @@ class VerifyHandler(TaskHandler):
         try:
             bundle = EvidenceBundle.model_validate(bundle_dict)
         except Exception as exc:
+            # spec §3：载入失败按违规层落稳定退出码（claim 等级违规=5、
+            # copy_frozen 绑定缺失=4、其余 schema 类=2），不全部折叠成 2。
             logger.warning("Invalid bundle: %s", exc)
             return TaskOutput(
                 output_values={
                     "status": "error",
                     "error": f"invalid bundle: {exc}",
                     "verification_ok": False,
-                    "exit_code": int(VerifyExitCode.INPUT_SCHEMA),
+                    "exit_code": int(map_load_error(exc)),
                     "checks": [],
                     "check_count": 0,
                 }

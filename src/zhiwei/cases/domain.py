@@ -19,12 +19,14 @@ from zhiwei.contracts.time import ensure_utc
 
 
 class CaseStatus(StrEnum):
-    """Case lifecycle states.
+    """Case lifecycle states (spec s6 §4.1).
 
-    Spec lifecycle: created (ACTIVE) → triaged → resolved → archived.
-    OPEN is retained for backward compatibility with pre-S6 persisted cases.
+    Frozen machine: created → active → triaged → resolved → archived.
+    OPEN is retained for backward compatibility with pre-S6 persisted cases;
+    it is not part of the frozen machine and must not be produced by new code.
     """
 
+    CREATED = "created"
     ACTIVE = "active"
     TRIAGED = "triaged"
     OPEN = "open"

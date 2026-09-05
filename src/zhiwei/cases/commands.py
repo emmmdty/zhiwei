@@ -1,9 +1,12 @@
 """S6 Case application commands.
 
-Case lifecycle: open → resolved → archived. Users can attach Answer/selected
-Evidence to a Case without duplicating transcript.
+Frozen lifecycle (spec s6 §4.1): created → active → triaged → resolved →
+archived. Users can attach Answer/selected Evidence to a Case without
+duplicating transcript. Every lifecycle mutation produces canonical lifecycle
+events on the result; the caller is responsible for persisting them (same
+pattern as eval seal events) — the InMemory repository is not an event log.
 
-事实源：S6 spec §4。
+事实源：S6 spec §4、§4.1。
 """
 
 from __future__ import annotations
@@ -49,8 +52,12 @@ class CaseRepositoryProtocol(Protocol):
 # Valid lifecycle transitions
 # ---------------------------------------------------------------------------
 
+# spec §4.1 冻结状态机：created → active → triaged → resolved → archived。
+# CREATED 严格按 spec 只允许前进到 ACTIVE（不允许静默跳变）；OPEN 及其放宽的
+# 转移仅为 pre-S6 持久化 Case 的向后兼容保留，新代码不得产出。
 _TRANSITIONS: dict[CaseStatus, frozenset[CaseStatus]] = {
-    CaseStatus.ACTIVE: frozenset({CaseStatus.TRIAGED, CaseStatus.RESOLVED, CaseStatus.ARCHIVED}),
+    CaseStatus.CREATED: frozenset({CaseStatus.ACTIVE}),
+    CaseStatus.ACTIVE: frozenset({CaseStatus.TRIAGED}),
     CaseStatus.TRIAGED: frozenset({CaseStatus.RESOLVED, CaseStatus.ARCHIVED}),
     CaseStatus.OPEN: frozenset({CaseStatus.ACTIVE, CaseStatus.RESOLVED, CaseStatus.ARCHIVED}),
     CaseStatus.RESOLVED: frozenset({CaseStatus.OPEN, CaseStatus.ARCHIVED}),
@@ -71,17 +78,74 @@ def _validate_transition(current: CaseStatus, target: CaseStatus) -> None:
 
 
 class CaseCommandResult(BaseModel):
-    """Result of a case mutation command."""
+    """Result of a case mutation command.
+
+    ``events`` 是本次命令产生的 canonical 生命周期事件（有序）；调用方负责
+    落账（PG case 持久化尚未实现，见 S6 交付报告的实现缺口清单）。
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     created: bool
     case: dict[str, Any]
+    events: tuple[dict[str, Any], ...] = ()
+
+
+def _lifecycle_event(
+    *,
+    event_type: str,
+    case: Case,
+    to_status: CaseStatus | None = None,
+    detail: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "event_type": event_type,
+        "case_id": str(case.id),
+        "from_status": case.status.value,
+        "to_status": to_status.value if to_status is not None else None,
+        "occurred_at": utc_now().isoformat(),
+    }
+    if detail:
+        payload["detail"] = detail
+    return payload
 
 
 # ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
+
+
+async def create_case(
+    repository: CaseRepositoryProtocol,
+    *,
+    case_id: UUID | None = None,
+    organization_id: UUID,
+    workspace_id: UUID,
+    title: str,
+    description: str = "",
+    created_by: UUID,
+) -> CaseCommandResult:
+    """Create a new case in CREATED status (spec s6 §4.1 frozen machine)."""
+    now = utc_now()
+    case = Case(
+        id=case_id or uuid4(),
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        title=title,
+        description=description,
+        status=CaseStatus.CREATED,
+        answer_ids=(),
+        evidence_bundle_ids=(),
+        created_by=created_by,
+        created_at=now,
+        updated_at=now,
+    )
+    saved = await repository.save_case(case)
+    return CaseCommandResult(
+        created=True,
+        case=saved.model_dump(mode="json"),
+        events=(_lifecycle_event(event_type="case.created", case=saved),),
+    )
 
 
 async def open_case(
@@ -94,7 +158,7 @@ async def open_case(
     description: str = "",
     created_by: UUID,
 ) -> CaseCommandResult:
-    """Create a new case in OPEN status."""
+    """Create a case in OPEN status（pre-S6 兼容入口；新代码用 create_case）。"""
     now = utc_now()
     case = Case(
         id=case_id or uuid4(),
@@ -110,7 +174,11 @@ async def open_case(
         updated_at=now,
     )
     saved = await repository.save_case(case)
-    return CaseCommandResult(created=True, case=saved.model_dump(mode="json"))
+    return CaseCommandResult(
+        created=True,
+        case=saved.model_dump(mode="json"),
+        events=(_lifecycle_event(event_type="case.created", case=saved),),
+    )
 
 
 async def transition_case(
@@ -119,7 +187,7 @@ async def transition_case(
     case_id: UUID,
     target_status: CaseStatus,
 ) -> CaseCommandResult:
-    """Transition a case to a new lifecycle status."""
+    """Transition a case to a new lifecycle status（落 canonical 事件，不静默跳变）。"""
     if isinstance(case_id, str):
         case_id = UUID(case_id)
     case = await repository.get_case(case_id)
@@ -131,7 +199,17 @@ async def transition_case(
         "updated_at": utc_now(),
     })
     saved = await repository.save_case(updated)
-    return CaseCommandResult(created=False, case=saved.model_dump(mode="json"))
+    return CaseCommandResult(
+        created=False,
+        case=saved.model_dump(mode="json"),
+        events=(
+            _lifecycle_event(
+                event_type="case.status_changed",
+                case=case,
+                to_status=target_status,
+            ),
+        ),
+    )
 
 
 async def attach_answer(
@@ -155,7 +233,17 @@ async def attach_answer(
         "updated_at": utc_now(),
     })
     saved = await repository.save_case(updated)
-    return CaseCommandResult(created=False, case=saved.model_dump(mode="json"))
+    return CaseCommandResult(
+        created=False,
+        case=saved.model_dump(mode="json"),
+        events=(
+            _lifecycle_event(
+                event_type="case.answer_attached",
+                case=case,
+                detail={"answer_id": str(answer_id)},
+            ),
+        ),
+    )
 
 
 async def attach_evidence_bundle(
@@ -179,7 +267,17 @@ async def attach_evidence_bundle(
         "updated_at": utc_now(),
     })
     saved = await repository.save_case(updated)
-    return CaseCommandResult(created=False, case=saved.model_dump(mode="json"))
+    return CaseCommandResult(
+        created=False,
+        case=saved.model_dump(mode="json"),
+        events=(
+            _lifecycle_event(
+                event_type="case.evidence_attached",
+                case=case,
+                detail={"evidence_bundle_id": str(evidence_bundle_id)},
+            ),
+        ),
+    )
 
 
 async def detach_answer(
