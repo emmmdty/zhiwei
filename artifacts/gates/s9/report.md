@@ -1,12 +1,21 @@
 # S9 Gate Report（specs/s9 §7 Gate + §8 claim boundary，Task 8 执行记录）
 
-执行日期：2026-09-06（密封件 UTC 时间戳为 2026-09-05）　执行者：S9-T8 executor（autonomous）
+执行日期：2026-09-06（密封件 UTC 时间戳为 2026-09-05/06 交界）　执行者：S9-T8 executor（autonomous）
 执行性质：faithful execution（判分层另行处理）；本报告为逐命令 verbatim 记录
+
+> **执行顺序说明（权威证据口径）**：全量 `pytest -q` 会经
+> tests/integration/foundation/test_database.py 的 drop/recreate fixture 重建
+> zhiwei_test（schema 回 head、数据清零）。首轮按 runbook 顺序（先密封后全量
+> pytest）产出的 13 个密封件与 11 条 claim 因此被清库作废——首轮 `release check
+> --strict` 通过时 registry 在场（`{"checked_files": 50, "findings": []}`），复检
+> 时已被清空，如实留档于此。权威证据为 **全量 pytest 之后的复执行轮**（§3–§7 的
+> JSON/digest 均为复执行轮 verbatim 输出）。两轮的差异仅为随机 run/org/manifest
+> UUID 派生的 seal digest；绑定值（sample 聚合）两轮完全一致。
 
 ## 0. 环境
 
 ```text
-HEAD:    a8ff3ea7a4a0d751bcc88023024c2483c7368b83（工作区起始干净）
+HEAD:    a8ff3ea7a4a0d751bcc88023024c2483c7368b83（工作区起始干净；证据产出时含本任务 3 个提交）
 Python:  3.11.15（uv）
 Node:    v24.15.0（apps/web engines 声明 >=22 <23；npm 未启用 engine-strict，构建/e2e 正常完成）
 PostgreSQL: 17.6 @127.0.0.1:55432（compose zhiwei-s0：postgres/keycloak/opa 全部 healthy）
@@ -55,7 +64,7 @@ $ make determinism
 [checksums] 26 个产物 → evals/CHECKSUMS.sha256
 ```
 
-## 3. 全量离线密封（步骤 3）
+## 3. 全量离线密封（步骤 3，复执行轮 = 权威证据）
 
 **mode 口径说明（与 runbook 文本的单处偏差，原因登记）**：claim 状态机
 `_EVIDENCE_EDGES`（src/zhiwei/agents/claims.py，A 档冻结契约）规定
@@ -69,11 +78,11 @@ ONLY — NEVER live」，故 claim 支撑 suite 以 `--mode offline --seal` 执�
 
 ```text
 $ uv run zhiwei eval seal-empty --check
-{"mode": "fixture", "run_status": "succeeded", "eval_run_status": "sealed", "registered_units": 0, "verified": true, "run_id": "08d6fdf7-d216-4d07-b1b6-b773bc80b10d", "eval_run_id": "2f685116-20b0-415c-8197-043e438c6be8", "manifest_id": "b6dd8e2e-38b6-4291-adbf-95c738e4e8f1", "seal_digest": "sha256:4a098ca863f08856b2dd765a44eb5d74082d7f2160a9e38c205f8e7d5fedff10"}
+{"mode": "fixture", "run_status": "succeeded", "eval_run_status": "sealed", "registered_units": 0, "verified": true, "run_id": "1022e081-4965-4a75-962d-b7ff7e2c6163", "eval_run_id": "bd4cff23-6f06-4a5e-b523-0c092c6895be", "manifest_id": "7b6da641-c196-4301-b596-bc9819ca6de3", "seal_digest": "sha256:448d61b3461f892f6143e518afc1166111b49898ea1f4f8a9406e62d39ee66e2"}
 （exit 0）
 
 $ uv run zhiwei eval run --suite legacy-assets --mode fixture --seal
-{"mode": "fixture", "executor": "legacy", "registered_units": 26, "terminal_units": 26, "eval_run_id": "ed685157-a72d-4bf7-ba54-198159737227", "organization_id": "3cf869db-fc96-495e-8b59-7f59e0ec90f5", "workspace_id": "aec05e7d-e5f4-4fce-96e8-07ae519f2bfc", "sealed": true, "seal_digest": "sha256:9f498c31e3c85ebded22703aa090e03ce37a403404cd4424d8ff0c800be16cda"}
+{"mode": "fixture", "executor": "legacy", "registered_units": 26, "terminal_units": 26, "eval_run_id": "1d0a0030-3799-42a0-a8b1-10ddae56c3b6", "organization_id": "beb56536-f6ad-4d65-aad1-4f92726e2523", "workspace_id": "f8757321-02dc-4b81-be71-758f0e2abd68", "sealed": true, "seal_digest": "sha256:6123091f74207be708e2ddff8beacc8caa8ff956219312130a0e633a97a239b6"}
 （exit 0）
 ```
 
@@ -81,48 +90,52 @@ $ uv run zhiwei eval run --suite legacy-assets --mode fixture --seal
 
 ```text
 $ uv run zhiwei eval run --suite runtime-contract-v1 --mode offline --seal
-{"suite": "runtime-contract-v1", "mode": "offline", "executor": "agent-runtime", "registered_units": 7, "terminal_units": 7, "status_counts": {"completed": 7}, "eval_run_id": "485d81ee-2fb7-4f48-8233-de7e2eaca4a9", "organization_id": "dfb1b4f8-1a08-4f2e-aee6-dbc8f51ca2fe", "workspace_id": "f52bf010-3d22-449a-be51-e262f0b1a6d1", "sealed": true, "seal_digest": "sha256:1bbb4768ce44a483a57e521cb703a92cd04799f83ed7650db5f4fb17e19c23aa"}
+{"suite": "runtime-contract-v1", "mode": "offline", "executor": "agent-runtime", "registered_units": 7, "terminal_units": 7, "status_counts": {"completed": 7}, "eval_run_id": "4753fa0d-f88f-47b2-8906-c72dc443f619", "organization_id": "89a1376b-b9c6-41a8-ba50-0079e7364dc3", "workspace_id": "ff5ff40e-12a5-457c-b5d5-14974ed39513", "sealed": true, "seal_digest": "sha256:a0b9de6e63156d202eb2a3fe22da3e85abac77b95600acd15253da23b2c454a2"}
 
 $ uv run zhiwei eval run --suite knowledge-doc-v1 --mode offline --seal
-{"suite": "knowledge-doc-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:209d480ede352b35738f0e469ea3f13daded8fee334e10caba769bced9a54da5", "registered_units": 15, "terminal_units": 15, "status_counts": {"completed": 15}, "eval_run_id": "a7ba5a86-d328-49a7-a3db-6f25de900724", "organization_id": "a72ca2b6-dfd4-4a20-aa34-8ff52c1ec440", "workspace_id": "d44ded08-e89f-44c8-9f9b-34a625bce404", "sealed": true, "seal_digest": "sha256:5533adb4289d3862408caea669a8e61f2538acbcf8cf002965c98588b2589132"}
+{"suite": "knowledge-doc-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:209d480ede352b35738f0e469ea3f13daded8fee334e10caba769bced9a54da5", "registered_units": 15, "terminal_units": 15, "status_counts": {"completed": 15}, "eval_run_id": "7eb70d75-5b2a-482f-9f78-515f43bf8363", "organization_id": "24696885-e971-4362-a854-be992b541a18", "workspace_id": "194e0d9d-514e-4d3d-9aa7-4d73af84a88e", "sealed": true, "seal_digest": "sha256:bba1ce84ff6d8f81c37f1c350f9f2b3d8aed1c4a8985aad5cbece5d2dca7d915"}
 
 $ uv run zhiwei eval run --suite knowledge-code-github-v1 --mode offline --seal
-{"suite": "knowledge-code-github-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:60c2fbc356dc642fdbd7ba673c9aedefe71c746dbf2db1dc0b2383881d29a3ba", "registered_units": 15, "terminal_units": 15, "status_counts": {"completed": 15}, "eval_run_id": "157fee2e-1aa6-4ae7-b986-cfd218137ee1", "organization_id": "821da952-cb1b-45c8-9b7e-cd5eb50ab084", "workspace_id": "efb4bf24-95e5-42d3-b19f-98b955127f96", "sealed": true, "seal_digest": "sha256:a83641a81f2300c03aad5f6d2326764c7783139e0a1361df57449e6f60e8f0f0"}
+{"suite": "knowledge-code-github-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:60c2fbc356dc642fdbd7ba673c9aedefe71c746dbf2db1dc0b2383881d29a3ba", "registered_units": 15, "terminal_units": 15, "status_counts": {"completed": 15}, "eval_run_id": "a42b0356-a4e1-4e86-90b0-00958ba5c01b", "organization_id": "8dc92191-f0da-4fe9-bb15-3730f54ba657", "workspace_id": "fa82f73b-5960-4402-9bac-c86852e6e945", "sealed": true, "seal_digest": "sha256:db214ad95b973a0f797796d42e14518cd1d62935e8fddacee543726765f24479"}
 
 $ uv run zhiwei eval run --suite knowledge-cross-source-v1 --mode offline --seal
-{"suite": "knowledge-cross-source-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:a4672f97f4339f584082678ed2e45ad0f6c43fb5f89f1d26df139080c82cd1f2", "registered_units": 12, "terminal_units": 12, "status_counts": {"completed": 12}, "eval_run_id": "42eff8c7-9486-4918-830a-75de68c49bf2", "organization_id": "2fb3d2d6-b0f2-48d7-b2f6-a40b10aa8da4", "workspace_id": "5f0815de-0afb-4b08-993b-0d61ae234116", "sealed": true, "seal_digest": "sha256:0cdbb15c242f1c332913637522bc7e03db3294f138da27e284a2ebc66be056b4"}
+{"suite": "knowledge-cross-source-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:a4672f97f4339f584082678ed2e45ad0f6c43fb5f89f1d26df139080c82cd1f2", "registered_units": 12, "terminal_units": 12, "status_counts": {"completed": 12}, "eval_run_id": "ca0ecb93-c60c-463a-83da-cc769a5eadbc", "organization_id": "a09baa3e-7d70-4243-a75f-90fd24850ece", "workspace_id": "dae93a12-b387-4356-b9af-7ef01822bc32", "sealed": true, "seal_digest": "sha256:cef42d9b1e6c588ed5920224b024e14f94cd9c3f82f258f34fc7dbd325bf52fc"}
 
 $ uv run zhiwei eval run --suite knowledge-acl-freshness-v1 --mode offline --seal
-{"suite": "knowledge-acl-freshness-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:956f3eecba1a64da1eed068d56e6843d3939bf42c0d4af3e5abe4282353cbb71", "registered_units": 11, "terminal_units": 11, "status_counts": {"completed": 11}, "eval_run_id": "b81b9d16-526c-47b7-ab6d-f0aee07e4230", "organization_id": "af016e95-874d-43fb-8897-b9b1cd9fccc2", "workspace_id": "dce56d2f-f3dc-4f34-b260-5d18dcea09e1", "sealed": true, "seal_digest": "sha256:b235134bca330d2ff3a253ba9f123aaf32debd0420d0b8645085bd7257856cc1"}
+{"suite": "knowledge-acl-freshness-v1", "mode": "offline", "executor": "knowledge-retrieval", "production_path": "RetrieveTaskHandler->KnowledgePlanner", "corpus_digest": "sha256:956f3eecba1a64da1eed068d56e6843d3939bf42c0d4af3e5abe4282353cbb71", "registered_units": 11, "terminal_units": 11, "status_counts": {"completed": 11}, "eval_run_id": "9a1c25bd-d297-452a-8a5a-c7d5b4c39500", "organization_id": "1d5e3753-4870-43e9-8727-f7cf5ce894e2", "workspace_id": "1800b32b-2aa5-44c4-aed6-9b66460b01d5", "sealed": true, "seal_digest": "sha256:2a26e7ff300578ca55661f27ac522cd39c4e646a299dd6461633ade7a3698ecc"}
 
 $ uv run zhiwei eval run --suite enterprise-memory-v1 --mode offline --seal
-{"suite": "enterprise-memory-v1", "mode": "offline", "executor": "memory-lifecycle", "production_path": "WriteMemoryCandidateHandler->MemoryPolicy->CandidateQueue-ConfirmationWorkflow-ConflictManager-ForgetManager", "registered_units": 12, "terminal_units": 12, "status_counts": {"completed": 12}, "eval_run_id": "6b323179-4cac-4a49-baa7-b9a32e0662b8", "organization_id": "19e0c7db-2f1e-41b5-af98-5ab6fb65ab61", "workspace_id": "7a629fc7-7678-4746-9f03-cacee830c882", "sealed": true, "seal_digest": "sha256:998bfa4c4fc8381bc137beeb807bf2439b0850cb87a22003293d28bbb6d4d0a3"}
+{"suite": "enterprise-memory-v1", "mode": "offline", "executor": "memory-lifecycle", "production_path": "WriteMemoryCandidateHandler->MemoryPolicy->CandidateQueue-ConfirmationWorkflow-ConflictManager-ForgetManager", "registered_units": 12, "terminal_units": 12, "status_counts": {"completed": 12}, "eval_run_id": "162382ec-f0ce-4445-b47a-35b8f2f7c51a", "organization_id": "158a5ec5-2ec3-4197-9da2-63917a8fc57e", "workspace_id": "8413d8bb-5c86-4043-b9ec-89126deaab86", "sealed": true, "seal_digest": "sha256:f80afbd188afe9b5ccbff55bf72e93c472e5de6cc15abf5cadc43d454833b813"}
 
 $ uv run zhiwei eval run --suite factqa-v1 --mode offline --seal
-{"suite": "factqa-v1", "mode": "offline", "executor": "evidence-sql-replay", "production_path": "FrozenSnapshotReplay->QueryReplayRef->EvidenceVerifier", "registered_units": 120, "terminal_units": 120, "status_counts": {"completed": 120}, "eval_run_id": "06de7f99-d50f-45ed-857f-c559587caa27", "organization_id": "4ecb9d0b-44b3-4147-a657-356fed382c20", "workspace_id": "c6d35c33-cc30-4690-a74b-2643b79e5574", "sealed": true, "seal_digest": "sha256:ad6cf7ce0d2a34d639d7561068dd9ba36fb50e34e1a73a1c614f3d3e70d44ed7"}
+{"suite": "factqa-v1", "mode": "offline", "executor": "evidence-sql-replay", "production_path": "FrozenSnapshotReplay->QueryReplayRef->EvidenceVerifier", "registered_units": 120, "terminal_units": 120, "status_counts": {"completed": 120}, "eval_run_id": "551f9c26-0f3a-41e8-bd7b-9858c752d9b2", "organization_id": "10f1385e-83e3-4725-9e32-ecefb7334b5a", "workspace_id": "cc52cfdc-d15b-4cc6-b9af-84879919b64e", "sealed": true, "seal_digest": "sha256:6dd34cdac27d66f2be829c6e362f27b47eede983577dad8b8057667a8e8e4278"}
 
 $ uv run zhiwei eval run --suite numeric-risk-v1 --mode offline --seal
-{"suite": "numeric-risk-v1", "mode": "offline", "executor": "numeric-detector-pack", "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult", "registered_units": 22, "terminal_units": 22, "status_counts": {"completed": 22}, "eval_run_id": "f9f6db88-17cc-4966-9c4e-cb045006c299", "organization_id": "93fedd1a-0301-4c8e-a2cd-400b9ba34ea7", "workspace_id": "9f83f126-8ab2-4d8a-b45b-4046497b699d", "sealed": true, "seal_digest": "sha256:063339752ba57efd430cc8567e995821dc60b77dbf5c237b74adc974c7182b64"}
+{"suite": "numeric-risk-v1", "mode": "offline", "executor": "numeric-detector-pack", "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult", "registered_units": 22, "terminal_units": 22, "status_counts": {"completed": 22}, "eval_run_id": "25a6f15d-a853-41a1-8419-83cb5cc5a6f3", "organization_id": "64a3ad26-fbc4-43d1-9207-807b8fdee6ee", "workspace_id": "1ecf6d6f-928d-447f-9d1f-2d040a096c5e", "sealed": true, "seal_digest": "sha256:60590e1bb8c67795df22c8d4bc2e28361dd58f2075aa930472fc606d88d36e68"}
 
 $ uv run zhiwei eval run --suite discover-blind-v1 --mode offline --seal
-{"suite": "discover-blind-v1", "mode": "offline", "executor": "numeric-detector-pack", "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult", "registered_units": 5, "terminal_units": 5, "status_counts": {"completed": 5}, "eval_run_id": "1e4c809d-6f3a-4389-a78e-f167fc6e3078", "organization_id": "005364d0-ae17-4f11-ba0b-9f525a7e3f4a", "workspace_id": "77945db5-9631-4173-b331-184511ea0a4d", "sealed": true, "seal_digest": "sha256:c8781078cef006e36c4056274f32209b4f46fdc3f0bc76216a1b7152946792a0"}
+{"suite": "discover-blind-v1", "mode": "offline", "executor": "numeric-detector-pack", "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult", "registered_units": 5, "terminal_units": 5, "status_counts": {"completed": 5}, "eval_run_id": "15c9af47-06a1-417b-9451-9350dee2f6fc", "organization_id": "9eca29d7-96e1-4ca1-ae09-ca652846cfea", "workspace_id": "7599e8d8-512c-4a74-b968-1277c258deea", "sealed": true, "seal_digest": "sha256:c218111db49988823f902e66b4742af9dd903ebeb7a60b960ac641ce00b12c9c"}
 
 $ uv run zhiwei eval run --suite ask-v1 --mode offline --seal
-{"suite": "ask-v1", "mode": "offline", "executor": "agent-runtime", "production_path": "RunCommandService->AgentRunWorkflow->AskTaskGraph", "registered_units": 6, "terminal_units": 6, "status_counts": {"completed": 6}, "eval_run_id": "b0d13826-41b1-4e79-b012-3016b3fda1b9", "organization_id": "b1c671dc-7256-47f7-8927-5a80d956b293", "workspace_id": "8c63cc5c-2922-4b70-b8d9-81980e9f97b9", "sealed": true, "seal_digest": "sha256:2fb752aea584cc8f050552946fd10286ede0a8907bc8c84e8afe4f8efd9474ba"}
+time=2026-09-06T02:49:10.729 level=WARN msg="Cluster Id in Cluster Metadata config is not a valid uuid. Generating a new Cluster Id" component=metadata-initializer
+Invalid bundle: Fact claim requires replayable or copy_frozen evidence; got reference_only on DocRef
+{"suite": "ask-v1", "mode": "offline", "executor": "agent-runtime", "production_path": "RunCommandService->AgentRunWorkflow->AskTaskGraph", "registered_units": 6, "terminal_units": 6, "status_counts": {"completed": 6}, "eval_run_id": "60bc3587-6cf1-4cf1-91eb-f788d9870e51", "organization_id": "b973dc9a-f912-4b62-bfc4-afeb0c0ac6a7", "workspace_id": "1b39f5e2-7c15-43cf-8c97-b2f5c72871cd", "sealed": true, "seal_digest": "sha256:fbb351f9793e32a5fd92ac14403f13243c470fa926ead16bffa07f4c8a5b1b07"}
+（stderr 的 Temporal dev server 启动 WARN 与一条 negative-path 场景日志如实留档；
+6/6 单位 completed、密封成功，与首轮行为一致。）
 ```
 
 ### 3.3 外部基准可用性（fail closed 如实）
 
 ```text
 $ uv run zhiwei eval external-status --suite longmemeval-adapter --seal
-{"suite": "longmemeval-adapter", "benchmark": "longmemeval", "external_status": "unavailable", "reasons": [{"code": "missing_file", "path": "evals/external/longmemeval/LICENSE", "detail": "数据许可文件缺失"}, {"code": "missing_file", "path": "evals/external/longmemeval/VERSION", "detail": "数据版本文件缺失"}, {"code": "missing_data_dir", "path": "evals/external/longmemeval/data", "detail": "数据目录不存在"}], "run_kind": "none", "claim": {"benchmark": "longmemeval", "claim_status": "planned/unavailable"}, "eval_run_id": "dd956df2-b728-4996-aa44-d4064adfa51d", "organization_id": "a8161569-3def-4a20-b24b-eaead58984e8", "workspace_id": "882ac737-e502-4217-9162-df40b465698c", "sealed": true, "seal_digest": "sha256:e70c36ac9b46f438fb33e5ca17bbba547b92a404f986c9f5424bd06819feb96b"}
+{"suite": "longmemeval-adapter", "benchmark": "longmemeval", "external_status": "unavailable", "reasons": [{"code": "missing_file", "path": "evals/external/longmemeval/LICENSE", "detail": "数据许可文件缺失"}, {"code": "missing_file", "path": "evals/external/longmemeval/VERSION", "detail": "数据版本文件缺失"}, {"code": "missing_data_dir", "path": "evals/external/longmemeval/data", "detail": "数据目录不存在"}], "run_kind": "none", "claim": {"benchmark": "longmemeval", "claim_status": "planned/unavailable"}, "eval_run_id": "63891d88-69ff-425f-9e42-6cc24c5bbaf9", "organization_id": "a3b839ea-91a5-4dfe-943d-fea97163f2c1", "workspace_id": "707becc6-39a4-4f32-b34a-53a61588b4dc", "sealed": true, "seal_digest": "sha256:a6774a896c9b1060a9927be46bf9d15fa48ad8b81996db0dcd467f7d93e338f4"}
 （exit 0；unavailable → planned/unavailable sealed，机器可读原因在案）
 ```
 
 密封汇总：13 个 sealed EvalRun（seal-empty / legacy-assets / runtime-contract-v1 /
 knowledge×4 / enterprise-memory-v1 / factqa-v1 / numeric-risk-v1 / discover-blind-v1 /
 ask-v1 / longmemeval-adapter external-status）。verbatim JSON 数组已固化在
-`artifacts/gates/s9/sealed-runs.json`。
+`artifacts/gates/s9/sealed-runs.json`（复执行轮）。
 
 ## 4. 系统级密封复核（步骤 4）
 
@@ -134,13 +147,13 @@ $ ZHIWEI_DATABASE_URL=…zhiwei_app… uv run zhiwei eval verify --all-sealed
 
 $ ZHIWEI_DATABASE_URL=…zhiwei_migrator… uv run zhiwei eval verify --all-sealed
 {"checked": 13, "verified": 13, "failures": []}
-（exit 0）
+（exit 0；复执行轮密封后再次执行，输出同上 13/13——两轮均真实执行并留档）
 ```
 
-**Gate 口径取第二次执行：checked=13 / verified=13 / failures=[]**。第一次执行未计入
-Gate 结论（空集不构成证据），但如实留档。
+**Gate 口径：checked=13 / verified=13 / failures=[]（maintenance DSN，复执行轮）**。
+app DSN 的空集结果不计入 Gate 结论（空集不构成证据），但如实留档。
 
-## 5. Claim Registry seeding（步骤 5）
+## 5. Claim Registry seeding（步骤 5，复执行轮）
 
 脚本：`deploy/seed_s9_gate_claims.py`（沿用 deploy/seed_identity_e2e.py 约定：不读
 .env、幂等、机器可读输出）。路径为真实服务路径：
@@ -156,22 +169,22 @@ eval_run_id/organization_id/workspace_id（`artifacts/gates/s9/sealed-runs.json`
 
 ```text
 $ uv run python deploy/seed_s9_gate_claims.py
-[seed] ✓ factqa-v1.accuracy -> offline_verified sha256:ad6cf7ce0d2a34d639d7561068dd9ba36fb50e34e1a73a1c614f3d3e70d44ed7
-[seed] ✓ knowledge-doc-v1.retrieval -> offline_verified sha256:5533adb4289d3862408caea669a8e61f2538acbcf8cf002965c98588b2589132
-[seed] ✓ knowledge-code-github-v1.retrieval -> offline_verified sha256:a83641a81f2300c03aad5f6d2326764c7783139e0a1361df57449e6f60e8f0f0
-[seed] ✓ knowledge-cross-source-v1.retrieval -> offline_verified sha256:0cdbb15c242f1c332913637522bc7e03db3294f138da27e284a2ebc66be056b4
-[seed] ✓ knowledge-acl-freshness-v1.retrieval -> offline_verified sha256:b235134bca330d2ff3a253ba9f123aaf32debd0420d0b8645085bd7257856cc1
-[seed] ✓ enterprise-memory-v1.pass -> offline_verified sha256:998bfa4c4fc8381bc137beeb807bf2439b0850cb87a22003293d28bbb6d4d0a3
-[seed] ✓ numeric-risk-v1.recall-d0 -> offline_verified sha256:063339752ba57efd430cc8567e995821dc60b77dbf5c237b74adc974c7182b64
-[seed] ✓ discover-blind-v1.blind-pass -> offline_verified sha256:c8781078cef006e36c4056274f32209b4f46fdc3f0bc76216a1b7152946792a0
-[seed] ✓ runtime-contract-v1.contract-pass -> offline_verified sha256:1bbb4768ce44a483a57e521cb703a92cd04799f83ed7650db5f4fb17e19c23aa
-[seed] ✓ ask-v1.contract-pass -> offline_verified sha256:2fb752aea584cc8f050552946fd10286ede0a8907bc8c84e8afe4f8efd9474ba
+[seed] ✓ factqa-v1.accuracy -> offline_verified sha256:6dd34cdac27d66f2be829c6e362f27b47eede983577dad8b8057667a8e8e4278
+[seed] ✓ knowledge-doc-v1.retrieval -> offline_verified sha256:bba1ce84ff6d8f81c37f1c350f9f2b3d8aed1c4a8985aad5cbece5d2dca7d915
+[seed] ✓ knowledge-code-github-v1.retrieval -> offline_verified sha256:db214ad95b973a0f797796d42e14518cd1d62935e8fddacee543726765f24479
+[seed] ✓ knowledge-cross-source-v1.retrieval -> offline_verified sha256:cef42d9b1e6c588ed5920224b024e14f94cd9c3f82f258f34fc7dbd325bf52fc
+[seed] ✓ knowledge-acl-freshness-v1.retrieval -> offline_verified sha256:2a26e7ff300578ca55661f27ac522cd39c4e646a299dd6461633ade7a3698ecc
+[seed] ✓ enterprise-memory-v1.pass -> offline_verified sha256:f80afbd188afe9b5ccbff55bf72e93c472e5de6cc15abf5cadc43d454833b813
+[seed] ✓ numeric-risk-v1.recall-d0 -> offline_verified sha256:60590e1bb8c67795df22c8d4bc2e28361dd58f2075aa930472fc606d88d36e68
+[seed] ✓ discover-blind-v1.blind-pass -> offline_verified sha256:c218111db49988823f902e66b4742af9dd903ebeb7a60b960ac641ce00b12c9c
+[seed] ✓ runtime-contract-v1.contract-pass -> offline_verified sha256:a0b9de6e63156d202eb2a3fe22da3e85abac77b95600acd15253da23b2c454a2
+[seed] ✓ ask-v1.contract-pass -> offline_verified sha256:fbb351f9793e32a5fd92ac14403f13243c470fa926ead16bffa07f4c8a5b1b07
 [seed] ✓ longmemeval.external-diagnostic -> planned（外部基准不可用，不解锁质量 claim）
 [seed] ✓ 11 条 claim 就绪
-（exit 0；复跑 exit 0，幂等跳过——"[seed] • longmemeval.external-diagnostic 已存在（保持 planned）"）
+（exit 0；首轮执行后复跑亦 exit 0，幂等跳过——"[seed] • longmemeval.external-diagnostic 已存在（保持 planned）"）
 ```
 
-绑定值明细（bound_value，均由密封 sample 聚合得出）：
+绑定值明细（bound_value，均由密封 sample 聚合得出；两轮聚合结果一致）：
 
 | claim_id | 绑定值 | 聚合口径 |
 | --- | --- | --- |
@@ -189,25 +202,25 @@ $ uv run python deploy/seed_s9_gate_claims.py
 ## 6. README claim 表（步骤 6）
 
 README.md 新增「公开声明（Claim Registry 绑定）」小节：`<!-- claims:start -->` /
-`<!-- claims:end -->` 块内数字只以 `{{claim:ID}}` marker 出现（上表 10 条
+`<!-- claims:end -->` 块内数字只以 `{{claim:ID}}` marker 出现（10 条
 offline_verified claim；planned 的 longmemeval 不入块——checker 对非 verified marker
 一律出 finding）。块内不出现任何裸数字（suite 名与版本号含数字，一律不写入块内文本；
 ISO 口径日期被 checker 剔除）。历史资产数字（120/112/57、Risk planted、`$43.0231552`）
 未加入 README，维持 docs/BENCHMARK.md、docs/RISK_EVAL.md 既有窄口径标注原样（语料
 内部边界，未扩写未删除）。无任何生产 SLO 表述。
 
-## 7. strict release check 与 attestation dry-run（步骤 7）
+## 7. strict release check 与 attestation dry-run（步骤 7，复执行轮）
 
 ```text
 $ ZHIWEI_DATABASE_URL=…zhiwei_migrator… uv run zhiwei release check --strict
 {"checked_files": 50, "findings": []}
-（exit 0；registry 经 maintenance DSN 系统级读取——checker 必须看到全部租户的 claim）
+（exit 0；registry 经 maintenance DSN 系统级读取——checker 必须看到全部租户的 claim。
+首轮在清库作废前同输出通过；复执行轮在 claim 重播种后再次通过。）
 
 $ ZHIWEI_DATABASE_URL=…zhiwei_migrator… uv run zhiwei release attest --dry-run
-{"signed": false, "provenance": {"commit": "a8ff3ea7a4a0d751bcc88023024c2483c7368b83", "generated_at": "2026-09-05T18:36:11.947235+00:00", "generator": "zhiwei-release-check"}, "content_digests": {"README.md": "sha256:a3ca4a07…", "docs/API.md": …, "artifacts/gates/s9/sealed-runs.json": "sha256:0cb5b534863597c1dcc425fde6d242e0582047d0d934b423867c13f6bac783c6", …}}
-（exit 0；完整 JSON 含 50 个表面文件 digest。dry-run 后 `git status --short` 仅含
-本任务预期改动 M README.md / ?? deploy/seed_s9_gate_claims.py / ?? artifacts/gates/s9/
-——未写任何 attestation 文件，验证通过）
+{"signed": false, "provenance": {"commit": "…", "generated_at": "…", "generator": "zhiwei-release-check"}, "content_digests": {…49 个表面文件 digest，含 "artifacts/gates/s9/sealed-runs.json": "sha256:ded6798f831a3b1f…"…}}
+（exit 0；signed=false，未写任何文件——dry-run 后 `git status --short` 仅含本任务
+预期改动，验证通过。完整 JSON 在执行日志留档。）
 ```
 
 ## 8. 全仓 Gate（步骤 8 + specs/s9 §7）
@@ -227,6 +240,8 @@ $ uv run pyright
 
 $ uv run pytest -q            # 全量、单进程、步骤 1 的同一干净迁移库
 3689 passed, 6 skipped, 20 deselected, 4 warnings in 271.25s (0:04:31)
+（注：全量 pytest 会重建 zhiwei_test 数据面——见报告头部「执行顺序说明」；
+§3–§7 权威证据在该轮之后产出。）
 
 $ npm --prefix apps/web run build
 ✓ built in 524ms（tsc -b + vite build，无类型错误）
@@ -265,21 +280,21 @@ $ npm --prefix apps/web run test:e2e -- runtime-approval.spec.ts
 | Web e2e | eval-release-observability.spec.ts | 0 | 4 passed |
 | Web e2e | runtime-approval.spec.ts | 0 | 3 passed |
 
-## 10. Claim Registry 表（claim_id → status → seal_digest → scope）
+## 10. Claim Registry 表（claim_id → status → seal_digest → scope，复执行轮绑定）
 
 | claim_id | status | seal_digest | mode | model | version | date | corpus | environment |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| factqa-v1.accuracy | offline_verified | sha256:ad6cf7ce0d2a34d639d7561068dd9ba36fb50e34e1a73a1c614f3d3e70d44ed7 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | factqa-v1 | offline-fixture |
-| knowledge-doc-v1.retrieval | offline_verified | sha256:5533adb4289d3862408caea669a8e61f2538acbcf8cf002965c98588b2589132 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-doc-v1 | offline-fixture |
-| knowledge-code-github-v1.retrieval | offline_verified | sha256:a83641a81f2300c03aad5f6d2326764c7783139e0a1361df57449e6f60e8f0f0 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-code-github-v1 | offline-fixture |
-| knowledge-cross-source-v1.retrieval | offline_verified | sha256:0cdbb15c242f1c332913637522bc7e03db3294f138da27e284a2ebc66be056b4 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-cross-source-v1 | offline-fixture |
-| knowledge-acl-freshness-v1.retrieval | offline_verified | sha256:b235134bca330d2ff3a253ba9f123aaf32debd0420d0b8645085bd7257856cc1 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-acl-freshness-v1 | offline-fixture |
-| enterprise-memory-v1.pass | offline_verified | sha256:998bfa4c4fc8381bc137beeb807bf2439b0850cb87a22003293d28bbb6d4d0a3 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | enterprise-memory-v1 | offline-fixture |
-| numeric-risk-v1.recall-d0 | offline_verified | sha256:063339752ba57efd430cc8567e995821dc60b77dbf5c237b74adc974c7182b64 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | numeric-risk-v1 | offline-fixture |
-| discover-blind-v1.blind-pass | offline_verified | sha256:c8781078cef006e36c4056274f32209b4f46fdc3f0bc76216a1b7152946792a0 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | discover-blind-v1 | offline-fixture |
-| runtime-contract-v1.contract-pass | offline_verified | sha256:1bbb4768ce44a483a57e521cb703a92cd04799f83ed7650db5f4fb17e19c23aa | offline | reference-fixture | 0015_release_claims | 2026-09-05 | runtime-contract-v1 | offline-fixture |
-| ask-v1.contract-pass | offline_verified | sha256:2fb752aea584cc8f050552946fd10286ede0a8907bc8c84e8afe4f8efd9474ba | offline | reference-fixture | 0015_release_claims | 2026-09-05 | ask-v1 | offline-fixture |
-| longmemeval.external-diagnostic | **planned** | （无——不可用性密封件 sha256:e70c36ac9b46f438fb33e5ca17bbba547b92a404f986c9f5424bd06819feb96b 是不可用证据，不解锁质量 claim） | — | — | — | — | longmemeval-adapter | — |
+| factqa-v1.accuracy | offline_verified | sha256:6dd34cdac27d66f2be829c6e362f27b47eede983577dad8b8057667a8e8e4278 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | factqa-v1 | offline-fixture |
+| knowledge-doc-v1.retrieval | offline_verified | sha256:bba1ce84ff6d8f81c37f1c350f9f2b3d8aed1c4a8985aad5cbece5d2dca7d915 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-doc-v1 | offline-fixture |
+| knowledge-code-github-v1.retrieval | offline_verified | sha256:db214ad95b973a0f797796d42e14518cd1d62935e8fddacee543726765f24479 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-code-github-v1 | offline-fixture |
+| knowledge-cross-source-v1.retrieval | offline_verified | sha256:cef42d9b1e6c588ed5920224b024e14f94cd9c3f82f258f34fc7dbd325bf52fc | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-cross-source-v1 | offline-fixture |
+| knowledge-acl-freshness-v1.retrieval | offline_verified | sha256:2a26e7ff300578ca55661f27ac522cd39c4e646a299dd6461633ade7a3698ecc | offline | reference-fixture | 0015_release_claims | 2026-09-05 | knowledge-acl-freshness-v1 | offline-fixture |
+| enterprise-memory-v1.pass | offline_verified | sha256:f80afbd188afe9b5ccbff55bf72e93c472e5de6cc15abf5cadc43d454833b813 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | enterprise-memory-v1 | offline-fixture |
+| numeric-risk-v1.recall-d0 | offline_verified | sha256:60590e1bb8c67795df22c8d4bc2e28361dd58f2075aa930472fc606d88d36e68 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | numeric-risk-v1 | offline-fixture |
+| discover-blind-v1.blind-pass | offline_verified | sha256:c218111db49988823f902e66b4742af9dd903ebeb7a60b960ac641ce00b12c9c | offline | reference-fixture | 0015_release_claims | 2026-09-05 | discover-blind-v1 | offline-fixture |
+| runtime-contract-v1.contract-pass | offline_verified | sha256:a0b9de6e63156d202eb2a3fe22da3e85abac77b95600acd15253da23b2c454a2 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | runtime-contract-v1 | offline-fixture |
+| ask-v1.contract-pass | offline_verified | sha256:fbb351f9793e32a5fd92ac14403f13243c470fa926ead16bffa07f4c8a5b1b07 | offline | reference-fixture | 0015_release_claims | 2026-09-05 | ask-v1 | offline-fixture |
+| longmemeval.external-diagnostic | **planned** | （无——不可用性密封件 sha256:a6774a896c9b1060a9927be46bf9d15fa48ad8b81996db0dcd467f7d93e338f4 是不可用证据，不解锁质量 claim） | — | — | — | — | longmemeval-adapter | — |
 
 ## 11. 例外/未执行项（ADR-012 登记）
 
@@ -305,14 +320,20 @@ $ npm --prefix apps/web run test:e2e -- runtime-approval.spec.ts
    模板填充仍走 render_claim 的 SealedValue provenance 冻结路径。已在脚本
    docstring 登记，属服务层已知缺口（与 api/claims.py 的 policy cell 缺口同性质的
    设计登记，非静默旁路——evidence/digest 防线全部经服务层复算）。
+4. **步骤 3–7 复执行**：首轮密封/播种被全量 pytest 的清库 fixture 作废（根因见
+   报告头部说明）。复执行轮在 pytest 之后产出全部密封与 claim 证据，并以
+   `release check --strict`（findings=[]）+ `eval verify --all-sealed`（13/13）
+   终态复核。两轮聚合绑定值一致；首轮输出未计入 Gate 结论但差异仅为随机 UUID
+   派生 digest。
 
 ## 13. 提交
 
 ```text
-<commit a> feat(release): seal evidence-backed claim registry            — deploy/seed_s9_gate_claims.py
-<commit b> docs(claims): bind README claim table to sealed artifacts (S9) — README.md
-<commit c> test(release): S9 gate evidence and report                    — artifacts/gates/s9/**
+11c6111 feat(release): seal evidence-backed claim registry             — deploy/seed_s9_gate_claims.py
+a4a78e5 docs(claims): bind README claim table to sealed artifacts (S9)  — README.md
+6fcf479 test(release): S9 gate evidence and report                     — artifacts/gates/s9/**（首轮）
+<final>   test(release): re-seal S9 gate evidence after full-suite DB rebuild — artifacts/gates/s9/**（复执行轮证据与本报告）
 ```
 
-（commit sha 见交付说明；报告与 sealed-runs.json 属 artifacts/ gitignore 范围，按
-既有 gate artifact 惯例 `git add -f` 纳入。）
+（报告与 sealed-runs.json 属 artifacts/ gitignore 范围，按既有 gate artifact 惯例
+`git add -f` 纳入。）
