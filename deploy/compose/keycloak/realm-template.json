@@ -7,7 +7,7 @@
   "duplicateEmailsAllowed": false,
   "resetPasswordAllowed": false,
   "editUsernameAllowed": false,
-  "sslRequired": "external",
+  "sslRequired": "none",
   "accessTokenLifespan": 3600,
   "clients": [
     {
@@ -40,6 +40,108 @@
       "username": "alice",
       "enabled": true,
       "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "owner-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "email": "owner-oidc@example.com",
+      "firstName": "Owner",
+      "lastName": "ZhiWei",
+      "id": "7f3b1c2a-9d4e-4a5b-8c6d-1a2b3c4d5e6f"
+    },
+    {
+      "username": "builder-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "email": "builder-oidc@example.com",
+      "firstName": "Builder",
+      "lastName": "ZhiWei",
+      "id": "8a4c2d3b-0e5f-4b6c-9d7e-2b3c4d5e6f7a"
+    },
+    {
+      "username": "member-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "email": "member-oidc@example.com",
+      "firstName": "Member",
+      "lastName": "ZhiWei",
+      "id": "9b5d3e4c-1f6a-4c7d-ae8f-3c4d5e6f7a8b"
+    },
+    {
+      "username": "approver-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "email": "approver-oidc@example.com",
+      "firstName": "Approver",
+      "lastName": "ZhiWei",
+      "id": "ac6e4f5d-2a7b-4d8e-bf9a-4d5e6f7a8b9c"
+    },
+    {
+      "username": "auditor-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "attributes": {},
+      "credentials": [
+        {
+          "type": "password",
+          "value": "${KEYCLOAK_TEST_USER_PASSWORD}",
+          "temporary": false
+        }
+      ],
+      "email": "auditor-oidc@example.com",
+      "firstName": "Auditor",
+      "lastName": "ZhiWei",
+      "id": "bd7f5a6e-3b8c-4e9f-caab-5e6f7a8b9c0d"
+    },
+    {
+      "id": "ce1f7a8b-2d3e-4f5a-9b0c-1d2e3f4a5b6c",
+      "username": "newuser-oidc",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "newuser-oidc@example.com",
+      "firstName": "Newuser",
+      "lastName": "ZhiWei",
       "attributes": {},
       "credentials": [
         {
