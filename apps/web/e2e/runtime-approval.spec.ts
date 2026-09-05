@@ -136,7 +136,7 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
   const fulfill = (route: Route, status: number, body: unknown) =>
     route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
-  context.route("**/api/**", async (route) => {
+  context.route("/api/**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
     const method = req.method();

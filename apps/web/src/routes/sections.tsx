@@ -10,6 +10,7 @@ import { EvalRunsView } from "../features/evals/EvalRunsView";
 import { ReleasesView } from "../features/releases/ReleasesView";
 import { ObservabilityView } from "../features/observability/ObservabilityView";
 import { CostsView } from "../features/costs/CostsView";
+import { StudioView } from "../features/studio/StudioView";
 import { hasRole, type SessionUser } from "../lib/session";
 
 export interface SectionContext {
@@ -64,6 +65,13 @@ export const SECTIONS: readonly SectionDescriptor[] = [
     key: "costs",
     label: "Costs",
     render: (ctx) => <CostsView onSessionExpired={ctx.onSessionExpired} />,
+  },
+  {
+    key: "studio",
+    label: "Agent Studio",
+    render: (ctx) => (
+      <StudioView readOnly={ctx.readOnly} onSessionExpired={ctx.onSessionExpired} />
+    ),
   },
 ];
 

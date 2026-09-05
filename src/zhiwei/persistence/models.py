@@ -411,6 +411,9 @@ class AgentDefinition(Base):
     __tablename__ = "agent_definitions"
     __table_args__ = (
         CheckConstraint("schema_version > 0", name="schema_version"),
+        # S10-T2（0016 同名 CHECK 的 ORM 镜像——迁移与 ORM 漂移会让 autogenerate
+        # 复现约束，S9-T1 教训）：draft revision CAS 计数器恒为正。
+        CheckConstraint("revision > 0", name="revision"),
         ForeignKeyConstraint(
             ["organization_id", "workspace_id"],
             ["workspaces.organization_id", "workspaces.id"],
@@ -428,7 +431,18 @@ class AgentDefinition(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     lifecycle: Mapped[str] = mapped_column(String(32), nullable=False, default="draft")
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # S10-T2 Studio draft 面（0016 增补，全部带 server default——既有行与测试
+    # 种子行零回填）：draft 是「当前工作态」，CAS 以 revision 单行原子自增实现；
+    # 已发布版本仍走 agent_versions 不可变行，draft 内容列不参与发布身份。
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    instructions: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    task_graph: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    capabilities: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 

@@ -135,7 +135,18 @@ TENANT_RLS_TABLES = REQUIRED_TABLES - IDENTITY_GLOBAL_TABLES
 # group_members（T5 SCIM reconciliation 的 remove 方向，0009 GRANT DELETE）
 DELETE_GRANTED_TABLES = {"memberships", "workspace_memberships", "group_members"}
 MUTABLE_COLUMNS = {
-    "agent_definitions": {"lifecycle", "name"},
+    # S10-T2（0016）：Studio draft 面增补列——draft 内容列 + CAS revision 计数
+    # （列级 UPDATE，无表级授权；契约随迁移扩展，0011/0013/0015 同款登记）
+    "agent_definitions": {
+        "lifecycle",
+        "name",
+        "description",
+        "instructions",
+        "task_graph",
+        "capabilities",
+        "revision",
+        "updated_at",
+    },
     # S2-T7（0011）：审批决策 CAS 只允许这四列（列级 UPDATE，无表级授权）
     "approval_requests": {"decided_at", "decided_by", "decision_reason", "status"},
     # S7（0012）：memory 生命周期转移列 + ADR-009 证据合并列（列级 UPDATE，

@@ -439,8 +439,9 @@ test.describe("S10 studio — CAS conflict", () => {
     await page.getByRole("button", { name: "Save draft" }).click();
     await expect(page.getByText(/Saved revision 3/)).toBeVisible();
 
-    // CAS 契约：每次保存都带 If-Match（428 在 UI 侧不可达）
-    expect(state.saves).toHaveLength(2);
+    // CAS 契约：每次保存都带 If-Match（428 在 UI 侧不可达）。三次保存：
+    // 首存成功、冲突 412、reload 后成功——全部必须携带 If-Match。
+    expect(state.saves).toHaveLength(3);
     for (const save of state.saves) {
       expect(save.headers["if-match"]).toBeDefined();
       expect(UUID_RE.test(save.headers["idempotency-key"])).toBe(true);
