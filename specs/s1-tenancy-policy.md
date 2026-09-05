@@ -3,6 +3,8 @@
 > Status: frozen implementation specification  
 > Revised: 2026-09-03（S0–S2 复审增补，见 ADR-012：workspace 创建动作语义、读路径授权、
 > refresh 接线、真实栈测试边界、Gate 例外与 deselect 规则）  
+> Revised: 2026-09-04（见 ADR-013：identity 真实 OPA slow 测试纳入 Gate——spec 必需场景
+> 不得只存在于默认 deselect marker 之后，ADR-012 §5）  
 > Depends on: S0  
 > Unlocks: S2
 
@@ -77,6 +79,7 @@ local-product Keycloak 登录后，Org Owner 创建 Organization/Workspace，邀
 ```bash
 uv run pytest tests/unit/identity tests/unit/policy -q
 uv run pytest tests/integration/identity tests/integration/rls tests/security/tenancy -q
+uv run pytest tests/integration/identity -q -m slow   # 真实 OPA SCIM 授权纵切（ADR-012 §5）
 uv run pytest tests/integration/policy -q -m slow   # 真实 OPA：bundle update/policy change 必须执行（ADR-012）
 docker compose -f deploy/compose/compose.test.yaml --profile identity config --quiet
 npm --prefix apps/web run test:e2e -- tenancy.spec.ts

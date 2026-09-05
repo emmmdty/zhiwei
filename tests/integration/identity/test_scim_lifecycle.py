@@ -361,7 +361,7 @@ def keyring_path(tmp_path: Path) -> Path:
     return path
 
 
-def _settings(keyring_path: Path) -> dict[str, str]:
+def _settings(keyring_path: Path, *, opa_base_url: str = OPA_BASE_URL) -> dict[str, str]:
     return {
         "ZHIWEI_PROFILE": "test",
         "ZHIWEI_DATABASE_URL": APP_DSN,
@@ -371,7 +371,7 @@ def _settings(keyring_path: Path) -> dict[str, str]:
         "ZHIWEI_OIDC_CLIENT_SECRET": CLIENT_SECRET,
         "ZHIWEI_OIDC_REDIRECT_URI": REDIRECT_URI,
         "ZHIWEI_IDENTITY_MASTER_KEY_FILE": str(keyring_path),
-        "ZHIWEI_OPA_BASE_URL": OPA_BASE_URL,
+        "ZHIWEI_OPA_BASE_URL": opa_base_url,
     }
 
 
@@ -391,8 +391,10 @@ async def _make_app(
                 transport=httpx.MockTransport(opa.handler), timeout=5.0
             ),
         )
+    # 真实 OPA 路径必须指向 opa_service fixture 拉起的 sidecar（ADR-013 反例 7：
+    # 此前沿用 FakeOPA 场景的 opa.test 假地址，「真实栈」测试从未连上真实 OPA）。
     return create_app(
-        load_settings(_settings(keyring_path)),
+        load_settings(_settings(keyring_path, opa_base_url=REAL_OPA_BASE_URL)),
         oidc_http_client=httpx.AsyncClient(transport=httpx.MockTransport(idp.handler), timeout=5.0),
     )
 
