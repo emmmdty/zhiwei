@@ -1,0 +1,102 @@
+schema_version: 1
+agent_id: discover-agent-v1
+name: Discover Agent
+description: >-
+  Executes DiscoveryProgram runs: resolves trigger context and watermarks, runs
+  detector packs over governed snapshots, generates hypotheses with typed
+  NegativeProbes evaluated by deterministic components (model proposes, never
+  judges), dedupes with typed RiskFingerprint, and emits a triage feed. Reads
+  only the program's service identity; never the creator's session or personal
+  memory.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- DiscoveryRunSpec input contract
+input:
+  required:
+    - program_version_id
+  properties:
+    program_version_id:
+      type: string
+      description: Frozen DiscoveryProgram version to execute
+    trigger_type:
+      type: string
+      enum: [schedule, webhook, source_delta]
+      description: Trigger that started this run
+    source_scope:
+      type: object
+      properties:
+        tables:
+          type: array
+          items:
+            type: string
+          default: []
+    watermark:
+      type: object
+      description: >
+        Source watermark for source_delta triggers; runs only proceed when the
+        watermark advanced past the last fired value.
+    risk_level:
+      type: string
+      enum: [low, medium, high]
+      default: medium
+
+# ---------------------------------------------------------------- output contract
+output:
+  properties:
+    status:
+      type: string
+      enum: [completed, partial, failed]
+    findings:
+      type: array
+      description: >
+        Typed pattern findings with realized SNR, window, direction, band, and
+        evidence rows; deterministic replay of every finding is required.
+    signals:
+      type: array
+      description: Signals emitted after data quality gates and typed dedupe
+    hypotheses:
+      type: array
+      description: >
+        RiskHypotheses with attached NegativeProbe results as independent
+        evidence refs; refuted hypotheses keep their full falsification trail
+        and never enter triage.
+    falsification:
+      type: object
+      properties:
+        falsification_coverage:
+          type: number
+        hypothesis_refutation_rate:
+          type: number
+    dedupe:
+      type: object
+      properties:
+        new:
+          type: integer
+        duplicates:
+          type: integer
+        merge_candidates:
+          type: integer
+    run_id:
+      type: string
+      description: Runtime run ID (service identity principal)
+
+# ---------------------------------------------------------------- lifecycle
+lifecycle:
+  initial: idle
+  transitions:
+    - from: idle
+      to: detecting
+      trigger: run_started
+    - from: detecting
+      to: falsifying
+      trigger: findings_emitted
+    - from: detecting
+      to: failed
+      trigger: data_quality_failed
+    - from: falsifying
+      to: deduplicating
+      trigger: probes_evaluated
+    - from: deduplicating
+      to: completed
+      trigger: triage_feed_emitted

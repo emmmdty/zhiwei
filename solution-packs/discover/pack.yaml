@@ -1,0 +1,57 @@
+schema_version: 1
+pack_id: discover-v1
+name: Discover
+description: >-
+  Continuous risk discovery pack. Runs scheduled/webhook/source-delta triggered
+  discovery programs over governed data sources; deterministic detector packs
+  propose Signals, an independent falsification stage executes typed
+  NegativeProbes before human triage. RiskInsight is the first Numeric Detector
+  Pack; it does not define the product.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- capabilities
+capabilities:
+  - discovery_program_management
+  - numeric_pattern_detection
+  - sequential_falsification
+  - risk_fingerprint_dedupe
+  - triage_case_handoff
+
+# ---------------------------------------------------------------- required task primitives
+task_primitives:
+  - Intake
+  - Plan
+  - Retrieve
+  - Analyze
+  - Verify
+  - Synthesize
+  - EmitArtifact
+  - Finish
+
+# ---------------------------------------------------------------- core dependencies
+core_deps:
+  - zhiwei.discover.programs
+  - zhiwei.discover.signals
+  - zhiwei.discover.hypotheses
+  - zhiwei.discover.detectors
+  - zhiwei.evidence.patterns.numeric
+  - zhiwei.evidence.patterns.probes
+  - zhiwei.cases.risk_fingerprint
+  - zhiwei.runtime.triggers.discovery
+
+# ---------------------------------------------------------------- source connectors
+source_connectors:
+  - db
+  - files
+
+# ---------------------------------------------------------------- risk profile
+risk:
+  default: medium
+  escalation_rules:
+    - condition: "action_requires_approval == true"
+      risk: high
+    - condition: "hypothesis_refuted == true"
+      risk: low
+    - condition: "data_quality_failed == true"
+      risk: high

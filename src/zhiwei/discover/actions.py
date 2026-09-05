@@ -17,8 +17,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from zhiwei.contracts.canonical import canonical_json, digest_bytes
 from zhiwei.contracts.identifiers import new_id
 from zhiwei.contracts.time import ensure_utc
+from zhiwei.runtime.approvals import ApprovalRequestManager
 
 
 class _FrozenModel(BaseModel):
@@ -129,15 +131,35 @@ class LessonCandidateFromAction(_FrozenModel):
         return ensure_utc(value)
 
 
+def _action_input_digest(request: ActionRequest) -> str:
+    """S2 审批与精确输入绑定：对 action 的决定相关内容做内容寻址。"""
+    return digest_bytes(
+        canonical_json(
+            {
+                "action_type": request.action_type.value,
+                "tool_name": request.tool_name,
+                "parameters": request.parameters,
+                "rationale": request.rationale,
+            }
+        )
+    )
+
+
 class ActionManager:
     """Manages ActionRequest lifecycle and ActionReceipt generation.
 
     Triage → create Case → ask Ask for evidence → request tool action → approval → Resolution。
+    审批决定组合复用 S2 ApprovalRequestManager（SoD：审批人 ≠ requester/modifier 的
+    唯一事实实现）——approve 只消费 S2 已批准的决定并落账，discover 不维护第二套
+    审批语义，requester 本人无法经由本管理器 approve 自己发起的 action。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, approvals: ApprovalRequestManager | None = None) -> None:
         self._requests: dict[UUID, ActionRequest] = {}
         self._receipts: dict[UUID, ActionReceipt] = {}
+        self._approvals = approvals or ApprovalRequestManager()
+        # request_id → S2 ApprovalRequest id：submit_for_approval 时建立绑定
+        self._decision_ids: dict[UUID, UUID] = {}
 
     @property
     def requests(self) -> tuple[ActionRequest, ...]:
@@ -176,7 +198,11 @@ class ActionManager:
         return request
 
     def submit_for_approval(self, request_id: UUID) -> ActionRequest:
-        """Transition PROPOSED → PENDING_APPROVAL."""
+        """Transition PROPOSED → PENDING_APPROVAL.
+
+        进入审批即建立 S2 ApprovalRequest 绑定（requester = requested_by；action 由
+        Discover 流程内的模型提出，effective agent identity 固定为 discover）。
+        """
         request = self._get_request(request_id)
         if request.status != ActionStatus.PROPOSED:
             raise ValueError(
@@ -186,16 +212,30 @@ class ActionManager:
             update={"status": ActionStatus.PENDING_APPROVAL, "created_at": request.created_at}
         )
         self._requests[request_id] = updated
+        decision = self._approvals.create(
+            run_id=request.hypothesis_id,
+            task_id="discover-action",
+            input_digest=_action_input_digest(request),
+            requester=request.requested_by,
+            input_modifier=request.requested_by,
+            agent_identity="discover",
+        )
+        self._decision_ids[request_id] = decision.id
         return updated
 
     def approve(self, request_id: UUID, approved_by: str) -> ActionRequest:
-        """Approve a pending action request — transitions PENDING_APPROVAL → APPROVED."""
+        """Approve a pending action request — transitions PENDING_APPROVAL → APPROVED.
+
+        审批决定经 S2 ApprovalRequestManager.approve 产生——审批人等于
+        requester/modifier 时由 S2 拒绝（ApprovalError）；本方法只消费已批准的决定。
+        """
         request = self._get_request(request_id)
         if request.status != ActionStatus.PENDING_APPROVAL:
             raise ValueError(
                 f"Cannot approve request in {request.status} status; "
                 "only pending_approval can be approved"
             )
+        self._approvals.approve(self._decision_ids[request_id], approver=approved_by)
         updated = request.model_copy(
             update={"status": ActionStatus.APPROVED, "created_at": request.created_at}
         )
@@ -203,7 +243,11 @@ class ActionManager:
         return updated
 
     def reject(self, request_id: UUID) -> ActionRequest:
-        """Reject a pending action request — transitions PENDING_APPROVAL → REJECTED."""
+        """Reject a pending action request — transitions PENDING_APPROVAL → REJECTED.
+
+        拒绝是 fail-safe 方向，无 SoD 风险；S2 镜像决定保持 pending——request 已离开
+        PENDING_APPROVAL，approve 不会再消费它。
+        """
         request = self._get_request(request_id)
         if request.status != ActionStatus.PENDING_APPROVAL:
             raise ValueError(
@@ -238,6 +282,8 @@ class ActionManager:
                 "only approved requests can produce receipts"
             )
         now = datetime.now(UTC)
+        # 回执的审批人只消费 S2 审批决定——不得把 requester 回填成 approved_by。
+        decision = self._approvals.get(self._decision_ids[request_id])
         receipt = ActionReceipt(
             id=new_id(),
             action_request_id=request_id,
@@ -249,7 +295,7 @@ class ActionManager:
             executed_by=executed_by,
             executed_at=now,
             approval_required=True,
-            approved_by=approved_by or request.requested_by,
+            approved_by=approved_by or decision.approver or "",
             approval_timestamp=approval_timestamp or now,
         )
         completed_request = request.model_copy(
