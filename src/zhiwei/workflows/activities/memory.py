@@ -47,6 +47,7 @@ from zhiwei.persistence.events import EventCommand
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.persistence.unit_of_work import CanonicalUnitOfWork
 from zhiwei.runtime.triggers.discovery import BackgroundRunContext
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 logger = logging.getLogger(__name__)
 
@@ -364,13 +365,25 @@ class MemoryActivity:
         query_embedding = input.query.get("embedding")
         top_k = input.query.get("top_k", 10)
 
-        response = self._retriever.retrieve(
-            query_text=query_text,
-            filters=filters,
-            query_key=query_key,
-            query_embedding=query_embedding,
-            top_k=top_k,
-        )
+        # S9 §6 memory span：memory 检索经 Memory Activity（S7 §4）。metadata
+        # only：run/task 身份 + 命中计数；query 文本/embedding/候选内容绝不进
+        # span（正文键剥离之外的纪律——检索输入根本不作为属性传入）。
+        with start_span(
+            SpanNames.MEMORY,
+            {
+                "run_id": input.run_id,
+                "task_id": input.task_id,
+                "action": "retrieve",
+            },
+        ) as span:
+            response = self._retriever.retrieve(
+                query_text=query_text,
+                filters=filters,
+                query_key=query_key,
+                query_embedding=query_embedding,
+                top_k=top_k,
+            )
+            span.set_attribute("record_count", response.total_passed)
 
         result_dicts = [
             {

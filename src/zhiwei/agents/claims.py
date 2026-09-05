@@ -38,6 +38,7 @@ from zhiwei.persistence.tenant import TenantContext, TenantContextRequired
 __all__ = [
     "ClaimAlreadyRegistered",
     "ClaimEvidence",
+    "ClaimIdInvalid",
     "ClaimNotFound",
     "ClaimRecord",
     "ClaimRegistryService",
@@ -51,6 +52,11 @@ __all__ = [
 
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _TEMPLATE_VARIABLE = re.compile(r"\{\{\s*([a-z][a-z0-9_]*)\s*\}\}")
+
+# claim_id 字符集冻结（R2-A NEW-1）：小写字母数字开头结尾，内部仅点/连字符/
+# 字母数字，最长 64。空格/大写/下划线一律拒绝——含空格的 id 曾把模板 marker
+# 形态的伪数字走私过 release 表面，字符集在三层（模型/服务/端点）同规收口。
+_CLAIM_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]{0,62}[a-z0-9]$")
 
 # live-production 口径只认 live/shadow 密封件；offline 口径的升级只认 offline 模式
 _LIVE_MODES = frozenset({"live", "shadow"})
@@ -74,6 +80,14 @@ class ClaimNotFound(LookupError):
 
 class ClaimAlreadyRegistered(ValueError):
     """同租户下 claim_id 重复注册（fail closed，不做静默幂等覆盖）。"""
+
+
+class ClaimIdInvalid(ValueError):
+    """claim_id 违反冻结字符集；reason 是稳定机器码，端点按其分支返回 422。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.reason = "invalid_claim_id"
 
 
 class ClaimStatus(StrEnum):
@@ -145,6 +159,18 @@ class ClaimRecord(BaseModel):
     status: ClaimStatus
     evidence: ClaimEvidence | None = None
     bound_value: str | None = None
+
+    @field_validator("claim_id")
+    @classmethod
+    def _validate_claim_id(cls, value: str) -> str:
+        # 模型层校验覆盖一切构造来源（API/服务层/行反序列化）——charset 不在
+        # 端点单点把关，防止绕过 API 的写入路径重新打开走私向量。
+        if _CLAIM_ID_PATTERN.fullmatch(value) is None:
+            raise ValueError(
+                "claim_id must match ^[a-z0-9][a-z0-9.-]{0,62}[a-z0-9]$ "
+                "(lowercase alnum start/end; dot/dash/alnum inside; max 64)"
+            )
+        return value
 
 
 # 手工升级边（无 artifact 参与）：登记实现、主动退役。任何随附证据都按
@@ -277,6 +303,13 @@ class ClaimRegistryService:
     async def register(
         self, *, claim_id: str, statement: str, scope: ClaimScope
     ) -> ClaimRecord:
+        # charset 先于一切会话 I/O：拒绝路径不触数据库（端点测试依赖该次序），
+        # 且重复查重前就拒绝可避免给非法 id 做无意义的行锁/查询。
+        if _CLAIM_ID_PATTERN.fullmatch(claim_id) is None:
+            raise ClaimIdInvalid(
+                f"claim_id {claim_id!r} violates the frozen charset "
+                "^[a-z0-9][a-z0-9.-]{0,62}[a-z0-9]$"
+            )
         existing = await self._session.scalar(
             select(ClaimRegistryRow.id).where(
                 ClaimRegistryRow.organization_id == self._context.organization_id,

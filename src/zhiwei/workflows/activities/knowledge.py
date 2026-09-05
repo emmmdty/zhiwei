@@ -21,6 +21,7 @@ from zhiwei.knowledge.planner import KnowledgePlanner
 from zhiwei.knowledge.query import (
     KnowledgeQuery,
 )
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 logger = logging.getLogger(__name__)
 
@@ -93,10 +94,26 @@ class KnowledgeActivity:
             acl_context = self._build_acl_context(input.acl)
             versions = self._parse_versions(input.candidates)
 
-            plan = self._planner.plan(query)
-            candidates = self._planner.generate_candidates(
-                query, versions, acl_context
-            )
+            # S9 §6 retrieval span：production 检索路径的 Activity 边界（S5 §7）。
+            # Retrieve TaskHandler（runtime/handlers/retrieve.py）与 eval executor
+            # 共用同一 planner，但 planner 是 run 无关的共享域服务；run/workspace
+            # 身份只在 Activity 输入上存在，seam 选在身份可得的这一层，经 W3C
+            # context 与 api/run span 关联。metadata-only：标识与规模计数，
+            # query 文本与候选内容绝不进 span。start_span 不吞异常——ACL/执行
+            # 异常照常被下方 except 捕获并映射为 output 状态。
+            with start_span(
+                SpanNames.RETRIEVAL,
+                {
+                    "run_id": input.run_id,
+                    "workspace_id": input.workspace_id,
+                    "source_version_count": len(versions),
+                },
+            ) as span:
+                plan = self._planner.plan(query)
+                candidates = self._planner.generate_candidates(
+                    query, versions, acl_context
+                )
+                span.set_attribute("candidate_count", len(candidates))
 
             candidate_dicts = [c.model_dump(mode="json") for c in candidates]
 

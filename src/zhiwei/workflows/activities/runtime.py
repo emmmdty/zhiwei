@@ -46,6 +46,7 @@ from zhiwei.runtime.events import (
 )
 from zhiwei.runtime.handlers.base import EffectUnknownError, TaskInput, TaskOutput
 from zhiwei.runtime.handlers.registry import TaskHandlerRegistry
+from zhiwei.telemetry.traces import SpanNames, start_span
 from zhiwei.workflows.activities.base import (
     ActivityEventAck,
     CheckApprovalInput,
@@ -134,6 +135,18 @@ class RuntimeActivities:
 
     @activity.defn
     async def execute_task(self, input: ExecuteTaskInput) -> TaskExecutionResult:
+        # S9 §6 task span：task 生命周期落账（scheduled/attempt/started/terminal）
+        # 的唯一 activity。metadata-only：run/task 身份 + 终态；handler 输出值
+        # （可能携带业务正文）绝不进 span。包装经 _execute_task 委托，属性在
+        # 终态确定后补写——span 不改变任何业务返回/异常语义。
+        with start_span(
+            SpanNames.TASK, {"run_id": input.run_id, "task_id": input.task_id}
+        ) as span:
+            result = await self._execute_task(input)
+            span.set_attribute("status", result.status)
+            return result
+
+    async def _execute_task(self, input: ExecuteTaskInput) -> TaskExecutionResult:
         run_id = UUID(input.run_id)
         attempt_id = UUID(input.attempt_id)
         context = _context(input.organization_id, input.workspace_id)
@@ -437,6 +450,23 @@ class RuntimeActivities:
         self, input: RecordApprovalOutcomeInput
     ) -> TaskExecutionResult:
         """审批决策落账为任务终态事件（幂等键含 attempt_no）。"""
+        # S9 §6 approval span：runtime 侧的决策落账 seam。审批请求 UUID 与
+        # SoD/CAS 判定在 persistence/approvals.py 的权威层（decision 那一刻
+        # 不经过本 activity）；此处携带 run/task 身份与决策值——审批 payload
+        # （原因文本、请求者链）绝不进 span。
+        with start_span(
+            SpanNames.APPROVAL,
+            {
+                "run_id": input.run_id,
+                "task_id": input.task_id,
+                "decision": input.decision,
+            },
+        ):
+            return await self._record_approval_outcome(input)
+
+    async def _record_approval_outcome(
+        self, input: RecordApprovalOutcomeInput
+    ) -> TaskExecutionResult:
         run_id = UUID(input.run_id)
         context = _context(input.organization_id, input.workspace_id)
         now = utc_now()

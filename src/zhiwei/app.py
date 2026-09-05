@@ -49,6 +49,7 @@ from zhiwei.persistence.tenant import TenantContext
 from zhiwei.policy.client import OPAClient
 from zhiwei.policy.enforcement import PolicyEnforcer
 from zhiwei.secrets.local import LocalSecretBackend, load_keyring
+from zhiwei.telemetry.fastapi import trace_context_middleware
 
 _REQUIRED = (
     ("ZHIWEI_DATABASE_URL", "database_url"),
@@ -169,6 +170,12 @@ def create_app(
     policy_enforcer = PolicyEnforcer(policy_client)
 
     app = FastAPI(title="zhiwei", version="0.1.0")
+
+    @app.middleware("http")
+    async def trace_request_context(request: Request, call_next: Any) -> Any:
+        # S9 §6：W3C traceparent 提取 + api 请求 span（metadata-only）。实现
+        # 在 telemetry/fastapi.py，默认 no-op（未配置观测后端时零副作用）。
+        return await trace_context_middleware(request, call_next)
 
     @app.middleware("http")
     async def clear_session_cookie(request: Request, call_next: Any) -> Any:

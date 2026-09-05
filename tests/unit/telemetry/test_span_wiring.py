@@ -19,7 +19,7 @@ from __future__ import annotations
 import inspect
 import re
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import httpx2 as httpx
@@ -124,10 +124,38 @@ class TestPolicySpan:
         )
         enforcer = PolicyEnforcer(client)
         exporter = _recording_tracer(monkeypatch)
-        decision = await enforcer.authorize(_policy_doc())
+        # 生产路径传 PolicyInput（policy_gate/tool gateway 都构造类型化输入）：
+        # policy_type 取自已验证输入的 resource.type。
+        from zhiwei.policy.input import PolicyInput
+
+        decision = await enforcer.authorize(PolicyInput.model_validate(_policy_doc()))
         assert decision.allow is True
         attributes = _attributes_of(exporter, SpanNames.POLICY)
         assert attributes["policy_type"] == "org"
+        assert attributes["decision"] == "allow"
+        _assert_metadata_only(exporter)
+
+    async def test_dict_input_labels_unvalidated_type(self, monkeypatch: Any) -> None:
+        # 裸 dict 输入的类型自报不可采信（fail closed 的遥测面同规）：span 标注
+        # unvalidated_input，判定结果仍如实暴露。
+        from zhiwei.policy.client import OPAClient
+        from zhiwei.policy.enforcement import PolicyEnforcer
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200, json=_opa_response(True, "allowed:matrix"), request=request
+            )
+
+        client = OPAClient(
+            "http://opa.test:8181",
+            http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+        )
+        enforcer = PolicyEnforcer(client)
+        exporter = _recording_tracer(monkeypatch)
+        decision = await enforcer.authorize(_policy_doc())
+        assert decision.allow is True
+        attributes = _attributes_of(exporter, SpanNames.POLICY)
+        assert attributes["policy_type"] == "unvalidated_input"
         assert attributes["decision"] == "allow"
         _assert_metadata_only(exporter)
 
@@ -232,7 +260,10 @@ class TestToolSpan:
             CredentialType,
         )
         from zhiwei.capabilities.domain import CapabilityStatus, CapabilityVersion
+        from zhiwei.capabilities.invocations import InvocationRepository
+        from zhiwei.capabilities.runners.client import RunnerClient
         from zhiwei.capabilities.tool_gateway import ToolGateway
+        from zhiwei.policy.input import PolicyInput
         from zhiwei.secrets.base import SecretRef
 
         exporter = _recording_tracer(monkeypatch)
@@ -267,8 +298,8 @@ class TestToolSpan:
         )
         gateway = ToolGateway(
             FakePolicyEnforcer(allow=True),
-            _FakeRunnerClient(),
-            _FakeInvocationRepo(),
+            cast(RunnerClient, _FakeRunnerClient()),
+            cast(InvocationRepository, _FakeInvocationRepo()),
             connection_registry={connection.id: connection},
             credential_registry={credential.id: credential},
             capability_registry={capability.id: capability},
@@ -287,23 +318,26 @@ class TestToolSpan:
             principal_id=uuid4(),
             agent_identity_id=None,
             input_args={"query": CANARY, "prompt": CANARY},
-            policy_input={
-                "organization_id": str(organization_id),
-                "workspace_id": str(workspace_id),
-                "actor": {"principal_id": str(uuid4()), "kind": "user", "roles": []},
-                "resource": {"type": "tool", "id": str(capability.id), "version": "v1"},
-                "action": "invoke",
-                "purpose": "general",
-                "classification": None,
-                "risk": None,
-                "delegation": [],
-                "resource_context": {},
-                "context": {
-                    "now": "2026-09-06T00:00:00Z",
-                    "classification_ceiling": None,
-                    "requires_delegation": False,
+            policy_input=cast(
+                PolicyInput,
+                {
+                    "organization_id": str(organization_id),
+                    "workspace_id": str(workspace_id),
+                    "actor": {"principal_id": str(uuid4()), "kind": "user", "roles": []},
+                    "resource": {"type": "tool", "id": str(capability.id), "version": "v1"},
+                    "action": "invoke",
+                    "purpose": "general",
+                    "classification": None,
+                    "risk": None,
+                    "delegation": [],
+                    "resource_context": {},
+                    "context": {
+                        "now": "2026-09-06T00:00:00Z",
+                        "classification_ceiling": None,
+                        "requires_delegation": False,
+                    },
                 },
-            },
+            ),
         )
         assert invocation.status.value == "completed"
         attributes = _attributes_of(exporter, SpanNames.TOOL)
@@ -323,6 +357,7 @@ class TestApiRequestSpan:
     ) -> None:
         from fastapi import FastAPI
         from httpx2 import ASGITransport, AsyncClient
+
         from zhiwei.telemetry.fastapi import trace_context_middleware
 
         exporter = _recording_tracer(monkeypatch)
@@ -350,8 +385,9 @@ class TestApiRequestSpan:
         assert set(spans) == {SpanNames.API, SpanNames.MODEL}
         api_span, model_span = spans[SpanNames.API], spans[SpanNames.MODEL]
         # W3C 传播：请求 span 续接上游 trace，端点内子 span 挂接在其下。
-        assert f"{api_span.context.trace_id:032x}" == "0af7651916cd43dd8448eb211c80319c"
+        assert api_span.context is not None
         assert model_span.parent is not None
+        assert f"{api_span.context.trace_id:032x}" == "0af7651916cd43dd8448eb211c80319c"
         assert model_span.parent.span_id == api_span.context.span_id
         api_attributes = dict(api_span.attributes or {})
         assert api_attributes["http.method"] == "GET"
@@ -411,15 +447,15 @@ class TestSpanSeamWiring:
     def test_all_eleven_domains_are_wired(self) -> None:
         wired = {constant for _module, constant in _STATIC_SEAMS} | {"TOOL", "POLICY"}
         assert wired == {
-            SpanNames.API,
-            SpanNames.RUN,
-            SpanNames.TASK,
-            SpanNames.MODEL,
-            SpanNames.RETRIEVAL,
-            SpanNames.MEMORY,
-            SpanNames.TOOL,
-            SpanNames.POLICY,
-            SpanNames.APPROVAL,
-            SpanNames.EVIDENCE,
-            SpanNames.EVAL,
+            "API",
+            "RUN",
+            "TASK",
+            "MODEL",
+            "RETRIEVAL",
+            "MEMORY",
+            "TOOL",
+            "POLICY",
+            "APPROVAL",
+            "EVIDENCE",
+            "EVAL",
         }

@@ -39,6 +39,7 @@ from zhiwei.contracts.identifiers import new_id
 from zhiwei.contracts.time import utc_now
 from zhiwei.policy.enforcement import PolicyEnforcer
 from zhiwei.policy.input import PolicyInput
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 logger = logging.getLogger(__name__)
 
@@ -121,39 +122,56 @@ class ToolGateway:
         )
         self._invocation_repo.store(invocation)
 
-        try:
-            # Step 1: Validate connection is active
-            invocation = await self._validate_connection(invocation)
+        # S9 §6 tool span：capability 执行管线的唯一入口。capability ref 以
+        # input_digest 进 span（capability 版本本身是 UUID，经 repo 才可解析；
+        # digest 是 span 面的稳定标识）。status 在终态确定后补写；span 不吞
+        # 异常——管线异常照常进入下方 except 折叠为 failed invocation。
+        with start_span(
+            SpanNames.TOOL,
+            {
+                "run_id": run_id,
+                "task_id": task_id,
+                "input_digest": invocation.input_digest,
+            },
+        ) as span:
+            try:
+                # Step 1: Validate connection is active
+                invocation = await self._validate_connection(invocation)
 
-            # Step 2: Validate capability is published
-            invocation = await self._validate_capability(invocation)
+                # Step 2: Validate capability is published
+                invocation = await self._validate_capability(invocation)
 
-            # Step 3: Policy evaluation
-            invocation = await self._evaluate_policy(invocation, policy_input)
+                # Step 3: Policy evaluation
+                invocation = await self._evaluate_policy(invocation, policy_input)
 
-            # Step 4: Credential resolution
-            invocation = await self._resolve_credentials(invocation)
+                # Step 4: Credential resolution
+                invocation = await self._resolve_credentials(invocation)
 
-            # Step 5: Build sandbox spec
-            invocation = await self._build_sandbox(invocation)
+                # Step 5: Build sandbox spec
+                invocation = await self._build_sandbox(invocation)
 
-            # Step 6: Execute via runner
-            invocation = await self._execute(invocation)
+                # Step 6: Execute via runner
+                invocation = await self._execute(invocation)
 
-            # Step 7: Generate observation/receipt
-            invocation = await self._generate_receipt(invocation)
+                # Step 7: Generate observation/receipt
+                invocation = await self._generate_receipt(invocation)
 
-            return invocation
+                span.set_attribute("status", invocation.status.value)
+                return invocation
 
-        except ToolGatewayError as exc:
-            return self._fail_invocation(invocation, exc)
-        except Exception as exc:
-            logger.exception("Unexpected error in tool gateway")
-            return self._fail_invocation(
-                invocation,
-                ToolGatewayError(f"Internal error: {exc}"),
-                reason=InvocationFailureReason.INTERNAL_ERROR,
-            )
+            except ToolGatewayError as exc:
+                failed = self._fail_invocation(invocation, exc)
+                span.set_attribute("status", failed.status.value)
+                return failed
+            except Exception as exc:
+                logger.exception("Unexpected error in tool gateway")
+                failed = self._fail_invocation(
+                    invocation,
+                    ToolGatewayError(f"Internal error: {exc}"),
+                    reason=InvocationFailureReason.INTERNAL_ERROR,
+                )
+                span.set_attribute("status", failed.status.value)
+                return failed
 
     async def _validate_connection(self, invocation: ToolInvocation) -> ToolInvocation:
         """Validate connection is active (re-read after approval per spec §5)."""

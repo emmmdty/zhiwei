@@ -41,6 +41,7 @@ from zhiwei.evals.sealing import SealedEvalArtifact
 from zhiwei.object_store.ports import ObjectStore
 from zhiwei.persistence.models import EvalRun, EvalSample
 from zhiwei.persistence.tenant import TenantContext, TenantContextRequired
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 
 class EvalRunnerError(RuntimeError):
@@ -102,10 +103,20 @@ class EvalRunner:
         「全部 terminal」收口，而不是留下无法密封的 partial 残局。
         """
         recorded: list[SampleOutcome] = []
-        for unit in await self._pending_units(eval_run_id):
-            outcome = await self._execute_unit(unit)
-            await self._service.record_outcome(eval_run_id, outcome)
-            recorded.append(outcome)
+        units = await self._pending_units(eval_run_id)
+        # S9 §6 eval span：record loop 是评分口径的权威落账点（分母完整性在
+        # 此收口）。metadata-only：run 身份 + 单位计数；题目/输出/参考答案
+        # 绝不进 span。start_span 不吞异常——单位失败已折叠为 ERROR 终态，
+        # span 只观测不改变分母语义。
+        with start_span(
+            SpanNames.EVAL,
+            {"eval_run_id": str(eval_run_id), "pending_units": len(units)},
+        ) as span:
+            for unit in units:
+                outcome = await self._execute_unit(unit)
+                await self._service.record_outcome(eval_run_id, outcome)
+                recorded.append(outcome)
+            span.set_attribute("recorded_units", len(recorded))
         return tuple(recorded)
 
     async def load_state(self, eval_run_id: UUID) -> EvalRunState:

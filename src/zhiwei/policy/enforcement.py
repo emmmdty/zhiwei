@@ -18,6 +18,14 @@ from pydantic import ValidationError
 
 from zhiwei.policy.client import OPAClient, PolicyDecision
 from zhiwei.policy.input import PolicyInput
+from zhiwei.telemetry.traces import SpanNames, start_span
+
+
+def _policy_type_of(policy_input: PolicyInput | Mapping[str, Any]) -> str:
+    """span 面的 policy 类型标识；未校验的 mapping 不得采信其自报类型。"""
+    if isinstance(policy_input, PolicyInput):
+        return policy_input.resource.type.value
+    return "unvalidated_input"
 
 
 class PolicyEnforcer:
@@ -33,6 +41,17 @@ class PolicyEnforcer:
         失败已由 client 折叠为 deny；这里再兜住任何内部错误（默认拒绝纪律：
         PEP 对调用方永不 500）。
         """
+        # S9 §6 policy span：PEP 判定面只暴露 policy 类型与判定结果——payload
+        # （actor/资源上下文/decision reason）绝不进 span。start_span 不吞异常，
+        # 与「authorize 永不抛」正交：_authorize 内部已把一切折叠为 deny。
+        with start_span(
+            SpanNames.POLICY, {"policy_type": _policy_type_of(policy_input)}
+        ) as span:
+            decision = await self._authorize(policy_input)
+            span.set_attribute("decision", "allow" if decision.allow else "deny")
+            return decision
+
+    async def _authorize(self, policy_input: PolicyInput | Mapping[str, Any]) -> PolicyDecision:
         try:
             if isinstance(policy_input, PolicyInput):
                 document = policy_input.model_dump(mode="json")

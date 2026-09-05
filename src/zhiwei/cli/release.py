@@ -37,7 +37,7 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
-DEFAULT_SURFACE_PATHS = (Path("README.md"), Path("docs"))
+DEFAULT_SURFACE_PATHS = (Path("README.md"), Path("docs"), Path("demo"))
 # attest 覆盖面是确定性的：README + 顶层 docs + artifacts 全树。`artifacts/**`
 # 在 py3.11 只匹配目录，必须再落一层 `/*` 才能覆盖全树文件。
 DEFAULT_ATTEST_GLOBS = ("README.md", "docs/*.md", "artifacts/**/*")
@@ -113,22 +113,36 @@ def _record(row: ClaimRegistryRow) -> ClaimRecord:
     )
 
 
-def _read_surface(entries: Sequence[Path]) -> dict[str, str]:
+def _read_surface(entries: Sequence[Path]) -> tuple[dict[str, str], list[dict[str, Any]]]:
+    """读取 release 表面，返回 (files, per-path 报告)。
+
+    required-if-exist 语义（R2-A T3）：表面路径缺失【不是】fatal 错误——checker
+    必须能在没有 demo/ 的仓库上执行，但缺失面绝不静默：per-path 条目
+    （missing=true, checked=0）进 JSON 输出供 Gate 脚本审计。exit code 只由
+    findings 决定；已存在文件的读取失败（IO/解码）仍然 fatal（存在却读不出
+    说明仓库状态异常，不能当作空表面放行）。
+    """
     files: dict[str, str] = {}
+    report: list[dict[str, Any]] = []
     for entry in entries:
         path = Path(entry)
+        checked = 0
+        missing = False
         try:
             if path.is_file():
                 files[path.as_posix()] = path.read_text(encoding="utf-8")
+                checked = 1
             elif path.is_dir():
                 for candidate in sorted(path.rglob("*.md")):
                     if candidate.is_file():
                         files[candidate.as_posix()] = candidate.read_text(encoding="utf-8")
+                        checked += 1
             else:
-                _fail(f"release 表面路径不存在: {path.as_posix()}")
+                missing = True
         except (OSError, UnicodeDecodeError) as exc:
             _fail(f"无法读取 release 表面 {path.as_posix()}: {exc}")
-    return files
+        report.append({"path": path.as_posix(), "checked": checked, "missing": missing})
+    return files, report
 
 
 def _git_commit() -> str:
@@ -156,7 +170,7 @@ def check(
     strict: Annotated[bool, typer.Option("--strict", help="存在任何 finding 即退出 1")] = False,
     paths: Annotated[
         list[Path] | None,
-        typer.Option("--paths", help="release 表面文件或目录（默认 README.md 与 docs）"),
+        typer.Option("--paths", help="release 表面文件或目录（默认 README.md、docs 与 demo）"),
     ] = None,
     stale_after_days: Annotated[
         int, typer.Option("--stale-after-days", min=0, help="claim 口径日期过期窗口（天）")
@@ -170,7 +184,7 @@ def check(
 ) -> None:
     """扫描 release 表面声明块：无 artifact 支撑的数字 / fixture-live 混写 / 过期 claim。"""
     surface = tuple(paths) if paths else DEFAULT_SURFACE_PATHS
-    files = _read_surface(surface)
+    files, surface_report = _read_surface(surface)
     raw_dsn = db_dsn
     if raw_dsn is None:
         settings = _load_settings()
@@ -187,6 +201,7 @@ def check(
     _emit_json(
         {
             "checked_files": len(files),
+            "surface": surface_report,
             "findings": [finding.model_dump(mode="json") for finding in findings],
         }
     )

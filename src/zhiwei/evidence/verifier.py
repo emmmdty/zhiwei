@@ -30,6 +30,7 @@ from zhiwei.evidence.refs import (
     EvidenceRef,
     QueryReplayRef,
 )
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 
 class VerifyExitCode(IntEnum):
@@ -409,6 +410,29 @@ def verify_bundle(
     Returns:
         VerifyResult with all checks, overall ok flag, and exit code.
     """
+    # S9 §6 evidence span：verify 面只携带 bundle 标识与 canonical digest；
+    # bundle 内容（claims/refs/answers）绝不进 span。digest 复用 evidence 层
+    # 自身的 canonical 序列化——verify 是确定性纯函数，span 只观测不改变行为。
+    with start_span(
+        SpanNames.EVIDENCE,
+        {
+            "bundle_id": str(bundle.bundle_id),
+            "bundle_digest": digest_bytes(canonical_json(bundle.model_dump(mode="json"))),
+        },
+    ):
+        return _verify_bundle(
+            bundle,
+            reference_bundles=reference_bundles,
+            expected_result_copy_digests=expected_result_copy_digests,
+        )
+
+
+def _verify_bundle(
+    bundle: EvidenceBundle,
+    *,
+    reference_bundles: dict[str, EvidenceBundle] | None,
+    expected_result_copy_digests: dict[str, str] | None,
+) -> VerifyResult:
     result = VerifyResult()
 
     # Layer 1: schema / version / structure

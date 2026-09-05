@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from zhiwei.contracts.canonical import canonical_json, digest_bytes
 from zhiwei.contracts.time import utc_now
 from zhiwei.persistence.models import OutboxMessage, Run
 from zhiwei.persistence.tenant import TenantContext
@@ -23,6 +24,7 @@ from zhiwei.runtime.commands import (
     ResumeRun,
     StartRun,
 )
+from zhiwei.telemetry.traces import SpanNames, start_span
 
 RUNTIME_COMMAND_TOPIC = "runtime.command"
 
@@ -66,41 +68,54 @@ class RunCommandService:
         from zhiwei.persistence.models import Workspace
         from zhiwei.runtime.delegation import MAX_DELEGATION_DEPTH
 
-        if len(delegation_chain) > MAX_DELEGATION_DEPTH:
-            raise RunCommandError(
-                f"delegation chain length {len(delegation_chain)} exceeds hard "
-                f"depth cap {MAX_DELEGATION_DEPTH} (ADR-008 layer 2)"
+        # S9 §6 run span：Run 行 + outbox 命令同事务提交的唯一入口。观测失败
+        # 不吞异常（start_span 原样上抛），默认 NoOp provider 下零副作用。
+        # agent 身份在提交期只能以 graph digest 表达：agent_version_id 在
+        # release 流程才绑定到 Run 行（此处为 None），graph 是此刻决定执行
+        # 语义的 agent 定义载荷，其 canonical digest 是最接近的稳定标识。
+        with start_span(
+            SpanNames.RUN,
+            {
+                "run_id": str(run_id),
+                "agent_graph_digest": digest_bytes(canonical_json(dict(graph))),
+                "task_queue": task_queue,
+            },
+        ):
+            if len(delegation_chain) > MAX_DELEGATION_DEPTH:
+                raise RunCommandError(
+                    f"delegation chain length {len(delegation_chain)} exceeds hard "
+                    f"depth cap {MAX_DELEGATION_DEPTH} (ADR-008 layer 2)"
+                )
+            workspace_exists = await self._session.scalar(
+                select(Workspace).where(
+                    Workspace.organization_id == self._context.organization_id,
+                    Workspace.id == self._context.workspace_id,
+                )
             )
-        workspace_exists = await self._session.scalar(
-            select(Workspace).where(
-                Workspace.organization_id == self._context.organization_id,
-                Workspace.id == self._context.workspace_id,
+            if workspace_exists is None:
+                raise RunCommandError("workspace missing from tenant scope")
+            self._session.add(
+                Run(
+                    id=run_id,
+                    organization_id=self._context.organization_id,
+                    workspace_id=self._context.workspace_id,
+                    agent_version_id=None,
+                    status="created",
+                    schema_version=_RUN_SCHEMA_VERSION,
+                )
             )
-        )
-        if workspace_exists is None:
-            raise RunCommandError("workspace missing from tenant scope")
-        self._session.add(
-            Run(
-                id=run_id,
-                organization_id=self._context.organization_id,
-                workspace_id=self._context.workspace_id,
-                agent_version_id=None,
-                status="created",
-                schema_version=_RUN_SCHEMA_VERSION,
+            command = StartRun(
+                run_id=run_id,
+                task_queue=task_queue,
+                max_attempts=max_task_attempts,
+                graph=dict(graph),
+                continue_as_new_after=continue_as_new_after,
+                activity_timeout_seconds=activity_timeout_seconds,
+                requested_by=requested_by,
+                delegation_chain=tuple(delegation_chain),
             )
-        )
-        command = StartRun(
-            run_id=run_id,
-            task_queue=task_queue,
-            max_attempts=max_task_attempts,
-            graph=dict(graph),
-            continue_as_new_after=continue_as_new_after,
-            activity_timeout_seconds=activity_timeout_seconds,
-            requested_by=requested_by,
-            delegation_chain=tuple(delegation_chain),
-        )
-        self._add_command(command)
-        await self._session.flush()
+            self._add_command(command)
+            await self._session.flush()
 
     async def submit_cancel_run(self, *, run_id: UUID, reason: str | None = None) -> None:
         command = CancelRun(run_id=run_id, reason=reason)

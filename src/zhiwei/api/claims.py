@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.agents.claims import (
     ClaimAlreadyRegistered,
+    ClaimIdInvalid,
     ClaimNotFound,
     ClaimRegistryService,
     ClaimScope,
@@ -195,6 +196,14 @@ def create_claims_router(
                     statement=request.statement,
                     scope=request.scope,
                 )
+            except ClaimIdInvalid as error:
+                # charset 拒绝是 422（请求形状非法），与 409 的状态冲突语义分开；
+                # 服务层在任何会话 I/O 之前拒绝，这里不留 failed 审计（无业务
+                # 状态被触及，与 ClaimNotFound → 404 同型）。
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={"reason": error.reason, "message": str(error)},
+                ) from error
             except ClaimAlreadyRegistered as error:
                 await append_failed_mutation_audit(
                     sessions,
