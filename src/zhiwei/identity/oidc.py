@@ -22,11 +22,15 @@ import hmac
 import json
 import secrets
 import time
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 from uuid import uuid4
 
+# 生产进程 = 真实 httpx（authlib 的原生类体系）；测试进程被 conftest 的
+# alias_httpx 指到 httpx2，与 httpx 同源——适配层据此区分两种执行环境。
+import httpx as _httpx_module
 import httpx2 as httpx
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from cryptography.exceptions import InvalidSignature
@@ -308,14 +312,101 @@ class OIDCService:
     def _oauth_client(self) -> AsyncOAuth2Client:
         # authlib 的 httpx 集成自建传输；测试注入的 MockTransport 通过提取的
         # transport 透传（httpx>=0.28 后 transport 为私有属性，pin 版本已固定）。
+        # 注入 transport 经 _AuthlibTransportCompat 归一请求/响应流：authlib 在
+        # 生产进程用真实 httpx 构造请求（同步 stream），httpx2 transport 断言
+        # 异步流。timeout 必须传标量：httpx2.Timeout 对象跨类体系传给真实 httpx
+        # 会在其 Timeout 归一化中产生嵌套对象，最终污染 extensions["timeout"]
+        # 字典、破坏 httpcore2 的 connect 超时算术。
+        client_timeout = self._http_client.timeout
+        scalar_timeout = min(
+            (
+                value
+                for value in (
+                    client_timeout.connect,
+                    client_timeout.read,
+                    client_timeout.write,
+                    client_timeout.pool,
+                )
+                if value is not None
+            ),
+            default=None,
+        )
         return AsyncOAuth2Client(
             self._client_id,
             self._client_secret,
             redirect_uri=self._redirect_uri,
             scope="openid",
-            transport=self._http_client._transport,
-            timeout=self._http_client.timeout,
+            transport=_AuthlibTransportCompat(self._http_client._transport),
+            timeout=scalar_timeout,
         )
+
+
+class _AsyncStreamCompat(httpx.AsyncByteStream):
+    """把任意可迭代请求流归一为 httpx2 异步流。
+
+    authlib 的 httpx_client 集成在生产进程基于真实 httpx（alias_httpx 只在测试
+    进程生效），其构造的 Request 携带同步 ByteStream；httpx2 默认异步 transport
+    断言 `isinstance(request.stream, AsyncByteStream)`，真实 IdP（Keycloak）下
+    token/refresh/revoke 一律 AssertionError（s1-t6 §5-1，2026-09-05 真实栈探针
+    实证，契约见 tests/security/identity/test_oidc_transport_compat.py）。
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        if hasattr(self._stream, "__aiter__"):
+            async for chunk in self._stream:
+                yield chunk
+        else:
+            for chunk in self._stream:
+                yield chunk
+
+
+class _AuthlibTransportCompat:
+    """跨 httpx/httpx2 类体系的 transport 适配层（生产混用场景双向归一）。
+
+    - 请求方向：authlib（真实 httpx）构造的流归一为 httpx2 异步流，通过注入
+      transport 的 stream 断言；
+    - 响应方向：httpx2 transport 返回的 Response 整体重建为真实 httpx.Response
+      —— real httpx 的 send/aclose 路径只认自身类体系，duck-typing 在关闭语义
+      上不兼容（httpx2 sync-stream 守卫会误判拒绝）。
+    测试进程内 httpx 已被 alias 成 httpx2，两类 isinstance 恒真，适配层退化为
+    直通（冻结 OIDC 契约测试的注入路径保持原样）。
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    async def handle_async_request(self, request: Any) -> Any:
+        if not isinstance(request.stream, httpx.AsyncByteStream):
+            request.stream = _AsyncStreamCompat(request.stream)
+        response = await self._inner.handle_async_request(request)
+        if isinstance(response, _httpx_module.Response):
+            return response
+        await response.aread()
+        return _httpx_module.Response(
+            status_code=response.status_code,
+            headers=response.headers.raw,
+            content=response.content,
+            extensions=response.extensions,
+        )
+
+    async def aclose(self) -> None:
+        inner_aclose = getattr(self._inner, "aclose", None)
+        if inner_aclose is not None:
+            await inner_aclose()
+
+    async def __aenter__(self) -> _AuthlibTransportCompat:
+        inner_aenter = getattr(self._inner, "__aenter__", None)
+        if inner_aenter is not None:
+            await inner_aenter()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
+        inner_aexit = getattr(self._inner, "__aexit__", None)
+        if inner_aexit is not None:
+            await inner_aexit(exc_type, exc_value, traceback)
 
 
 def _b64url_encode(data: bytes) -> str:
