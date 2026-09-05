@@ -1,0 +1,94 @@
+# ChangeBrief 冻结语料 · risky-change：移除两个被调用符号 + 影响 5 个符号
+# → risks 必须出现 high（符号移除 ×2、影响面 ≥4）与 medium（依赖契约面）。
+unit_id: risky-change
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: commit
+    ref: "5c1a55e5"
+files_changed:
+  - path: src/zhiwei/knowledge/planner.py
+    symbols_before: [KnowledgePlanner, plan_retrieval, score_candidates]
+    symbols_after: [KnowledgePlanner]
+snapshot:
+  symbols:
+    - name: KnowledgePlanner
+      kind: class
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 40
+      line_end: 180
+      code_digest: sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+      callers: [KnowledgeQuery]
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_retrieval"]
+    - name: plan_retrieval
+      kind: function
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 182
+      line_end: 214
+      code_digest: sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+      callers: [KnowledgeQuery]
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_retrieval"]
+    - name: score_candidates
+      kind: function
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 216
+      line_end: 260
+      code_digest: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+      callers: [BriefComposer]
+      tests: ["tests/unit/knowledge/test_planner.py::test_score_candidates"]
+    - name: KnowledgeQuery
+      kind: class
+      file_path: src/zhiwei/knowledge/query.py
+      line_start: 12
+      line_end: 96
+      code_digest: sha256:ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000ffff0000
+      callers: []
+      tests: ["tests/unit/knowledge/test_query.py::test_query_sources"]
+    - name: BriefComposer
+      kind: class
+      file_path: src/zhiwei/knowledge/composer.py
+      line_start: 20
+      line_end: 140
+      code_digest: sha256:ffff1111ffff1111ffff1111ffff1111ffff1111ffff1111ffff1111ffff1111
+      callers: []
+      tests: ["tests/unit/briefs/test_composer.py::test_compose"]
+  dependencies:
+    - name: pydantic
+      version_constraint: ">=2.7.0,<3"
+      consumers: [KnowledgePlanner, KnowledgeQuery]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 400
+      touches: [src/zhiwei/knowledge/planner.py]
+  issues:
+    - repository: zhiwei-core
+      issue_number: 210
+      mentions: [plan_retrieval]
+  checks:
+    - name: ci/unit-tests
+      status: failed
+      on_refs: ["5c1a55e5"]
+expected:
+  affected_symbols:
+    - BriefComposer
+    - KnowledgePlanner
+    - KnowledgeQuery
+    - plan_retrieval
+    - score_candidates
+  affected_dependencies: [pydantic]
+  affected_tests:
+    - "tests/unit/briefs/test_composer.py::test_compose"
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+    - "tests/unit/knowledge/test_planner.py::test_score_candidates"
+    - "tests/unit/knowledge/test_query.py::test_query_sources"
+  failed_tests:
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+    - "tests/unit/knowledge/test_planner.py::test_score_candidates"
+  related_prs: [400]
+  related_issues: [210]
+  related_checks: [ci/unit-tests]
+  risks_severities: [high, medium]
+  unknowns_empty: true
+  min_code_refs: 5
+  min_github_refs: 1
+  no_fabricated_symbols: []

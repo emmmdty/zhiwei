@@ -26,6 +26,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from data import shuihu as shuihu_data
@@ -448,6 +450,153 @@ def check_knowledge() -> None:
     check(not overlap, "knowledge 语料 id 与 legacy 题集重叠", "; ".join(sorted(overlap)[:3]))
 
 
+# ---------------------------------------------------------------- 9 S10 change-brief corpus
+
+# ADR-013 决策 2 同型登记：evals/change-brief/ 是 S10 ChangeBrief 第三 App 的冻结
+# 行为语料（specs/s10 §4；solution-packs/change-brief/evals/change-brief-v1.yaml 的
+# corpus_ref 指向它）。与 knowledge 语料的差异：每个 fixture 是一个完整行为场景
+# （trigger + 代码知识快照 + expected brief 断言数据），expected 块的可复算性由
+# 推导规则的结构约束保证——affected ⊆ 快照命中 ∪ callers 闭包、unknowns 必须指名
+# 快照缺失项、不得编造快照之外的符号；判分走生产路径（change-brief executor）。
+
+CHANGE_BRIEF_FIXTURE_COUNT = 6
+CHANGE_BRIEF_TRIGGER_KINDS = {"commit", "pull_request"}
+CHANGE_BRIEF_SYMBOL_KINDS = {"function", "class", "module", "constant"}
+CHANGE_BRIEF_CHECK_STATUSES = {"passed", "failed", "pending"}
+CHANGE_BRIEF_SEVERITIES = {"low", "medium", "high"}
+
+
+def check_change_brief() -> None:
+    directory = ROOT / "change-brief"
+    fixtures = sorted(directory.glob("*.yaml")) if directory.is_dir() else []
+    check(
+        len(fixtures) == CHANGE_BRIEF_FIXTURE_COUNT,
+        "change-brief 语料 fixture 数应为 6",
+        f"实际 {len(fixtures)}",
+    )
+    seen_units: set[str] = set()
+    for path in fixtures:
+        loc = f"change-brief/{path.name}"
+        try:
+            data = yaml.safe_load(path.read_text("utf-8"))
+        except yaml.YAMLError as e:
+            check(False, f"{loc} 不是合法 YAML", str(e))
+            continue
+        check(isinstance(data, dict), f"{loc} 根必须是映射")
+        if not isinstance(data, dict):
+            continue
+
+        check(
+            data.get("unit_id") == path.stem,
+            f"{loc} unit_id 必须等于文件名词干",
+            repr(data.get("unit_id")),
+        )
+        unit_id = data.get("unit_id") or path.stem
+        check(unit_id not in seen_units, "change-brief 语料 unit_id 重复", unit_id)
+        seen_units.add(unit_id)
+
+        trigger = data.get("trigger") or {}
+        check(isinstance(trigger.get("repository"), str) and trigger["repository"],
+              f"{loc} trigger.repository 缺失")
+        cop = trigger.get("commit_or_pr") or {}
+        check(cop.get("kind") in CHANGE_BRIEF_TRIGGER_KINDS,
+              f"{loc} trigger.commit_or_pr.kind 取值非法", str(cop.get("kind")))
+        check(isinstance(cop.get("ref"), str) and cop["ref"].strip(),
+              f"{loc} trigger.commit_or_pr.ref 缺失")
+
+        files = data.get("files_changed") or []
+        check(len(files) > 0, f"{loc} files_changed 不能为空")
+        for i, fc in enumerate(files or []):
+            check(isinstance(fc.get("path"), str) and fc["path"], f"{loc} files_changed[{i}].path 缺失")
+            check(isinstance(fc.get("symbols_before"), list), f"{loc} files_changed[{i}].symbols_before 缺失")
+            check(isinstance(fc.get("symbols_after"), list), f"{loc} files_changed[{i}].symbols_after 缺失")
+
+        snapshot = data.get("snapshot") or {}
+        symbols = snapshot.get("symbols") or []
+        check(len(symbols) > 0, f"{loc} snapshot.symbols 不能为空")
+        symbol_names = set()
+        for i, sym in enumerate(symbols or []):
+            sloc = f"{loc} snapshot.symbols[{i}]"
+            check(isinstance(sym.get("name"), str) and sym["name"], f"{sloc}.name 缺失")
+            check(sym.get("kind") in CHANGE_BRIEF_SYMBOL_KINDS, f"{sloc}.kind 取值非法",
+                  str(sym.get("kind")))
+            check(isinstance(sym.get("file_path"), str) and sym["file_path"], f"{sloc}.file_path 缺失")
+            check(isinstance(sym.get("line_start"), int) and sym["line_start"] >= 1,
+                  f"{sloc}.line_start 非法")
+            check(isinstance(sym.get("line_end"), int) and sym["line_end"] >= sym.get("line_start", 0),
+                  f"{sloc}.line_end 必须 >= line_start")
+            digest = sym.get("code_digest")
+            check(isinstance(digest, str) and digest.startswith("sha256:"),
+                  f"{sloc}.code_digest 必须 sha256: 前缀")
+            check(isinstance(sym.get("callers"), list), f"{sloc}.callers 缺失")
+            check(isinstance(sym.get("tests"), list), f"{sloc}.tests 缺失")
+            if isinstance(sym.get("name"), str):
+                check(sym["name"] not in symbol_names, f"{loc} 快照符号名重复", sym["name"])
+                symbol_names.add(sym["name"])
+        for i, dep in enumerate(snapshot.get("dependencies") or []):
+            dloc = f"{loc} snapshot.dependencies[{i}]"
+            check(isinstance(dep.get("name"), str) and dep["name"], f"{dloc}.name 缺失")
+            check(isinstance(dep.get("version_constraint"), str), f"{dloc}.version_constraint 缺失")
+            check(isinstance(dep.get("consumers"), list), f"{dloc}.consumers 缺失")
+        for i, pr in enumerate(snapshot.get("prs") or []):
+            ploc = f"{loc} snapshot.prs[{i}]"
+            check(isinstance(pr.get("pr_number"), int) and pr["pr_number"] >= 1, f"{ploc}.pr_number 非法")
+            check(isinstance(pr.get("touches"), list), f"{ploc}.touches 缺失")
+        for i, issue in enumerate(snapshot.get("issues") or []):
+            iloc = f"{loc} snapshot.issues[{i}]"
+            check(isinstance(issue.get("issue_number"), int) and issue["issue_number"] >= 1,
+                  f"{iloc}.issue_number 非法")
+            check(isinstance(issue.get("mentions"), list), f"{iloc}.mentions 缺失")
+        for i, chk in enumerate(snapshot.get("checks") or []):
+            cloc = f"{loc} snapshot.checks[{i}]"
+            check(isinstance(chk.get("name"), str) and chk["name"], f"{cloc}.name 缺失")
+            check(chk.get("status") in CHANGE_BRIEF_CHECK_STATUSES, f"{cloc}.status 取值非法",
+                  str(chk.get("status")))
+            check(isinstance(chk.get("on_refs"), list), f"{cloc}.on_refs 缺失")
+
+        expected = data.get("expected") or {}
+        eloc = f"{loc} expected"
+        for key in (
+            "affected_symbols",
+            "affected_dependencies",
+            "affected_tests",
+            "failed_tests",
+            "related_prs",
+            "related_issues",
+            "related_checks",
+            "risks_severities",
+        ):
+            check(isinstance(expected.get(key), list), f"{eloc}.{key} 必须是列表")
+        check(
+            set(expected.get("risks_severities") or []) <= CHANGE_BRIEF_SEVERITIES,
+            f"{eloc}.risks_severities 取值非法",
+        )
+        check(isinstance(expected.get("unknowns_empty"), bool), f"{eloc}.unknowns_empty 必须是布尔")
+        contains = expected.get("unknowns_contain") or []
+        check(isinstance(contains, list), f"{eloc}.unknowns_contain 必须是列表")
+        check(
+            not (expected.get("unknowns_empty") and contains),
+            f"{eloc} unknowns_empty 与 unknowns_contain 互斥",
+        )
+        check(
+            isinstance(expected.get("min_code_refs"), int) and expected["min_code_refs"] >= 0,
+            f"{eloc}.min_code_refs 非法",
+        )
+        check(
+            isinstance(expected.get("min_github_refs"), int) and expected["min_github_refs"] >= 0,
+            f"{eloc}.min_github_refs 非法",
+        )
+        check(
+            isinstance(expected.get("no_fabricated_symbols"), list),
+            f"{eloc}.no_fabricated_symbols 必须是列表",
+        )
+        # honest-unknowns 结构约束：断言为空影响面（no-impact 场景）的 fixture 必须同时
+        # 声明 unknowns（缺席披露），否则 brief 会「静默空答」——与 specs/s10 §4 的
+        # fail-closed 纪律冲突。
+        if not expected.get("affected_symbols", []) and not contains:
+            check(False, f"{eloc} 空 affected_symbols 必须携带 unknowns_contain（不允许静默空答）")
+
+
 def check_checksums() -> None:
     """篡改检测：已发布产物必须与 CHECKSUMS.sha256 一致。
 
@@ -468,7 +617,7 @@ def check_checksums() -> None:
             recorded[name.strip()] = digest
 
     current = {}
-    for d in ("novels", "questions", "risk", "knowledge"):
+    for d in ("novels", "questions", "risk", "knowledge", "change-brief"):
         for p in sorted((ROOT / d).rglob("*")):
             if p.is_file():
                 rel = str(p.relative_to(ROOT.parent))
@@ -489,6 +638,7 @@ def main() -> None:
     check_questions()
     check_risk()
     check_knowledge()
+    check_change_brief()
     check_checksums()
 
     if FAILURES:

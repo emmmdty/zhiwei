@@ -1,0 +1,61 @@
+# ChangeBrief 冻结语料 · unknown-symbol：改动符号 compute_age 不在知识快照内
+# → brief 必须显式携带 unknowns 指名该符号，且 affected_symbols 绝不编造它。
+unit_id: unknown-symbol
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: commit
+    ref: "f00dd00d"
+files_changed:
+  - path: src/zhiwei/knowledge/freshness.py
+    symbols_before: []
+    symbols_after: [FreshnessWindow, compute_age]
+snapshot:
+  symbols:
+    - name: FreshnessWindow
+      kind: class
+      file_path: src/zhiwei/knowledge/freshness.py
+      line_start: 10
+      line_end: 60
+      code_digest: sha256:1234123412341234123412341234123412341234123412341234123412341234
+      callers: []
+      tests: ["tests/unit/knowledge/test_freshness.py::test_freshness_window"]
+    - name: UnrelatedSymbol
+      kind: function
+      file_path: src/zhiwei/knowledge/unrelated.py
+      line_start: 1
+      line_end: 10
+      code_digest: sha256:5678567856785678567856785678567856785678567856785678567856785678
+      callers: []
+      tests: []
+  dependencies:
+    - name: pydantic
+      version_constraint: ">=2.7.0,<3"
+      consumers: [UnrelatedSymbol]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 501
+      touches: [src/zhiwei/knowledge/freshness.py]
+  issues: []
+  checks:
+    - name: ci/unit-tests
+      status: passed
+      on_refs: ["f00dd00d"]
+expected:
+  affected_symbols: [FreshnessWindow]
+  affected_dependencies: []
+  affected_tests:
+    - "tests/unit/knowledge/test_freshness.py::test_freshness_window"
+  failed_tests:
+    - "tests/unit/knowledge/test_freshness.py::test_freshness_window"
+  related_prs: [501]
+  related_issues: []
+  related_checks: [ci/unit-tests]
+  risks_severities: [medium]
+  unknowns_empty: false
+  unknowns_contain:
+    - "compute_age"
+    - "not present in knowledge snapshot"
+  min_code_refs: 1
+  min_github_refs: 1
+  no_fabricated_symbols: [compute_age]

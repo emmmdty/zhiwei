@@ -1,0 +1,74 @@
+# ChangeBrief 冻结语料 · mixed-refs：跨模块双文件改动 → brief 必须同时携带
+# CodeRef（每受影响符号一条）与 GitHubRef（每触达文件一条）两类证据。
+unit_id: mixed-refs
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: commit
+    ref: "c0de5a1e"
+files_changed:
+  - path: src/zhiwei/knowledge/planner.py
+    symbols_before: [KnowledgePlanner]
+    symbols_after: [KnowledgePlanner]
+  - path: src/zhiwei/knowledge/contracts.py
+    symbols_before: [SourceVersion]
+    symbols_after: [SourceVersion]
+snapshot:
+  symbols:
+    - name: KnowledgePlanner
+      kind: class
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 40
+      line_end: 180
+      code_digest: sha256:7777777777777777777777777777777777777777777777777777777777777777
+      callers: []
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_retrieval"]
+    - name: SourceVersion
+      kind: class
+      file_path: src/zhiwei/knowledge/contracts.py
+      line_start: 100
+      line_end: 160
+      code_digest: sha256:8888888888888888888888888888888888888888888888888888888888888888
+      callers: []
+      tests: ["tests/unit/knowledge/test_contracts.py::test_source_version"]
+    - name: UnrelatedModule
+      kind: module
+      file_path: src/zhiwei/knowledge/misc.py
+      line_start: 1
+      line_end: 5
+      code_digest: sha256:9999999999999999999999999999999999999999999999999999999999999999
+      callers: []
+      tests: []
+  dependencies:
+    - name: sqlglot
+      version_constraint: ">=28.0.0,<29"
+      consumers: [SourceVersion]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 312
+      touches: [src/zhiwei/knowledge/planner.py, src/zhiwei/knowledge/contracts.py]
+  issues:
+    - repository: zhiwei-core
+      issue_number: 104
+      mentions: [SourceVersion]
+  checks:
+    - name: ci/lint
+      status: passed
+      on_refs: ["c0de5a1e"]
+expected:
+  affected_symbols: [KnowledgePlanner, SourceVersion]
+  affected_dependencies: [sqlglot]
+  affected_tests:
+    - "tests/unit/knowledge/test_contracts.py::test_source_version"
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+  failed_tests:
+    - "tests/unit/knowledge/test_contracts.py::test_source_version"
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+  related_prs: [312]
+  related_issues: [104]
+  related_checks: [ci/lint]
+  risks_severities: [medium]
+  unknowns_empty: true
+  min_code_refs: 2
+  min_github_refs: 2
+  no_fabricated_symbols: [UnrelatedModule]
