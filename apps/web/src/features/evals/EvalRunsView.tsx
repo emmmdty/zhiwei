@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 import { EvalRunDetailView } from "./EvalRunDetailView";
 
 interface EvalRunListItem {
@@ -62,11 +63,11 @@ export function EvalRunsView({ readOnly, onSessionExpired }: EvalRunsViewProps) 
     <section aria-label="Evals">
       <h2>Evals</h2>
       {loading ? (
-        <div aria-busy="true">Loading eval runs…</div>
+        <StateBanner tone="loading" text="Loading eval runs…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : runs.length === 0 ? (
-        <p>No eval runs</p>
+        <StateBanner tone="empty" text="No eval runs" />
       ) : (
         <table>
           <thead>

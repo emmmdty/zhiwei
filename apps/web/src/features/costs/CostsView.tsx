@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 
 interface CostReservationView {
   reservation_id: string;
@@ -72,9 +73,9 @@ export function CostsView({
     <section aria-label="Costs">
       <h2>Costs</h2>
       {loading ? (
-        <div aria-busy="true">Loading costs…</div>
+        <StateBanner tone="loading" text="Loading costs…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : summary ? (
         <>
           <h3>Reservations</h3>
@@ -140,7 +141,7 @@ export function CostsView({
           </p>
         </>
       ) : (
-        <p>No cost data</p>
+        <StateBanner tone="empty" text="No cost data" />
       )}
     </section>
   );

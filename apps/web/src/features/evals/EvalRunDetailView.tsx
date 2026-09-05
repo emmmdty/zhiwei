@@ -13,6 +13,8 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
+import { ConfirmButton } from "../../components/ConfirmButton";
 
 interface RegisteredUnit {
   sample_id: string;
@@ -116,7 +118,6 @@ export function EvalRunDetailView({
   const [run, setRun] = useState<EvalRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [confirmAction, setConfirmAction] = useState<"resume" | "seal" | null>(null);
   const [acting, setActing] = useState(false);
   const [scopeOpen, setScopeOpen] = useState(false);
   const [scope, setScope] = useState<Record<ScopeField, string>>(EMPTY_SCOPE);
@@ -125,7 +126,6 @@ export function EvalRunDetailView({
 
   const apply = (next: EvalRunDetail) => {
     setRun(next);
-    setConfirmAction(null);
     setScopeOpen(false);
     setReportError(null);
   };
@@ -186,8 +186,8 @@ export function EvalRunDetailView({
     }
   };
 
-  if (loading) return <div aria-busy="true">Loading eval run…</div>;
-  if (error && !run) return <div role="alert">Error: {error}</div>;
+  if (loading) return <StateBanner tone="loading" text="Loading eval run…" />;
+  if (error && !run) return <StateBanner tone="error" text={`Error: ${error}`} />;
   if (!run) return <div>Eval run not found</div>;
 
   const report = run.report;
@@ -303,28 +303,20 @@ export function EvalRunDetailView({
 
       <h3>Actions</h3>
       <div>
-        <button
-          onClick={() => setConfirmAction("resume")}
+        <ConfirmButton
+          label="Resume"
+          confirmLabel="Confirm resume"
           disabled={readOnly || acting || run.status !== "partial"}
-        >
-          Resume
-        </button>
-        {confirmAction === "resume" && (
-          <button onClick={() => act("resume")} disabled={acting}>
-            Confirm resume
-          </button>
-        )}
-        <button
-          onClick={() => setConfirmAction("seal")}
+          confirmDisabled={acting}
+          onConfirm={() => void act("resume")}
+        />
+        <ConfirmButton
+          label="Seal"
+          confirmLabel="Confirm seal"
           disabled={readOnly || acting || run.status === "sealed"}
-        >
-          Seal
-        </button>
-        {confirmAction === "seal" && (
-          <button onClick={() => act("seal")} disabled={acting}>
-            Confirm seal
-          </button>
-        )}
+          confirmDisabled={acting}
+          onConfirm={() => void act("seal")}
+        />
         <button
           onClick={() => {
             setScopeOpen((open) => !open);

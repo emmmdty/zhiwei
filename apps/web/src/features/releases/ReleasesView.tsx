@@ -9,6 +9,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 import { hasRole, type SessionUser } from "../../lib/session";
 
 interface ReleaseListItem {
@@ -105,11 +106,11 @@ export function ReleasesView({ user, readOnly, onSessionExpired }: ReleasesViewP
     <section aria-label="Releases">
       <h2>Releases</h2>
       {loading ? (
-        <div aria-busy="true">Loading releases…</div>
+        <StateBanner tone="loading" text="Loading releases…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : releases.length === 0 ? (
-        <p>No releases</p>
+        <StateBanner tone="empty" text="No releases" />
       ) : (
         <table>
           <thead>
@@ -255,8 +256,8 @@ function ReleaseDetailView({
     }
   };
 
-  if (loading) return <div aria-busy="true">Loading release…</div>;
-  if (error && !release) return <div role="alert">Error: {error}</div>;
+  if (loading) return <StateBanner tone="loading" text="Loading release…" />;
+  if (error && !release) return <StateBanner tone="error" text={`Error: ${error}`} />;
   if (!release) return <div>Release not found</div>;
 
   const transition = NEXT_TRANSITIONS[release.state];
@@ -271,9 +272,10 @@ function ReleaseDetailView({
         State: {release.state} (ID: {release.release_id})
       </p>
       {error && (
-        <div role="alert">
-          Something went wrong: {error}
-        </div>
+        <StateBanner
+          tone="error"
+          text={`Something went wrong: ${error}`}
+        />
       )}
 
       <h3>Lifecycle</h3>

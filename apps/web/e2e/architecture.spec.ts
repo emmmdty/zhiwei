@@ -18,8 +18,10 @@
 //                                       "revision_conflict"}；无 If-Match 写 →
 //                                       428 {reason: "if_match_required"}。
 //                                       T1 阶段尚无 PUT 视图（Studio 是 Task 2），
-//                                       经真实 api/client 模块（page 内动态
-//                                       import）驱动类型化错误路径，不造 UI。
+//                                       经真实 api 客户端模块（page 内动态
+//                                       import /src/lib/api.ts——app 模块图的
+//                                       真实实现位置，见 lib/api.ts 偏差登记）
+//                                       驱动类型化错误路径，不造 UI。
 //   AppRunBinding ghost 绑定          → 经真实 renderers/registry 模块注册
 //                                       （templateId 无已注册 manifest 的
 //                                       appId），断言 fail-closed 的 honest
@@ -351,7 +353,7 @@ test.describe("S10 architecture — typed CAS client", () => {
     const read = await page.evaluate(async () => {
       const client: {
         getWithETag: (path: string) => Promise<{ data: unknown; etag: string | null }>;
-      } = await import("/src/api/client.ts");
+      } = await import("/src/lib/api.ts");
       return client.getWithETag("/api/v1/agents/8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99");
     });
     expect(read.etag).toBe('"rev-2"');
@@ -360,7 +362,7 @@ test.describe("S10 architecture — typed CAS client", () => {
     const firstPut = await page.evaluate(async () => {
       const client: {
         api: { put: (path: string, body?: unknown, headers?: Record<string, string>) => Promise<unknown> };
-      } = await import("/src/api/client.ts");
+      } = await import("/src/lib/api.ts");
       try {
         await client.api.put(
           "/api/v1/agents/8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99",
@@ -378,7 +380,7 @@ test.describe("S10 architecture — typed CAS client", () => {
     const stalePut = await page.evaluate(async () => {
       const client: {
         api: { put: (path: string, body?: unknown, headers?: Record<string, string>) => Promise<unknown> };
-      } = await import("/src/api/client.ts");
+      } = await import("/src/lib/api.ts");
       try {
         await client.api.put(
           "/api/v1/agents/8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99",
@@ -403,7 +405,7 @@ test.describe("S10 architecture — typed CAS client", () => {
     const missingPut = await page.evaluate(async () => {
       const client: {
         api: { put: (path: string, body?: unknown, headers?: Record<string, string>) => Promise<unknown> };
-      } = await import("/src/api/client.ts");
+      } = await import("/src/lib/api.ts");
       try {
         await client.api.put("/api/v1/agents/8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99", {
           description: "rev4",

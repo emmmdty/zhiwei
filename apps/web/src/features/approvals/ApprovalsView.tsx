@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 
 interface ApprovalRecord {
   request_id: string;
@@ -58,11 +59,11 @@ export function ApprovalsView({ runId, onSessionExpired }: ApprovalsViewProps) {
     <section aria-label="Approvals">
       <h3>Approvals</h3>
       {loading ? (
-        <div aria-busy="true">Loading approvals…</div>
+        <StateBanner tone="loading" text="Loading approvals…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : pending.length === 0 ? (
-        <p>No pending approvals</p>
+        <StateBanner tone="empty" text="No pending approvals" />
       ) : (
         <ul>
           {pending.map((a) => (

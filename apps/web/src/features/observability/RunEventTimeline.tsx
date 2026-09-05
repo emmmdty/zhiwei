@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 
 interface RunEventRow {
   sequence_no: number;
@@ -64,14 +65,14 @@ export function RunEventTimeline({ runId, onSessionExpired }: RunEventTimelinePr
     load();
   }, [runId]);
 
-  if (error) return <div role="alert">Error: {error}</div>;
-  if (!events) return <div aria-busy="true">Loading events…</div>;
+  if (error) return <StateBanner tone="error" text={`Error: ${error}`} />;
+  if (!events) return <StateBanner tone="loading" text="Loading events…" />;
 
   return (
     <section aria-label="Run events">
       <h3>Canonical events</h3>
       {events.length === 0 ? (
-        <p>No canonical events</p>
+        <StateBanner tone="empty" text="No canonical events" />
       ) : (
         <table aria-label="Run event timeline">
           <thead>

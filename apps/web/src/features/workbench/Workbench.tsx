@@ -3,6 +3,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 import { RunDetailView } from "../runs/RunDetailView";
 
 interface RunRecord {
@@ -93,11 +94,11 @@ export function Workbench({ workspaceId, onSessionExpired }: WorkbenchProps) {
         </button>
       </div>
       {loading ? (
-        <div aria-busy="true">Loading runs…</div>
+        <StateBanner tone="loading" text="Loading runs…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : runs.length === 0 ? (
-        <p>No active runs</p>
+        <StateBanner tone="empty" text="No active runs" />
       ) : (
         <table>
           <thead>

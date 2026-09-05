@@ -10,6 +10,7 @@
 
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
+import { StateBanner } from "../../components/StateBanner";
 
 interface FailureTaxonomy {
   codes: { code: string }[];
@@ -63,9 +64,9 @@ export function ObservabilityView({
     <section aria-label="Observability">
       <h2>Observability</h2>
       {loading ? (
-        <div aria-busy="true">Loading observability…</div>
+        <StateBanner tone="loading" text="Loading observability…" />
       ) : error ? (
-        <div role="alert">Error: {error}</div>
+        <StateBanner tone="error" text={`Error: ${error}`} />
       ) : (
         <>
           <h3>Failure taxonomy</h3>
@@ -74,7 +75,7 @@ export function ObservabilityView({
           </ul>
           <h3>Claims</h3>
           {claims.length === 0 ? (
-            <p>No claims</p>
+            <StateBanner tone="empty" text="No claims" />
           ) : (
             <ul>
               {claims.map((claim) => (
