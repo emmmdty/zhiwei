@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import and_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from zhiwei.context.opaque import scrub_hidden_reasoning
 from zhiwei.contracts.envelope import SchemaRegistry
 from zhiwei.contracts.time import utc_now
 from zhiwei.persistence.events import (
@@ -51,7 +52,7 @@ async def append_audit_chain(
     → 插入行。digest 公式由 data.audit_schema_version 分派，v1 行逐字节不变。
     chain 位置是权威来源：调用方传入的 previous_event_digest 以链头为准覆盖。
     """
-    await _advisory_lock(
+    await advisory_lock(
         session, workspace_id or organization_id, namespace=_AUDIT_LOCK_NAMESPACE
     )
     if workspace_id is None:
@@ -156,6 +157,14 @@ class CanonicalUnitOfWork:
         self._schema_registry = schema_registry
 
     async def append_event(self, command: EventCommand) -> EventAppendResult:
+        # S3 §5：reasoning 正文不得以明文进入 PG——canonical event 是持久化单元，
+        # payload 在 schema 校验/digest 计算/落库之前统一销毁。scrub 是纯函数且
+        # 确定性（同正文同 ref），幂等重试与 digest 链复算不受影响；declared 为
+        # str 型 hidden_reasoning 的 schema 会在校验期拒绝（fail closed），不会
+        # 把正文写进库。
+        command = command.model_copy(
+            update={"payload": scrub_hidden_reasoning(command.payload)}
+        )
         command = validate_event_command(command, self._schema_registry)
         await self._lock(command.run_id, namespace=0x45564E54)
         run = await self._run(command.run_id)
@@ -394,10 +403,16 @@ class CanonicalUnitOfWork:
         )
 
     async def _lock(self, value: UUID, *, namespace: int) -> None:
-        await _advisory_lock(self._session, value, namespace=namespace)
+        await advisory_lock(self._session, value, namespace=namespace)
 
 
-async def _advisory_lock(session: AsyncSession, value: UUID, *, namespace: int) -> None:
+async def advisory_lock(session: AsyncSession, value: UUID, *, namespace: int) -> None:
+    """PostgreSQL advisory xact lock 公共原语（跨模块持久化写入器共用）。
+
+    键 = value 前 8 字节（大端）^ namespace：同一 value 的不同锁族（canonical
+    event / audit / memory / endpoint first-use）互不阻塞，同族串行化。
+    事务结束自动释放（pg_advisory_xact_lock）。
+    """
     raw = int.from_bytes(value.bytes[:8], byteorder="big") ^ namespace
     lock_key = raw if raw < 2**63 else raw - 2**64
     await session.execute(

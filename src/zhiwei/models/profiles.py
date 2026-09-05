@@ -19,6 +19,22 @@ from zhiwei.models.contracts import (
     WireProtocol,
 )
 
+# ADR-011 §4：endpoint 未显式声明 classification_ceiling 时，由 network_zone 决定下落点。
+# 门禁的本质是「数据是否离开信任边界」，zone 是这一判断的来源，而不是 URL 是否登记。
+_ZONE_CEILING_DEFAULTS: dict[NetworkZone, ClassificationCeiling] = {
+    NetworkZone.INTERNAL: ClassificationCeiling.CONFIDENTIAL,
+    NetworkZone.EXTERNAL: ClassificationCeiling.INTERNAL,
+    NetworkZone.UNKNOWN: ClassificationCeiling.PUBLIC,
+}
+
+
+def _parse_classification_ceiling(value: Any, zone: NetworkZone) -> ClassificationCeiling:
+    """显式声明优先；未声明时按 zone 默认档。未知取值 fail closed（ValueError 上抛）。"""
+    if value is None:
+        return _ZONE_CEILING_DEFAULTS[zone]
+    # 档案库与知识层用大写（PUBLIC/INTERNAL/…），域枚举值为小写——归一后再解析。
+    return ClassificationCeiling(str(value).lower())
+
 
 def load_endpoint_profiles(path: Path) -> dict[str, EndpointProfile]:
     """Load endpoint profiles from YAML config file."""
@@ -31,6 +47,7 @@ def load_endpoint_profiles(path: Path) -> dict[str, EndpointProfile]:
     for ep_data in data.get("endpoints", []):
         ep_id = ep_data["id"]
         merged = {**defaults, **ep_data}
+        zone = NetworkZone(merged.get("network_zone", "unknown"))
         result[ep_id] = EndpointProfile(
             id=ep_id,
             base_url=merged["base_url"],
@@ -39,7 +56,10 @@ def load_endpoint_profiles(path: Path) -> dict[str, EndpointProfile]:
             base_url_env=merged.get("base_url_env"),
             model_env=merged.get("model_env"),
             trust_tier=TrustTier(merged.get("trust_tier", "unverified")),
-            network_zone=NetworkZone(merged.get("network_zone", "unknown")),
+            network_zone=zone,
+            classification_ceiling=_parse_classification_ceiling(
+                merged.get("classification_ceiling"), zone
+            ),
             allowed_paths=tuple(merged.get("allowed_paths", [])),
             billing_mode=merged.get("billing_mode", "unknown"),
             redirect_policy=merged.get("redirect_policy", "deny_cross_origin"),
@@ -149,6 +169,28 @@ def load_endpoint_profiles_from_env(
         allowed_paths=("/chat/completions", "/responses", "/messages"),
         billing_mode="unknown",
     )
+
+
+def resolve_default_endpoint(
+    env_overrides: dict[str, str],
+    endpoints_path: Path,
+) -> EndpointProfile:
+    """Resolve the deployment's default endpoint per ADR-011 §2 priority.
+
+    env override（OPENAI_BASE_URL）高于配置文件的 default_endpoint_id；BASE_URL 是
+    endpoint 身份的锚点，只有它出现才走 override 路径——只配 MODEL/API_KEY 时不与
+    配置文件默认 endpoint 做局部合并，避免「这半份配置来自哪」无法回答。
+    """
+    if env_overrides.get("OPENAI_BASE_URL", ""):
+        return load_endpoint_profiles_from_env(env_overrides)
+
+    default_id = EndpointRegistry.find_default_endpoint_id(endpoints_path)
+    endpoint = load_endpoint_profiles(endpoints_path).get(default_id)
+    if endpoint is None:
+        raise ValueError(
+            f"default_endpoint_id '{default_id}' has no entry in {endpoints_path}"
+        )
+    return endpoint
 
 
 class EndpointRegistry:

@@ -134,9 +134,9 @@ class RuntimeEventStore:
         并发完成事务必须在锁内 reduce，否则后落账者可能看不到先落账者的
         TaskCompleted（读已提交 + 锁外快照的竞态）。
         """
-        from zhiwei.persistence.unit_of_work import _advisory_lock
+        from zhiwei.persistence.unit_of_work import advisory_lock
 
-        await _advisory_lock(self._session, run_id, namespace=0x45564E54)
+        await advisory_lock(self._session, run_id, namespace=0x45564E54)
 
     async def has_event(self, run_id, idempotency_key: str) -> bool:
         """Check whether a logical event (by idempotency key) is already committed."""

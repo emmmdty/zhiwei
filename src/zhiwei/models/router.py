@@ -83,6 +83,76 @@ class RoutingRequest(BaseModel):
     data_classification: str = "public"
 
 
+class ModelSwitchDecision(BaseModel):
+    """两类热切换（S3 spec §4 / ADR-011 §5）的 egress 判定结果。
+
+    egress_recheck_required / attestation_required 描述该切换类别的要求
+    （消费方据此执行重检与重新 attestation 并记录 TransitionManifest），
+    allowed 携带放行/拒绝结论。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    allowed: bool
+    egress_recheck_required: bool
+    attestation_required: bool
+    reason: str = ""
+
+
+def evaluate_model_switch(
+    *,
+    context_classification: str,
+    current_endpoint: EndpointProfile,
+    target_endpoint: EndpointProfile,
+    target_model_id: str,
+) -> ModelSwitchDecision:
+    """模型热切换的 egress 门禁：同 endpoint 不重检，跨 endpoint 必须重检。
+
+    纯域逻辑（S3 spec §4「两类热切换」/ ADR-011 §5）。数据门禁是
+    `context 实际分类 ≤ endpoint classification_ceiling`，与 URL 匹配无关：
+    同 endpoint 换 model 走新 ModelProfile + 新 Attempt，egress 策略不变；
+    跨 endpoint 换 model 在目标 ceiling 低于当前上下文实际分类时拒绝切换，
+    放行时要求重新 attestation（由消费方执行）。
+    """
+    if target_endpoint.id == current_endpoint.id:
+        return ModelSwitchDecision(
+            allowed=True,
+            egress_recheck_required=False,
+            attestation_required=False,
+            reason=(
+                f"same-endpoint model switch to '{target_model_id}': "
+                "egress policy unchanged, no re-check required"
+            ),
+        )
+
+    context_rank = _classification_rank(context_classification)
+    ceiling_rank = _classification_rank(target_endpoint.classification_ceiling.value)
+    if context_rank > ceiling_rank:
+        return ModelSwitchDecision(
+            allowed=False,
+            egress_recheck_required=True,
+            attestation_required=True,
+            reason=(
+                f"cross-endpoint model switch to '{target_model_id}' rejected: context "
+                f"classification '{context_classification}' exceeds target endpoint "
+                f"'{target_endpoint.id}' ceiling "
+                f"'{target_endpoint.classification_ceiling.value}'"
+            ),
+        )
+
+    return ModelSwitchDecision(
+        allowed=True,
+        egress_recheck_required=True,
+        attestation_required=True,
+        reason=(
+            f"cross-endpoint model switch to '{target_model_id}' allowed: target "
+            f"endpoint '{target_endpoint.id}' ceiling "
+            f"'{target_endpoint.classification_ceiling.value}' covers context "
+            f"classification '{context_classification}'; fresh attestation required"
+        ),
+    )
+
+
 class ModelRouter:
     """Fixed-order multi-gate model router.
 

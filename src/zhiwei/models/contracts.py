@@ -59,6 +59,20 @@ class ClassificationCeiling(StrEnum):
         _order = list(ClassificationCeiling)
         return _order.index(self) <= _order.index(other)
 
+    # 只定义 __lt__/__le__ 时，`a > b` 会落到 str 的字典序比较（"internal" > "public"
+    # 按字母序为 False）——分类门禁必须用档位序，因此补齐反向运算符。
+    def __gt__(self, other: object) -> bool:
+        if not isinstance(other, ClassificationCeiling):
+            return NotImplemented
+        _order = list(ClassificationCeiling)
+        return _order.index(self) > _order.index(other)
+
+    def __ge__(self, other: object) -> bool:
+        if not isinstance(other, ClassificationCeiling):
+            return NotImplemented
+        _order = list(ClassificationCeiling)
+        return _order.index(self) >= _order.index(other)
+
 
 class CredentialMode(StrEnum):
     BEARER = "bearer"

@@ -9,14 +9,21 @@ Per S3 plan Task 6:
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from zhiwei.models.first_use import AuditedEndpointResolver
 from zhiwei.models.router import ModelRouter, RoutingRequest
 from zhiwei.models.usage import (
     TokenUsage,
     compute_weighted_tokens,
 )
+from zhiwei.persistence.model_first_use import CanonicalEndpointFirstUseSink
+from zhiwei.persistence.tenant import TenantContext
 from zhiwei.runtime.handlers.base import TaskInput
 from zhiwei.runtime.handlers.model_actions import (
     AnalyzeModelHandler,
@@ -31,6 +38,28 @@ _MODEL_HANDLERS = {
     "Analyze": AnalyzeModelHandler(),
     "Synthesize": SynthesizeModelHandler(),
 }
+
+
+def build_audited_endpoint_resolver(
+    sessions: async_sessionmaker[AsyncSession],
+    context: TenantContext,
+    *,
+    endpoints_path: Path,
+    env_overrides: Mapping[str, str] | None = None,
+    declared_by: str = "operator:env-override",
+) -> AuditedEndpointResolver:
+    """组合根接线（ADR-011 §6）：模型请求路径的默认 endpoint 解析入口。
+
+    写入器用 canonical 落账路径实现（persistence.model_first_use）——unverified
+    endpoint 首次解析即同事务写 canonical event + audit。模型 egress 路径接入
+    ModelActivity 时经本工厂构造 resolver，不得绕过留痕直接解析 endpoint。
+    """
+    return AuditedEndpointResolver(
+        CanonicalEndpointFirstUseSink(sessions, context),
+        endpoints_path=endpoints_path,
+        env_overrides=env_overrides,
+        declared_by=declared_by,
+    )
 
 
 @dataclass

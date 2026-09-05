@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from zhiwei.context.opaque import scrub_hidden_reasoning
 from zhiwei.context.state import CanonicalState, build_source_ref
 from zhiwei.context.types import (
     AuthoritativeKind,
@@ -89,7 +90,9 @@ def _create_context_item(
     payload: dict[str, Any], source_ref: Any
 ) -> ContextItem | None:
     """Create a new context item from a context.created event."""
-    content = payload.get("content", {})
+    # 正文在入账投影前就被销毁（S3 §5）：classify 仍靠 hidden_reasoning 键命中
+    # opaque——scrub 只替换值，键保留。
+    content = scrub_hidden_reasoning(payload.get("content", {}))
     if not content:
         return None
 
@@ -120,7 +123,7 @@ def _apply_update(
     result = []
     for item in items:
         if item.content.get("id") == target_id:
-            new_content = {**item.content, **updates}
+            new_content = scrub_hidden_reasoning({**item.content, **updates})
             result.append(
                 ContextItem(
                     category=item.category,
@@ -174,7 +177,7 @@ def _apply_entity_update(
             result.append(
                 ContextItem(
                     category=ContextCategory.AUTHORITATIVE,
-                    content={**item.content, **entity},
+                    content=scrub_hidden_reasoning({**item.content, **entity}),
                     source_refs=(*item.source_refs, source_ref),
                     kind=AuthoritativeKind.ENTITY,
                 )
@@ -186,7 +189,7 @@ def _apply_entity_update(
         result.append(
             ContextItem(
                 category=ContextCategory.AUTHORITATIVE,
-                content=entity,
+                content=scrub_hidden_reasoning(entity),
                 source_refs=(source_ref,),
                 kind=AuthoritativeKind.ENTITY,
             )
@@ -207,7 +210,7 @@ def _apply_approval_update(
             result.append(
                 ContextItem(
                     category=ContextCategory.AUTHORITATIVE,
-                    content={**item.content, **approval},
+                    content=scrub_hidden_reasoning({**item.content, **approval}),
                     source_refs=(*item.source_refs, source_ref),
                     kind=AuthoritativeKind.APPROVAL,
                 )
@@ -219,7 +222,7 @@ def _apply_approval_update(
         result.append(
             ContextItem(
                 category=ContextCategory.AUTHORITATIVE,
-                content=approval,
+                content=scrub_hidden_reasoning(approval),
                 source_refs=(source_ref,),
                 kind=AuthoritativeKind.APPROVAL,
             )
@@ -240,7 +243,7 @@ def _apply_evidence_update(
             result.append(
                 ContextItem(
                     category=ContextCategory.AUTHORITATIVE,
-                    content={**item.content, **evidence},
+                    content=scrub_hidden_reasoning({**item.content, **evidence}),
                     source_refs=(*item.source_refs, source_ref),
                     kind=AuthoritativeKind.EVIDENCE,
                 )
@@ -252,7 +255,7 @@ def _apply_evidence_update(
         result.append(
             ContextItem(
                 category=ContextCategory.AUTHORITATIVE,
-                content=evidence,
+                content=scrub_hidden_reasoning(evidence),
                 source_refs=(source_ref,),
                 kind=AuthoritativeKind.EVIDENCE,
             )
@@ -269,7 +272,9 @@ def _apply_append_merge(
     attempt_no = payload.get("attempt_no", 0)
 
     for entry in new_entries:
-        content = {**entry, "_merge_task_id": task_id, "_merge_attempt_no": attempt_no}
+        content = scrub_hidden_reasoning(
+            {**entry, "_merge_task_id": task_id, "_merge_attempt_no": attempt_no}
+        )
         items.append(
             ContextItem(
                 category=classify_content(content),
@@ -303,7 +308,7 @@ def _apply_lww_merge(
             result.append(
                 ContextItem(
                     category=item.category,
-                    content={**item.content, "value": new_value},
+                    content=scrub_hidden_reasoning({**item.content, "value": new_value}),
                     source_refs=(*item.source_refs, source_ref),
                     kind=item.kind,
                 )
@@ -313,7 +318,9 @@ def _apply_lww_merge(
             result.append(item)
 
     if not replaced:
-        content = {"field": field, "value": new_value, "_merge_task_id": task_id}
+        content = scrub_hidden_reasoning(
+            {"field": field, "value": new_value, "_merge_task_id": task_id}
+        )
         result.append(
             ContextItem(
                 category=classify_content(content),

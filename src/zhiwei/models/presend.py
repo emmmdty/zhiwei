@@ -19,6 +19,8 @@ from datetime import UTC, datetime
 
 import httpx2 as httpx
 
+from zhiwei.models.contracts import ClassificationCeiling, EndpointProfile
+
 _SECRET_HEADERS = frozenset({
     "authorization",
     "api-key",
@@ -30,6 +32,14 @@ _SECRET_HEADERS = frozenset({
 
 class PreSendRejected(Exception):
     """Pre-send gate rejection. Raising means the request never left the process."""
+
+
+class ClassificationViolation(PreSendRejected):
+    """context 实际数据分类超过 endpoint 的 classification_ceiling（ADR-011 §4）。
+
+    继承 PreSendRejected：与其它 gate 拒绝一样，抛出即请求未离开进程；独立子类让
+    Runtime 能把它与普通 provider failure（429/5xx 等）区分归类，而不是混入失败计数。
+    """
 
 
 class PinnedBody(httpx.AsyncByteStream, httpx.SyncByteStream):
@@ -83,6 +93,31 @@ def _redact(headers: httpx.Headers) -> dict[str, str]:
 
 
 GateFn = Callable[[WireCapture, bytes], None]
+
+
+def classification_gate(endpoint: EndpointProfile, data_classification: str) -> GateFn:
+    """ADR-011 §4 的 pre-send 分类门禁：实际分类 ≤ endpoint ceiling 才放行。
+
+    endpoint 在组装 client 时绑定（transport 是唯一出网路径），本次 Attempt 的
+    context 分类由调用方闭包捕获。未知分类一律拒绝（fail closed），不取「常见默认」。
+    """
+    ceiling = endpoint.classification_ceiling
+
+    def gate(capture: WireCapture, body: bytes) -> None:
+        try:
+            actual = ClassificationCeiling(data_classification.lower())
+        except ValueError:
+            raise ClassificationViolation(
+                f"unknown data classification {data_classification!r} for "
+                f"endpoint '{endpoint.id}'"
+            ) from None
+        if actual > ceiling:
+            raise ClassificationViolation(
+                f"context classification '{actual.value}' exceeds endpoint "
+                f"'{endpoint.id}' ceiling '{ceiling.value}'"
+            )
+
+    return gate
 
 
 @dataclass
