@@ -73,10 +73,13 @@ async function request<T>(
     }
   }
   if (resp.status >= 400) {
-    const detail =
+    const rawDetail =
       typeof payload === "object" && payload && "detail" in payload
-        ? String((payload as { detail: unknown }).detail)
-        : String(payload ?? resp.statusText);
+        ? (payload as { detail: unknown }).detail
+        : (payload ?? resp.statusText);
+    // S9 拒绝面（releases/claims）的 detail 是结构化对象 {reason, message}，
+    // 契约要求前端按 reason 分支——序列化保留 JSON 文本，不退化成 "[object Object]"。
+    const detail = typeof rawDetail === "string" ? rawDetail : JSON.stringify(rawDetail);
     throw new ApiError(resp.status, detail);
   }
   return payload as T;

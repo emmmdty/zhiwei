@@ -6,6 +6,10 @@
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "./lib/api";
 import { Workbench } from "./features/workbench/Workbench";
+import { EvalRunsView } from "./features/evals/EvalRunsView";
+import { ReleasesView } from "./features/releases/ReleasesView";
+import { ObservabilityView } from "./features/observability/ObservabilityView";
+import { CostsView } from "./features/costs/CostsView";
 import {
   SessionProvider,
   useSession,
@@ -16,6 +20,19 @@ import {
 const LOADING_TEXT = "Loading…";
 const EMPTY_WS = "No workspaces yet";
 const ERROR_TEXT = "Something went wrong";
+
+// S9-T7 主导航分区：默认 workbench（既有 tenancy/runtime journey 的落点不变）。
+// 分区入口对所有已认证用户可见——读路径权限由 server PEP 强制；auditor 的
+// mutation 控件在各视图内部禁用（readOnly），前端不硬判 403。
+const SECTIONS = [
+  { key: "workbench", label: "Workbench" },
+  { key: "evals", label: "Evals" },
+  { key: "releases", label: "Releases" },
+  { key: "observability", label: "Observability" },
+  { key: "costs", label: "Costs" },
+] as const;
+
+type SectionKey = (typeof SECTIONS)[number]["key"];
 
 export function App() {
   return (
@@ -49,19 +66,51 @@ function Dashboard({
   onSessionExpired: () => Promise<void>;
 }) {
   const roles = user.role_bindings.map((b) => b.name).join(", ");
+  const [section, setSection] = useState<SectionKey>("workbench");
+  const readOnly = hasRole(user, "auditor");
   return (
     <div>
       <header>
         <span>Signed in as: {roles}</span>
         <a href="/auth/logout">Sign out</a>
       </header>
+      <nav aria-label="Primary">
+        {SECTIONS.map((s) => (
+          <button
+            key={s.key}
+            aria-current={section === s.key ? "page" : undefined}
+            onClick={() => setSection(s.key)}
+          >
+            {s.label}
+          </button>
+        ))}
+      </nav>
       <main>
         <Organizations user={user} onSessionExpired={onSessionExpired} />
-        {user.workspace_id && (
+        {section === "workbench" && user.workspace_id && (
           <Workbench
             workspaceId={user.workspace_id}
             onSessionExpired={onSessionExpired}
           />
+        )}
+        {section === "evals" && (
+          <EvalRunsView
+            readOnly={readOnly}
+            onSessionExpired={onSessionExpired}
+          />
+        )}
+        {section === "releases" && (
+          <ReleasesView
+            user={user}
+            readOnly={readOnly}
+            onSessionExpired={onSessionExpired}
+          />
+        )}
+        {section === "observability" && (
+          <ObservabilityView onSessionExpired={onSessionExpired} />
+        )}
+        {section === "costs" && (
+          <CostsView onSessionExpired={onSessionExpired} />
         )}
       </main>
     </div>

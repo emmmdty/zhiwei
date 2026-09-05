@@ -650,13 +650,14 @@ test.describe("S9 eval journey", () => {
 
     await sealedRow.getByRole("button", { name: "Open" }).click();
     await expect(page.getByRole("heading", { name: "Eval run" })).toBeVisible();
-    // scope 标签（来自密封报告，mode 只能来自密封载荷）
-    await expect(page.getByText("mode: offline")).toBeVisible();
-    await expect(page.getByText("model: qwen3-internal")).toBeVisible();
-    await expect(page.getByText("version: v3")).toBeVisible();
-    await expect(page.getByText("date: 2026-09-01")).toBeVisible();
-    await expect(page.getByText("corpus: frozen-s9")).toBeVisible();
-    await expect(page.getByText("environment: offline-sandbox")).toBeVisible();
+    // scope 标签（来自密封报告，mode 只能来自密封载荷）；exact 避开大小写
+    // 不敏感子串与详情头 "Mode: offline" 的歧义
+    await expect(page.getByText("mode: offline", { exact: true })).toBeVisible();
+    await expect(page.getByText("model: qwen3-internal", { exact: true })).toBeVisible();
+    await expect(page.getByText("version: v3", { exact: true })).toBeVisible();
+    await expect(page.getByText("date: 2026-09-01", { exact: true })).toBeVisible();
+    await expect(page.getByText("corpus: frozen-s9", { exact: true })).toBeVisible();
+    await expect(page.getByText("environment: offline-sandbox", { exact: true })).toBeVisible();
 
     // 状态分解：refused/error 都在完整分母内（reports.py 冻结口径）
     await expect(page.getByText("completed: 2")).toBeVisible();
@@ -680,7 +681,7 @@ test.describe("S9 eval journey", () => {
     await expect(page.getByText("Status: partial")).toBeVisible();
     await expect(page.getByText("Sealed at: unknown")).toBeVisible();
     // 无 report → scope/quality 均为 unknown，不造 placeholder 成功值
-    await expect(page.getByText("model: unknown")).toBeVisible();
+    await expect(page.getByText("model: unknown", { exact: true })).toBeVisible();
     await expect(page.getByText("Quality: unknown")).toBeVisible();
 
     await page.getByRole("button", { name: "Resume", exact: true }).click();
@@ -776,9 +777,9 @@ test.describe("S9 release journey", () => {
     expect(state.lastRollback!.headers["x-csrf-token"]).toBe(CSRF);
     expect(UUID_RE.test(state.lastRollback!.headers["idempotency-key"])).toBe(true);
 
-    // 路由解析：default pin 命中 → version 2
+    // 路由解析：回滚后 default pin 已是 1 → 命中 pin 返回 version 1
     await page.getByRole("button", { name: "Resolve route" }).click();
-    await expect(page.getByText("route: version 2")).toBeVisible();
+    await expect(page.getByText("route: version 1")).toBeVisible();
 
     // suspend 指示器常驻 + security suspend 阻断路由（先于 pin 判定）
     await expect(
@@ -817,8 +818,8 @@ test.describe("S9 observability and costs journey", () => {
     await expect(page.getByRole("heading", { name: "Costs" })).toBeVisible();
     await expect(page.getByText("price-card-2026-09")).toBeVisible();
     await expect(page.getByText("exact")).toBeVisible();
-    await expect(page.getByText("estimated-internal")).toBeVisible();
-    await expect(page.getByText("estimated")).toBeVisible();
+    await expect(page.getByText("estimated-internal", { exact: true })).toBeVisible();
+    await expect(page.getByText("estimated", { exact: true })).toBeVisible();
     // variance 行（对账完成）+ unknown 分量原样展示
     await expect(page.getByText("-0.0012")).toBeVisible();
     await expect(page.getByText("actual: unknown")).toBeVisible();
