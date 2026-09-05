@@ -1,12 +1,18 @@
-# External eval adapter 清单（specs/s7 §8、S7 plan Task 7）
+# External eval adapter 清单（specs/s7 §8、S7 plan Task 7；S9 §3 扩展登记）
 #
 # 这是「已登记的 adapter 档案」，不是允许清单之外的执行许可：external-status 的
-# 可用性判定只取决于本清单声明的本地路径（数据目录/许可/version 文件）是否存在。
-# 路径相对仓库根；数据文件不入库（外部基准数据受许可约束，由 operator 在部署处放置）。
+# 可用性判定只取决于本清单声明的本地路径（数据目录/许可/version 文件）是否存在，
+# 未登记的 endpoint/路径在别处不被阻断。路径相对仓库根；数据文件不入库（外部
+# 基准数据受许可约束，由 operator 在部署处放置），仓库内探测恒为 unavailable，
+# 适配器绝不静默下载。
 #
 # required_fields 是 integrity runner 的最小 JSONL 字段契约：available 分支实际运行
 # adapter 时逐行校验，缺失即 fail closed——不产出任何质量分数（那需要 live 模型，
 # 由 operator 显式触发；离线 integrity artifact 不解锁质量 claim）。
+#
+# S9 §3：每个 adapter 产物携带 scope 标签 external_diagnostic:<name>，与内部
+# suite 报告分开；per-adapter 模块见 src/zhiwei/evals/external/{longmemeval,
+# locomo,bird,promptfoo,inspect}.py。
 
 adapters:
   - name: longmemeval-adapter
@@ -21,3 +27,56 @@ adapters:
       - question_type
       - question
       - answer
+
+  - name: locomo-adapter
+    benchmark: locomo
+    claim_id: locomo
+    data_dir: evals/external/locomo/data
+    data_glob: "*.json"
+    license_file: evals/external/locomo/LICENSE
+    version_file: evals/external/locomo/VERSION
+    required_fields:
+      - question_id
+      - conversation_id
+      - question
+      - answer
+
+  - name: bird-adapter
+    benchmark: bird
+    claim_id: bird
+    data_dir: evals/external/bird/data
+    data_glob: "*.jsonl"
+    license_file: evals/external/bird/LICENSE
+    version_file: evals/external/bird/VERSION
+    required_fields:
+      - question_id
+      - db_id
+      - question
+      - sql
+
+  # promptfoo/inspect 是 harness 适配器：登记的路径是 operator 放置 normalized
+  # case（JSONL）与许可/version 的位置；normalized → harness 原生用例的纯转换
+  # 层见 promptfoo.py / inspect.py（仓库内可单测的部分）。
+  - name: promptfoo-adapter
+    benchmark: promptfoo
+    claim_id: promptfoo
+    data_dir: evals/external/promptfoo/data
+    data_glob: "*.jsonl"
+    license_file: evals/external/promptfoo/LICENSE
+    version_file: evals/external/promptfoo/VERSION
+    required_fields:
+      - case_id
+      - input
+      - expected
+
+  - name: inspect-adapter
+    benchmark: inspect
+    claim_id: inspect
+    data_dir: evals/external/inspect/data
+    data_glob: "*.jsonl"
+    license_file: evals/external/inspect/LICENSE
+    version_file: evals/external/inspect/VERSION
+    required_fields:
+      - case_id
+      - input
+      - expected
