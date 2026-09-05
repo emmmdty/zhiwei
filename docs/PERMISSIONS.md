@@ -50,7 +50,7 @@ effective permission = trigger principal permission
 | 资源/动作 | Org Owner | Security Admin | Capability Publisher | Workspace Admin | Agent Builder | Memory Steward | Approver | Member | Auditor |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Org、IdP、SCIM、角色绑定 | org 管理/委派 | 配置安全策略；不可改 Owner | — | workspace 成员管理 | — | — | — | 读自身 | 读审计元数据 |
-| Workspace 策略、预算、保留 | 配置 | 安全/出站 hard policy | — | 配置 workspace 非 hard policy | 读 | 读 memory policy | 读 approval policy | 读适用策略 | 读/导出受 policy 限制 |
+| Workspace 策略、预算、保留 | 配置；workspace 配置（Group 创建等，ADR-014） | 安全/出站 hard policy | — | 配置 workspace 非 hard policy | 读 | 读 memory policy | 读 approval policy | 读适用策略 | 读/导出受 policy 限制 |
 | Knowledge Source/ACL | 无隐式正文读取；可委派 | 分类/egress/紧急 suspend | — | 创建/同步/授权/禁用 | 绑定到 draft、按 ACL 调试 | 按 ACL 读来源 | — | 仅经已发布 Agent/显式 ACL | 按 ACL 读 provenance |
 | CapabilityVersion | 无隐式准入 | 高/关键风险二审、suspend/revoke | 导入/检查/测试；低中风险准入/发布 | 绑定 workspace | 绑定已发布能力到 draft | — | — | 浏览可用目录 | 读 admission/audit |
 | Connection/secret | 不读明文 | revoke/安全元数据，不读明文 | 定义 credential requirement，不读明文 | 创建 workspace service Connection、rotate/revoke | 创建/撤销 own delegated Connection | — | — | 创建/撤销 own delegated Connection | 只读状态/指纹 |

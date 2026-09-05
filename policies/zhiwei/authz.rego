@@ -34,7 +34,10 @@ matrix := {
     "workspace_policy": {
         "configure": {"org_owner"},
         "configure_security_egress": {"security_admin"},
-        "configure_workspace": {"workspace_admin"},
+        # configure_workspace 含 org_owner（ADR-014 裁决 2）：org 所有者对自身
+        # org 下 workspace 的配置权（Group 创建等），与 configure 一致；
+        # workspace_admin 保留（workspace 作用域绑定须匹配 input.workspace_id）。
+        "configure_workspace": {"workspace_admin", "org_owner"},
         "read": {"agent_builder", "auditor"},
         "read_memory_policy": {"memory_steward"},
         "read_approval_policy": {"approver"},

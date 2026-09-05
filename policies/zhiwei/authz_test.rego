@@ -28,6 +28,7 @@ allowed_cells := [
     ["workspace_policy", "configure", "org_owner"],
     ["workspace_policy", "configure_security_egress", "security_admin"],
     ["workspace_policy", "configure_workspace", "workspace_admin"],
+    ["workspace_policy", "configure_workspace", "org_owner"],
     ["workspace_policy", "read", "agent_builder"],
     ["workspace_policy", "read", "auditor"],
     ["workspace_policy", "read_memory_policy", "memory_steward"],

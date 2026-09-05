@@ -308,8 +308,13 @@ def create_workspaces_router(
     ) -> list[Group]:
         if actor.organization_id is None:
             _reject_read(TenantContextRequired("organization context is required"))
+        # RLS 上下文：workspace 作用域 actor 必须与路径对齐（跨 scope 读 404，
+        # 纵深防御，不依赖 PEP 配置正确）；org 作用域 actor（无 workspace 声明）
+        # 落到路径 workspace——其授权由 PEP 的 configure_workspace 矩阵按
+        # org 角色覆盖判定（ADR-014），RLS 与被读资源对齐。
         context = TenantContext(
-            organization_id=actor.organization_id, workspace_id=actor.workspace_id
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id or workspace_id,
         )
         async with tenant_session(sessions, context) as session:
             try:
@@ -350,8 +355,12 @@ def create_workspaces_router(
             request_id=request_id,
             trace_id=trace_id,
         )
+        # RLS 上下文：workspace 作用域 actor 必须与路径对齐（跨 scope 写 403）；
+        # org 作用域 actor 落到路径 workspace——授权由 PEP 矩阵按 org 角色判定
+        # （ADR-014），RLS 与被写资源对齐（语义同 list_workspace_groups）。
         context = TenantContext(
-            organization_id=actor.organization_id, workspace_id=actor.workspace_id
+            organization_id=actor.organization_id,
+            workspace_id=actor.workspace_id or workspace_id,
         )
         async with tenant_session(sessions, context) as session:
             try:
