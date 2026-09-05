@@ -136,6 +136,13 @@ class TestClaimUpgrades:
 
 
 class TestTemplateFilling:
+    def _bound_claim(self) -> ClaimRecord:
+        # 渲染校验锚定 claim 已绑定的 evidence.seal_digest：fixture 必须先绑定证据，
+        # 否则 digest 不匹配不可判定（设计方 RED 修订：原夹具缺 evidence 绑定）。
+        return _claim(status=ClaimStatus.OFFLINE_VERIFIED).model_copy(
+            update={"evidence": _evidence()}
+        )
+
     def _sealed_value(self, value: str = "0.95") -> SealedValue:
         return SealedValue(
             value=value, source="sealed_artifact", seal_digest=_SHA
@@ -143,7 +150,7 @@ class TestTemplateFilling:
 
     def test_render_from_sealed_value(self) -> None:
         rendered = render_claim(
-            _claim(), {"accuracy": self._sealed_value(), "environment": None}
+            self._bound_claim(), {"accuracy": self._sealed_value(), "environment": None}
         )
         assert "0.95" in rendered
         assert "{{accuracy}}" not in rendered
@@ -151,12 +158,14 @@ class TestTemplateFilling:
     def test_plain_string_value_refused(self) -> None:
         # 旁路填充拒绝：模板变量不接受无 provenance 的裸值。
         with pytest.raises(ClaimUpgradeDenied):
-            render_claim(_claim(), {"accuracy": "0.95", "environment": None})
+            render_claim(
+                self._bound_claim(), {"accuracy": "0.95", "environment": None}
+            )
 
     def test_wrong_source_refused(self) -> None:
         with pytest.raises(ClaimUpgradeDenied):
             render_claim(
-                _claim(),
+                self._bound_claim(),
                 {
                     "accuracy": SealedValue(
                         value="0.95", source="hand_written", seal_digest=_SHA
@@ -168,7 +177,7 @@ class TestTemplateFilling:
     def test_seal_digest_mismatch_refused(self) -> None:
         with pytest.raises(ClaimUpgradeDenied):
             render_claim(
-                _claim(),
+                self._bound_claim(),
                 {
                     "accuracy": SealedValue(
                         value="0.95",
@@ -182,9 +191,11 @@ class TestTemplateFilling:
     def test_missing_variable_refused(self) -> None:
         # fail closed：statement 声明的变量缺失时不允许静默留白。
         with pytest.raises(ClaimUpgradeDenied):
-            render_claim(_claim(), {"environment": None})
+            render_claim(self._bound_claim(), {"environment": None})
 
     def test_unbound_variable_left_as_marker(self) -> None:
         # environment 传 None 表示「未绑定」：保留 marker，交由 release checker 判定。
-        rendered = render_claim(_claim(), {"accuracy": self._sealed_value(), "environment": None})
+        rendered = render_claim(
+            self._bound_claim(), {"accuracy": self._sealed_value(), "environment": None}
+        )
         assert "{{environment}}" in rendered
