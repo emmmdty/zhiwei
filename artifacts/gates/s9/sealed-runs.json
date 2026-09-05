@@ -1,0 +1,219 @@
+[
+  {
+    "mode": "fixture",
+    "run_status": "succeeded",
+    "eval_run_status": "sealed",
+    "registered_units": 0,
+    "verified": true,
+    "run_id": "08d6fdf7-d216-4d07-b1b6-b773bc80b10d",
+    "eval_run_id": "2f685116-20b0-415c-8197-043e438c6be8",
+    "manifest_id": "b6dd8e2e-38b6-4291-adbf-95c738e4e8f1",
+    "seal_digest": "sha256:4a098ca863f08856b2dd765a44eb5d74082d7f2160a9e38c205f8e7d5fedff10"
+  },
+  {
+    "mode": "fixture",
+    "executor": "legacy",
+    "registered_units": 26,
+    "terminal_units": 26,
+    "eval_run_id": "ed685157-a72d-4bf7-ba54-198159737227",
+    "organization_id": "3cf869db-fc96-495e-8b59-7f59e0ec90f5",
+    "workspace_id": "aec05e7d-e5f4-4fce-96e8-07ae519f2bfc",
+    "sealed": true,
+    "seal_digest": "sha256:9f498c31e3c85ebded22703aa090e03ce37a403404cd4424d8ff0c800be16cda"
+  },
+  {
+    "suite": "runtime-contract-v1",
+    "mode": "offline",
+    "executor": "agent-runtime",
+    "registered_units": 7,
+    "terminal_units": 7,
+    "status_counts": {
+      "completed": 7
+    },
+    "eval_run_id": "485d81ee-2fb7-4f48-8233-de7e2eaca4a9",
+    "organization_id": "dfb1b4f8-1a08-4f2e-aee6-dbc8f51ca2fe",
+    "workspace_id": "f52bf010-3d22-449a-be51-e262f0b1a6d1",
+    "sealed": true,
+    "seal_digest": "sha256:1bbb4768ce44a483a57e521cb703a92cd04799f83ed7650db5f4fb17e19c23aa"
+  },
+  {
+    "suite": "knowledge-doc-v1",
+    "mode": "offline",
+    "executor": "knowledge-retrieval",
+    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
+    "corpus_digest": "sha256:209d480ede352b35738f0e469ea3f13daded8fee334e10caba769bced9a54da5",
+    "registered_units": 15,
+    "terminal_units": 15,
+    "status_counts": {
+      "completed": 15
+    },
+    "eval_run_id": "a7ba5a86-d328-49a7-a3db-6f25de900724",
+    "organization_id": "a72ca2b6-dfd4-4a20-aa34-8ff52c1ec440",
+    "workspace_id": "d44ded08-e89f-44c8-9f9b-34a625bce404",
+    "sealed": true,
+    "seal_digest": "sha256:5533adb4289d3862408caea669a8e61f2538acbcf8cf002965c98588b2589132"
+  },
+  {
+    "suite": "knowledge-code-github-v1",
+    "mode": "offline",
+    "executor": "knowledge-retrieval",
+    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
+    "corpus_digest": "sha256:60c2fbc356dc642fdbd7ba673c9aedefe71c746dbf2db1dc0b2383881d29a3ba",
+    "registered_units": 15,
+    "terminal_units": 15,
+    "status_counts": {
+      "completed": 15
+    },
+    "eval_run_id": "157fee2e-1aa6-4ae7-b986-cfd218137ee1",
+    "organization_id": "821da952-cb1b-45c8-9b7e-cd5eb50ab084",
+    "workspace_id": "efb4bf24-95e5-42d3-b19f-98b955127f96",
+    "sealed": true,
+    "seal_digest": "sha256:a83641a81f2300c03aad5f6d2326764c7783139e0a1361df57449e6f60e8f0f0"
+  },
+  {
+    "suite": "knowledge-cross-source-v1",
+    "mode": "offline",
+    "executor": "knowledge-retrieval",
+    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
+    "corpus_digest": "sha256:a4672f97f4339f584082678ed2e45ad0f6c43fb5f89f1d26df139080c82cd1f2",
+    "registered_units": 12,
+    "terminal_units": 12,
+    "status_counts": {
+      "completed": 12
+    },
+    "eval_run_id": "42eff8c7-9486-4918-830a-75de68c49bf2",
+    "organization_id": "2fb3d2d6-b0f2-48d7-b2f6-a40b10aa8da4",
+    "workspace_id": "5f0815de-0afb-4b08-993b-0d61ae234116",
+    "sealed": true,
+    "seal_digest": "sha256:0cdbb15c242f1c332913637522bc7e03db3294f138da27e284a2ebc66be056b4"
+  },
+  {
+    "suite": "knowledge-acl-freshness-v1",
+    "mode": "offline",
+    "executor": "knowledge-retrieval",
+    "production_path": "RetrieveTaskHandler->KnowledgePlanner",
+    "corpus_digest": "sha256:956f3eecba1a64da1eed068d56e6843d3939bf42c0d4af3e5abe4282353cbb71",
+    "registered_units": 11,
+    "terminal_units": 11,
+    "status_counts": {
+      "completed": 11
+    },
+    "eval_run_id": "b81b9d16-526c-47b7-ab6d-f0aee07e4230",
+    "organization_id": "af016e95-874d-43fb-8897-b9b1cd9fccc2",
+    "workspace_id": "dce56d2f-f3dc-4f34-b260-5d18dcea09e1",
+    "sealed": true,
+    "seal_digest": "sha256:b235134bca330d2ff3a253ba9f123aaf32debd0420d0b8645085bd7257856cc1"
+  },
+  {
+    "suite": "enterprise-memory-v1",
+    "mode": "offline",
+    "executor": "memory-lifecycle",
+    "production_path": "WriteMemoryCandidateHandler->MemoryPolicy->CandidateQueue-ConfirmationWorkflow-ConflictManager-ForgetManager",
+    "registered_units": 12,
+    "terminal_units": 12,
+    "status_counts": {
+      "completed": 12
+    },
+    "eval_run_id": "6b323179-4cac-4a49-baa7-b9a32e0662b8",
+    "organization_id": "19e0c7db-2f1e-41b5-af98-5ab6fb65ab61",
+    "workspace_id": "7a629fc7-7678-4746-9f03-cacee830c882",
+    "sealed": true,
+    "seal_digest": "sha256:998bfa4c4fc8381bc137beeb807bf2439b0850cb87a22003293d28bbb6d4d0a3"
+  },
+  {
+    "suite": "factqa-v1",
+    "mode": "offline",
+    "executor": "evidence-sql-replay",
+    "production_path": "FrozenSnapshotReplay->QueryReplayRef->EvidenceVerifier",
+    "registered_units": 120,
+    "terminal_units": 120,
+    "status_counts": {
+      "completed": 120
+    },
+    "eval_run_id": "06de7f99-d50f-45ed-857f-c559587caa27",
+    "organization_id": "4ecb9d0b-44b3-4147-a657-356fed382c20",
+    "workspace_id": "c6d35c33-cc30-4690-a74b-2643b79e5574",
+    "sealed": true,
+    "seal_digest": "sha256:ad6cf7ce0d2a34d639d7561068dd9ba36fb50e34e1a73a1c614f3d3e70d44ed7"
+  },
+  {
+    "suite": "numeric-risk-v1",
+    "mode": "offline",
+    "executor": "numeric-detector-pack",
+    "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult",
+    "registered_units": 22,
+    "terminal_units": 22,
+    "status_counts": {
+      "completed": 22
+    },
+    "eval_run_id": "f9f6db88-17cc-4966-9c4e-cb045006c299",
+    "organization_id": "93fedd1a-0301-4c8e-a2cd-400b9ba34ea7",
+    "workspace_id": "9f83f126-8ab2-4d8a-b45b-4046497b699d",
+    "sealed": true,
+    "seal_digest": "sha256:063339752ba57efd430cc8567e995821dc60b77dbf5c237b74adc974c7182b64"
+  },
+  {
+    "suite": "discover-blind-v1",
+    "mode": "offline",
+    "executor": "numeric-detector-pack",
+    "production_path": "FrozenRiskSnapshot->NumericPatternDetector->Signal->RiskHypothesis->NegativeProbe(deterministic)->FalsificationResult",
+    "registered_units": 5,
+    "terminal_units": 5,
+    "status_counts": {
+      "completed": 5
+    },
+    "eval_run_id": "1e4c809d-6f3a-4389-a78e-f167fc6e3078",
+    "organization_id": "005364d0-ae17-4f11-ba0b-9f525a7e3f4a",
+    "workspace_id": "77945db5-9631-4173-b331-184511ea0a4d",
+    "sealed": true,
+    "seal_digest": "sha256:c8781078cef006e36c4056274f32209b4f46fdc3f0bc76216a1b7152946792a0"
+  },
+  {
+    "suite": "ask-v1",
+    "mode": "offline",
+    "executor": "agent-runtime",
+    "production_path": "RunCommandService->AgentRunWorkflow->AskTaskGraph",
+    "registered_units": 6,
+    "terminal_units": 6,
+    "status_counts": {
+      "completed": 6
+    },
+    "eval_run_id": "b0d13826-41b1-4e79-b012-3016b3fda1b9",
+    "organization_id": "b1c671dc-7256-47f7-8927-5a80d956b293",
+    "workspace_id": "8c63cc5c-2922-4b70-b8d9-81980e9f97b9",
+    "sealed": true,
+    "seal_digest": "sha256:2fb752aea584cc8f050552946fd10286ede0a8907bc8c84e8afe4f8efd9474ba"
+  },
+  {
+    "suite": "longmemeval-adapter",
+    "benchmark": "longmemeval",
+    "external_status": "unavailable",
+    "reasons": [
+      {
+        "code": "missing_file",
+        "path": "evals/external/longmemeval/LICENSE",
+        "detail": "数据许可文件缺失"
+      },
+      {
+        "code": "missing_file",
+        "path": "evals/external/longmemeval/VERSION",
+        "detail": "数据版本文件缺失"
+      },
+      {
+        "code": "missing_data_dir",
+        "path": "evals/external/longmemeval/data",
+        "detail": "数据目录不存在"
+      }
+    ],
+    "run_kind": "none",
+    "claim": {
+      "benchmark": "longmemeval",
+      "claim_status": "planned/unavailable"
+    },
+    "eval_run_id": "dd956df2-b728-4996-aa44-d4064adfa51d",
+    "organization_id": "a8161569-3def-4a20-b24b-eaead58984e8",
+    "workspace_id": "882ac737-e502-4217-9162-df40b465698c",
+    "sealed": true,
+    "seal_digest": "sha256:e70c36ac9b46f438fb33e5ca17bbba547b92a404f986c9f5424bd06819feb96b"
+  }
+]
