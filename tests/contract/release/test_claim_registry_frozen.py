@@ -78,6 +78,17 @@ class TestClaimUpgrades:
         assert upgraded.status == ClaimStatus.OFFLINE_VERIFIED
         assert upgraded.evidence is not None
 
+    @pytest.mark.parametrize("mode", ["fixture", "replay", "shadow", "live", "human"])
+    def test_offline_edge_rejects_non_offline_seal_modes(self, mode: str) -> None:
+        # offline_verified 只接受 mode=offline 的密封件（红队变异实证的覆盖缺口：
+        # fixture 密封件曾可绕过该边）。fixture=场景数据驱动，不构成平台证据。
+        with pytest.raises(ClaimUpgradeDenied):
+            upgrade_claim(
+                _claim(status=ClaimStatus.IMPLEMENTED),
+                _evidence(mode=mode),
+                target=ClaimStatus.OFFLINE_VERIFIED,
+            )
+
     def test_seal_digest_mismatch_refused(self) -> None:
         # 升级绑定要求 evidence.seal_digest 与复核通过的密封工件一致；不匹配即拒绝。
         with pytest.raises(ClaimUpgradeDenied):
