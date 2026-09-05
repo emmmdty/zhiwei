@@ -1,7 +1,9 @@
 PY   ?= .venv/bin/python
 S    := evals/scripts
 SUMS := evals/CHECKSUMS.sha256
-ART  := evals/novels evals/questions evals/risk
+# evals/knowledge 是 S5 评测先行的冻结语料（ADR-013 决策 2）：纳入 ART 即登记进
+# CHECKSUMS.sha256，与 novels/questions/risk 同等冻结。
+ART  := evals/novels evals/questions evals/risk evals/knowledge
 HANDOFF_BASE ?= HEAD
 
 .PHONY: help evals corpus questions risk checksums validate determinism clean-evals handoff-check

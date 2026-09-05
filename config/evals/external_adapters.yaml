@@ -1,0 +1,23 @@
+# External eval adapter 清单（specs/s7 §8、S7 plan Task 7）
+#
+# 这是「已登记的 adapter 档案」，不是允许清单之外的执行许可：external-status 的
+# 可用性判定只取决于本清单声明的本地路径（数据目录/许可/version 文件）是否存在。
+# 路径相对仓库根；数据文件不入库（外部基准数据受许可约束，由 operator 在部署处放置）。
+#
+# required_fields 是 integrity runner 的最小 JSONL 字段契约：available 分支实际运行
+# adapter 时逐行校验，缺失即 fail closed——不产出任何质量分数（那需要 live 模型，
+# 由 operator 显式触发；离线 integrity artifact 不解锁质量 claim）。
+
+adapters:
+  - name: longmemeval-adapter
+    benchmark: longmemeval
+    claim_id: longmemeval
+    data_dir: evals/external/longmemeval/data
+    data_glob: "*.jsonl"
+    license_file: evals/external/longmemeval/LICENSE
+    version_file: evals/external/longmemeval/VERSION
+    required_fields:
+      - question_id
+      - question_type
+      - question
+      - answer

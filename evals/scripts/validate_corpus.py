@@ -43,6 +43,7 @@ ROOT = Path(__file__).resolve().parents[1]
 NOVELS = ROOT / "novels"
 QUESTIONS = ROOT / "questions"
 RISK = ROOT / "risk"
+KNOWLEDGE = ROOT / "knowledge"
 
 FAILURES: list[str] = []
 CHECKS = 0
@@ -296,6 +297,157 @@ def check_risk() -> None:
     con.close()
 
 
+# ---------------------------------------------------------------- 8 S5 knowledge corpus
+
+# ADR-013 决策 2：evals/knowledge/ 是评测先行的冻结语料（specs/s5 §6），必须纳入
+# validator 口径。与 120 题的差异：ground truth 是内容值/行为标签而非 SQL 重算——
+# 可复算回退到两个层面：结构一致性 + 行为参数与 ground truth 语义的可复算。
+
+KNOWLEDGE_SUITES = {
+    "doc_table_v1.jsonl": "knowledge-doc-v1",
+    "code_github_v1.jsonl": "knowledge-code-github-v1",
+    "cross_source_v1.jsonl": "knowledge-cross-source-v1",
+    "acl_freshness_v1.jsonl": "knowledge-acl-freshness-v1",
+}
+
+KNOWLEDGE_MIN_BLIND_HOLDOUT = {
+    "knowledge-doc-v1": 3,
+    "knowledge-code-github-v1": 2,
+    "knowledge-cross-source-v1": 2,
+    "knowledge-acl-freshness-v1": 2,
+}
+
+KNOWLEDGE_CLASSIFICATION_ORDER = {
+    "PUBLIC": 0,
+    "INTERNAL": 1,
+    "CONFIDENTIAL": 2,
+    "RESTRICTED": 3,
+}
+
+KNOWLEDGE_METAMORPHIC_VARIANTS = {"rename", "move", "update", "revoke"}
+
+
+def check_knowledge() -> None:
+    all_ids: dict[str, str] = {}
+    for filename, suite in KNOWLEDGE_SUITES.items():
+        path = KNOWLEDGE / filename
+        check(path.exists(), f"knowledge 语料文件缺失: {path.relative_to(ROOT)}")
+        if not path.exists():
+            continue
+        items: list[dict[str, Any]] = []
+        for lineno, line in enumerate(path.read_text("utf-8").splitlines(), 1):
+            if not line.strip():
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                check(False, f"knowledge 语料 {filename} 第 {lineno} 行不是合法 JSON", str(e))
+        check(len(items) > 0, f"knowledge 语料 {filename} 为空")
+
+        ids = [it["id"] for it in items]
+        check(len(ids) == len(set(ids)), f"knowledge 语料 {filename} 题目 id 重复")
+        base_ids = {it["id"] for it in items if not it.get("metamorphic_variant")}
+        blind = [it for it in items if it.get("blind_holdout")]
+        check(
+            len(blind) >= KNOWLEDGE_MIN_BLIND_HOLDOUT[suite],
+            f"knowledge 语料 {filename} blind holdout 数不足",
+            f"实际 {len(blind)}",
+        )
+
+        for it in items:
+            loc = f"{filename}:{it['id']}"
+            check(it.get("suite") == suite, f"{loc} suite 字段与文件不符",
+                  f"{it.get('suite')!r} != {suite!r}")
+            check(it.get("unit_kind") in ("single", "chain"),
+                  f"{loc} unit_kind 取值非法", str(it.get("unit_kind")))
+            if it.get("unit_kind") == "single":
+                check(it.get("independence_unit_id") == it["id"],
+                      f"{loc} 单轮单位的 independence_unit_id 应等于 id")
+
+            check(it.get("answer_kind") in ("scalar", "number", "set"),
+                  f"{loc} answer_kind 取值非法", str(it.get("answer_kind")))
+            mode = (it.get("scoring") or {}).get("mode")
+            check(mode in ("exact", "numeric", "contains", "set"),
+                  f"{loc} scoring.mode 取值非法", str(mode))
+            gt = it.get("ground_truth")
+            if it.get("answer_kind") == "set":
+                check(isinstance(gt, list) and all(isinstance(x, str) for x in gt),
+                      f"{loc} set 答案应为字符串列表", repr(gt))
+            else:
+                check(isinstance(gt, str), f"{loc} {it.get('answer_kind')} 答案应为字符串",
+                      repr(gt))
+            check(it.get("trace_required") is True, f"{loc} knowledge 语料必须要求溯源")
+
+            variant = it.get("metamorphic_variant")
+            if variant is not None:
+                check(variant in KNOWLEDGE_METAMORPHIC_VARIANTS,
+                      f"{loc} metamorphic 变体取值非法", str(variant))
+                base_id = it.get("metamorphic_base_id")
+                base = next((b for b in items if b["id"] == base_id), None)
+                check(base is not None and base_id in base_ids,
+                      f"{loc} metamorphic_base_id 必须指向本文件非变体条目", repr(base_id))
+                if base is not None:
+                    check(it.get("answer_kind") == base.get("answer_kind"),
+                          f"{loc} answer_kind 与 base 不一致")
+            else:
+                check(it.get("metamorphic_base_id") is None,
+                      f"{loc} 非变体条目携带 metamorphic_base_id")
+
+            if variant != "revoke":
+                check(len(it.get("expected_locators") or []) > 0,
+                      f"{loc} 非 revoke 条目必须有 expected_locators")
+            for i, locator in enumerate(it.get("expected_locators") or []):
+                check(isinstance(locator.get("connector"), str) and locator["connector"],
+                      f"{loc} locator[{i}] 缺少 connector")
+                check(isinstance(locator.get("uri"), str) and locator["uri"],
+                      f"{loc} locator[{i}] 缺少 uri")
+
+            # 可复算：声明的行为参数必须能推出声明的 ground truth 语义
+            qt = it.get("query_type")
+            if qt == "freshness_stale":
+                check(it.get("freshness_age_days", 0) > it.get("aging_threshold_days", 0),
+                      f"{loc} stale 场景参数推不出 aged")
+            elif qt == "freshness_fresh":
+                check(it.get("freshness_age_days", 1) < it.get("aging_threshold_days", 0),
+                      f"{loc} fresh 场景参数推不出 fresh")
+            elif qt == "acl_pre_filter":
+                clearance_value = it.get("acl_clearance")
+                target_value = it.get("target_classification")
+                clearance = (
+                    KNOWLEDGE_CLASSIFICATION_ORDER.get(clearance_value)
+                    if isinstance(clearance_value, str)
+                    else None
+                )
+                target = (
+                    KNOWLEDGE_CLASSIFICATION_ORDER.get(target_value)
+                    if isinstance(target_value, str)
+                    else None
+                )
+                check(clearance is not None and target is not None and clearance < target,
+                      f"{loc} pre-filter 场景 clearance 必须低于目标分类")
+            elif qt == "cross_org_query":
+                check(it.get("query_org") != it.get("target_org"),
+                      f"{loc} 跨组织场景 query_org 与 target_org 相同")
+            if it.get("revoked_at_query_time") is True:
+                check(qt == "acl_hydration_recheck",
+                      f"{loc} revoked_at_query_time 只应出现在 acl_hydration_recheck")
+
+            prior = all_ids.get(it["id"])
+            check(prior is None, "knowledge 语料 id 跨文件重复",
+                  f"{it['id']} 同时出现在 {prior} 与 {filename}")
+            if prior is None:
+                all_ids[it["id"]] = filename
+
+    # 与 legacy 120 题无 id 重叠（S5-T8 集成测试同约束；validator 独立复核）
+    legacy_ids = set()
+    for path in QUESTIONS.glob("*.jsonl"):
+        for line in path.read_text("utf-8").splitlines():
+            if line.strip():
+                legacy_ids.add(json.loads(line)["id"])
+    overlap = set(all_ids) & legacy_ids
+    check(not overlap, "knowledge 语料 id 与 legacy 题集重叠", "; ".join(sorted(overlap)[:3]))
+
+
 def check_checksums() -> None:
     """篡改检测：已发布产物必须与 CHECKSUMS.sha256 一致。
 
@@ -316,7 +468,7 @@ def check_checksums() -> None:
             recorded[name.strip()] = digest
 
     current = {}
-    for d in ("novels", "questions", "risk"):
+    for d in ("novels", "questions", "risk", "knowledge"):
         for p in sorted((ROOT / d).rglob("*")):
             if p.is_file():
                 rel = str(p.relative_to(ROOT.parent))
@@ -336,6 +488,7 @@ def main() -> None:
     check_shuihu()
     check_questions()
     check_risk()
+    check_knowledge()
     check_checksums()
 
     if FAILURES:

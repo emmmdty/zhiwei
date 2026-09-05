@@ -1,8 +1,8 @@
 """`zhiwei assets` 命令组：冻结基准资产的 lock 校验。
 
 `assets lock` 默认等价 `--check`：只读比较，漂移时非零退出且不写 lock；只有显式 `--write`
-才更新 `CHECKSUMS.sha256`。二者互斥。扫描范围沿用 Makefile 的 `evals/{novels,questions,risk}`，
-排除 lock 自身。
+才更新 `CHECKSUMS.sha256`。二者互斥。扫描范围沿用 Makefile 的
+`evals/{novels,questions,risk,knowledge}`，排除 lock 自身。
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ app = typer.Typer(
     help="冻结基准资产与校验和 lock", no_args_is_help=True, pretty_exceptions_enable=False
 )
 
-_ART_DIRS = ("novels", "questions", "risk")
+_ART_DIRS = ("novels", "questions", "risk", "knowledge")
 
 
 def _scan_artifacts(evals_dir: Path) -> dict[str, str]:

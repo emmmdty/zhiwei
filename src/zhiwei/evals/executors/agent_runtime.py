@@ -176,11 +176,14 @@ class RuntimeEvalEnvironment:
         context: TenantContext,
         client: Client,
         owns_environment: WorkflowEnvironment | None = None,
+        handler_registry: TaskHandlerRegistry | None = None,
     ) -> None:
         self._sessions = sessions
         self._context = context
         self._client = client
         self._owns_environment = owns_environment
+        # handler 注册表可按 suite 绑定（runtime-contract 默认、ask-v1 用 ask 注册表）
+        self._handler_registry = handler_registry
         self._worker: Worker | None = None
         self._worker_task: asyncio.Task[None] | None = None
 
@@ -189,7 +192,7 @@ class RuntimeEvalEnvironment:
             self._client,
             task_queue=DEFAULT_TASK_QUEUE,
             session_factory=self._sessions,
-            handler_registry=build_contract_registry(),
+            handler_registry=self._handler_registry or build_contract_registry(),
         )
         self._worker_task = asyncio.create_task(self._worker.run())
         return self
@@ -202,12 +205,17 @@ class RuntimeEvalEnvironment:
         if self._owns_environment is not None:
             await self._owns_environment.shutdown()
 
+    async def aclose(self) -> None:
+        """非 async-with 用法的显式关闭入口（幂等）。"""
+        await self.__aexit__(None, None, None)
+
     @classmethod
     async def start(
         cls,
         *,
         sessions: async_sessionmaker[AsyncSession],
         context: TenantContext,
+        handler_registry: TaskHandlerRegistry | None = None,
     ) -> RuntimeEvalEnvironment:
         """启动进程内 Temporal dev server（local-product 同款）并绑定 worker。"""
         import os
@@ -225,12 +233,24 @@ class RuntimeEvalEnvironment:
             os.close(saved_fd)
             os.close(devnull_fd)
         return cls(
-            sessions=sessions, context=context, client=env.client, owns_environment=env
+            sessions=sessions,
+            context=context,
+            client=env.client,
+            owns_environment=env,
+            handler_registry=handler_registry,
         )
 
     @property
     def client(self) -> Client:
         return self._client
+
+    @property
+    def sessions(self) -> async_sessionmaker[AsyncSession]:
+        return self._sessions
+
+    @property
+    def tenant_context(self) -> TenantContext:
+        return self._context
 
     def dispatcher(self) -> OutboxDispatcher:
         repository = SessionOutboxRepository(self._sessions, self._context)
