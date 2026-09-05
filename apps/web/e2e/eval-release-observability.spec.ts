@@ -17,7 +17,9 @@
 //                                       date/corpus/environment 五个查询参数全
 //                                       必填（缺参 422），未密封 409 not_sealed，
 //                                       密封但报告构建被拒 409 eval_report_refused。
-//   trace/span 视图：无任何 traces 端点 → 按任务纪律跳过，不发明端点。
+//   trace journey（S9 R2-B，plan Task 7）：run 详情的 canonical event 时间线走
+//   既有 GET /api/v1/runs/{id}/events（api/runs.py get_run_events 投影）；
+//   无任何 traces 端点 → 不发明 span 端点，时间线只渲染事件元数据。
 //
 // 纪律：
 // - metadata only：mock 在 outcome.result 里植入 canary 正文（prompt/result），
@@ -53,6 +55,10 @@ const MANIFEST_ID = "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c02";
 
 const CANARY_PROMPT = "CANARY-PROMPT-7f3d9a2c";
 const CANARY_RESULT = "CANARY-RESULT-2b8e41d9";
+// trace journey（plan Task 7）：事件正文 canary——真实 events 端点从不返回正文，
+// mock 故意超量供给以证明 UI 只渲染元数据（spec §6 metadata 纪律对用户可见）。
+const CANARY_EVENT_BODY = "CANARY-EVENT-BODY-9d4c17ae";
+const TIMELINE_RUN_ID = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e77";
 
 function digest(seed: string): string {
   // 固定 mock digest：sha256 前缀 + 确定性 hex（不参与真实校验）
@@ -126,9 +132,20 @@ interface ReleaseRecord {
   default_version: number | null;
 }
 
+// canonical run events（api/runs.py get_run_events 的真实投影形状）；
+// `body` 字段是 mock 故意超量的 canary 载体，生产端点从不返回。
+interface RunEventRow {
+  sequence_no: number;
+  event_type: string;
+  event_id: string;
+  task_id: string | null;
+  body?: Record<string, string>;
+}
+
 interface MockState {
   evals: EvalRun[];
   releases: ReleaseRecord[];
+  runs: { run_id: string; status: string; organization_id: string }[];
   lastSeal: { headers: Record<string, string>; body: unknown } | null;
   lastAdvance: { headers: Record<string, string>; body: unknown } | null;
   lastRoute: { headers: Record<string, string>; body: unknown } | null;
@@ -282,10 +299,32 @@ function stagedRelease(): ReleaseRecord {
   };
 }
 
+// canonical run timeline fixtures（api/runs.py get_run_events 形状）：机器事件名
+// 逐字、sequence 单调、task ref 仅任务事件携带。event_id 取确定性 UUID（digest
+// 前缀列的事实源）；body canary 由 mock 超量供给。
+function timelineEvents(): RunEventRow[] {
+  const rows: Array<[number, string, string, string | null]> = [
+    [1, "RunCreated", "1a2b3c4d-0000-4000-8000-000000000001", null],
+    [2, "RunStarted", "1a2b3c4d-0000-4000-8000-000000000002", null],
+    [3, "TaskScheduled", "1a2b3c4d-0000-4000-8000-000000000003", "task-a"],
+    [4, "TaskStarted", "1a2b3c4d-0000-4000-8000-000000000004", "task-a"],
+    [5, "TaskCompleted", "1a2b3c4d-0000-4000-8000-000000000005", "task-a"],
+    [6, "RunCompleted", "1a2b3c4d-0000-4000-8000-000000000006", null],
+  ];
+  return rows.map(([sequence_no, event_type, event_id, task_id]) => ({
+    sequence_no,
+    event_type,
+    event_id,
+    task_id,
+    body: { prompt: CANARY_EVENT_BODY, completion: CANARY_EVENT_BODY },
+  }));
+}
+
 function newState(): MockState {
   return {
     evals: [sealedEvalRun(), partialEvalRun()],
     releases: [stagedRelease()],
+    runs: [],
     lastSeal: null,
     lastAdvance: null,
     lastRoute: null,
@@ -360,6 +399,20 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
       return fulfill(route, 200, []);
     }
     if (path === "/api/v1/runs" && method === "GET") {
+      return fulfill(route, 200, state.runs);
+    }
+    if (path === `/api/v1/runs/${TIMELINE_RUN_ID}` && method === "GET") {
+      return fulfill(route, 200, {
+        run_id: TIMELINE_RUN_ID,
+        status: "completed",
+        organization_id: ORG_ID,
+        tasks: { "task-a": { status: "completed", error: null } },
+      });
+    }
+    if (path === `/api/v1/runs/${TIMELINE_RUN_ID}/events` && method === "GET") {
+      return fulfill(route, 200, timelineEvents());
+    }
+    if (path === `/api/v1/runs/${TIMELINE_RUN_ID}/approvals` && method === "GET") {
       return fulfill(route, 200, []);
     }
 
@@ -903,6 +956,64 @@ test.describe("S9 observability and costs journey", () => {
       .filter({ hasText: "9e8d7c6b-5a4f-4e3d-8b2a-1c0d9e8f7a22" });
     await expect(zeroVarianceRow).toContainText("0.0040000");
     await expect(zeroVarianceRow).toContainText("0.0000000");
+
+    await context.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) Trace journey（S9 R2-B，plan Task 7）：run 详情渲染 canonical event 时间线——
+//     机器事件名逐字、sequence/digest 前缀/task ref 元数据；无从事件名猜测的
+//     自由文本状态列；事件正文 canary（mock 超量供给）全程不出现在 DOM
+//     （spec §6：dashboard 从 canonical/projection 构建，metadata only 对用户可见）。
+// ---------------------------------------------------------------------------
+
+test.describe("S9 trace journey (canonical run timeline)", () => {
+  test("run detail shows machine event timeline with metadata only, no free-text status", async ({ browser }) => {
+    const state = newState();
+    state.runs.push({ run_id: TIMELINE_RUN_ID, status: "completed", organization_id: ORG_ID });
+    const context = await newContextWithMocks(browser, state, "builder");
+    const page = await context.newPage();
+
+    // 默认分区即 Workbench：run 列表 → 详情下钻
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+    await page
+      .getByRole("row", { name: new RegExp(TIMELINE_RUN_ID) })
+      .getByRole("button", { name: "Open" })
+      .click();
+    await expect(page.getByRole("heading", { name: "Run" })).toBeVisible();
+
+    // 时间线：sequence 单调 + 机器事件名逐字（不从事件名翻译/猜测状态）
+    const timeline = page.getByRole("table", { name: "Run event timeline" });
+    await expect(timeline).toBeVisible();
+    for (const machineType of [
+      "RunCreated",
+      "RunStarted",
+      "TaskScheduled",
+      "TaskStarted",
+      "TaskCompleted",
+      "RunCompleted",
+    ]) {
+      await expect(timeline.getByText(machineType, { exact: true })).toBeVisible();
+    }
+    const rows = timeline.getByRole("row");
+    await expect(rows).toHaveCount(7); // header + 6 canonical events
+
+    // metadata 列：sequence、digest 前缀（event_id 前 8 位）、task ref
+    await expect(timeline.getByText("1a2b3c4d")).toBeVisible();
+    await expect(timeline.getByText("task-a")).toBeVisible();
+    const headerCells = timeline.getByRole("row").first().getByRole("cell");
+    await expect(headerCells.filter({ hasText: "Seq" })).toHaveCount(1);
+    await expect(headerCells.filter({ hasText: "Event type" })).toHaveCount(1);
+    await expect(headerCells.filter({ hasText: "Digest" })).toHaveCount(1);
+    await expect(headerCells.filter({ hasText: "Task" })).toHaveCount(1);
+    // 无自由文本状态列：时间线表头不含 Status（状态只来自 canonical reduce，
+    // 不从字符串事件名猜——spec §6）
+    await expect(headerCells.filter({ hasText: "Status" })).toHaveCount(0);
+
+    // metadata-only：事件正文 canary 绝不出现在 DOM
+    await expect(page.getByText(/CANARY-EVENT-BODY/)).toHaveCount(0);
 
     await context.close();
   });
