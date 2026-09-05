@@ -67,10 +67,14 @@ REQUIRED_TABLES = {
     "organization_bootstrap_claims",
     # S2-T7（0011）：审批旅程持久层（FORCE RLS、org+ws 作用域）
     "approval_requests",
-    # S7（0012）：memory 生命周期持久层（FORCE RLS、org+ws 作用域）。
+    # S7（0012）：memory 生命周期持久层（FORCE RLS、org+ws 作用域）
     # 四轮 RED 机制修订登记：REQUIRED_TABLES 契约随新表扩展（0011 同款）。
     "memory_records",
     "memory_lifecycle_events",
+    # S9（0013/0014）：eval campaign 计划层 + cost ledger 台账（FORCE RLS、org+ws 作用域）
+    "eval_campaigns",
+    "cost_reservations",
+    "cost_reconciliations",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -91,6 +95,10 @@ WORKSPACE_TABLES = {
     # S7（0012）：memory 记录与生命周期台账均为 workspace 作用域租户数据
     "memory_records",
     "memory_lifecycle_events",
+    # S9（0013/0014）：campaign 与 cost ledger 行均为 workspace 作用域租户数据
+    "eval_campaigns",
+    "cost_reservations",
+    "cost_reconciliations",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
@@ -144,6 +152,9 @@ MUTABLE_COLUMNS = {
     },
     "eval_runs": {"sealed_at", "status"},
     "eval_samples": {"result", "result_digest", "status"},
+    # S9（0013）：campaign status 由「全部子运行 sealed」推导的完成转移 + updated_at；
+    # 划分内容列（suite_id/version/unit_count）冻结不可变（列级 UPDATE，无表级授权）
+    "eval_campaigns": {"status", "updated_at"},
     "organizations": {"policy_ref", "retention_policy", "status"},
     "outbox": {
         "attempts",
