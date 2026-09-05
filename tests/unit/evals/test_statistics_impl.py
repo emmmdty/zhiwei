@@ -10,6 +10,8 @@ import math
 from dataclasses import FrozenInstanceError
 
 import pytest
+
+from zhiwei.evals.domain import RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.statistics import (
     BootstrapDifferenceCI,
     DenominatorBreakdown,
@@ -23,8 +25,6 @@ from zhiwei.evals.statistics import (
     success_rate_from_outcomes,
     terminal_denominator,
 )
-
-from zhiwei.evals.domain import RegisteredUnit, SampleOutcome, SampleStatus
 
 
 def _outcome(
@@ -79,7 +79,7 @@ class TestUnitStructureFidelity:
         # 组序与单位序必须确定化：不依赖调用方传入顺序。
         assert structure.group_ids == ("chain-a", "chain-b")
         assert structure.units == (("q-1", "u-1"), ("q-2", "u-1"), ("q-2", "u-2"))
-        assert structure.group_of(("q-2", "u-2")) == "chain-b"
+        assert structure.group_of[("q-2", "u-2")] == "chain-b"
 
     def test_empty_mapping_refused(self) -> None:
         with pytest.raises(IndependenceUnitError):

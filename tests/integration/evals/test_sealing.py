@@ -11,22 +11,22 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Iterator, Mapping
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-from zhiwei.evals.reports import EvalReportScopeInput, build_eval_report
-from zhiwei.evals.runner import EvalRunner, MappingReferenceLookup
-from zhiwei.evals.scorers.generic import ExactMatchScorer
 
 from zhiwei.contracts.canonical import digest_bytes
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
+from zhiwei.evals.reports import EvalReportScopeInput, build_eval_report
+from zhiwei.evals.runner import EvalRunner, MappingReferenceLookup
 from zhiwei.evals.runs import CreateEvalRunCommand, EvalRunState, SealedEvalRun
+from zhiwei.evals.scorers.generic import ExactMatchScorer
 from zhiwei.evals.sealing import build_sealed_artifact, verify_sealed_artifact
-from zhiwei.models.usage import RunUsageSnapshot, TokenWeights
+from zhiwei.models.usage import RunUsageSnapshot, TokenWeights, compute_run_usage
 from zhiwei.object_store.posix import PosixObjectStore
 from zhiwei.persistence.database import create_database_engine, create_session_factory
 from zhiwei.persistence.repositories import TenantRepository
@@ -247,27 +247,30 @@ async def test_usage_sealed_artifact_is_stable_and_reportable(database: Database
         state = await runner.load_state(created.eval_run_id)
         assert isinstance(state, EvalRunState)
 
+    # manifest id 取固定值：digest 稳定性断言要求两次构建的输入完全一致。
+    dataset_manifest_id = UUID("55555555-5555-4555-8555-555555555555")
+    test_report_manifest_id = UUID("66666666-6666-4666-8666-666666666666")
     _baseline_artifact, baseline_digest = build_sealed_artifact(
         run_id=created.run_id,
         eval_run_id=created.eval_run_id,
         state=state,
         dataset_digest=digest_bytes(b"dataset"),
-        dataset_manifest_id=uuid4(),
+        dataset_manifest_id=dataset_manifest_id,
         suite_digest=digest_bytes(b"suite"),
         migration_revision=MIGRATION_REVISION,
         test_report_digest=digest_bytes(b"report"),
-        test_report_manifest_id=uuid4(),
+        test_report_manifest_id=test_report_manifest_id,
     )
     usage_artifact, usage_digest = build_sealed_artifact(
         run_id=created.run_id,
         eval_run_id=created.eval_run_id,
         state=state,
         dataset_digest=digest_bytes(b"dataset"),
-        dataset_manifest_id=uuid4(),
+        dataset_manifest_id=dataset_manifest_id,
         suite_digest=digest_bytes(b"suite"),
         migration_revision=MIGRATION_REVISION,
         test_report_digest=digest_bytes(b"report"),
-        test_report_manifest_id=uuid4(),
+        test_report_manifest_id=test_report_manifest_id,
         usage=_usage(),
     )
     _repeat_artifact, repeat_digest = build_sealed_artifact(
@@ -275,22 +278,26 @@ async def test_usage_sealed_artifact_is_stable_and_reportable(database: Database
         eval_run_id=created.eval_run_id,
         state=state,
         dataset_digest=digest_bytes(b"dataset"),
-        dataset_manifest_id=uuid4(),
+        dataset_manifest_id=dataset_manifest_id,
         suite_digest=digest_bytes(b"suite"),
         migration_revision=MIGRATION_REVISION,
         test_report_digest=digest_bytes(b"report"),
-        test_report_manifest_id=uuid4(),
+        test_report_manifest_id=test_report_manifest_id,
         usage=_usage(),
     )
 
     assert repeat_digest == usage_digest
     assert usage_digest != baseline_digest
     metrics = usage_artifact.canonical_mapping()["usage_metrics"]
-    assert metrics["weighted_tokens"] == 4700.0
+    # 指标值必须与 compute_run_usage 复算一致（seal 不发明第二套算法）。
+    assert metrics == {
+        name: float(value)
+        for name, value in compute_run_usage(_usage()).model_dump().items()
+    }
 
     verified = verify_sealed_artifact(usage_artifact.canonical_mapping(), usage_digest)
     assert verified.usage_metrics is not None
-    assert verified.usage_metrics["weighted_tokens"] == 4700.0
+    assert verified.usage_metrics["authoritative_token_share"] == pytest.approx(300 / 700)
 
     report, _ = build_eval_report(
         verified,

@@ -30,6 +30,7 @@ from zhiwei.evals.domain import (
     sorted_unique_units,
     unit_key,
 )
+from zhiwei.evals.reports import EvalReportArtifact
 from zhiwei.evals.sealing import (
     EvalSealRefused,
     SealedEvalArtifact,
@@ -786,6 +787,8 @@ def _eval_schema_registry() -> SchemaRegistry:
     registry.register("gate.test-report", 1, _TestReportPayload)
     registry.register("eval.sealed-run", 1, _SealedRunPayload)
     registry.register("eval.run.sealed", 1, EvalRunSealedPayload)
+    # S9-T2：报告载荷与其来源密封走同一 envelope 协议；模型本体在 reports.py。
+    registry.register("eval.report", 1, EvalReportArtifact)
     return registry
 
 

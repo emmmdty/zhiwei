@@ -22,6 +22,7 @@ from zhiwei.evals.domain import (
     SampleStatus,
     unit_sort_key,
 )
+from zhiwei.models.usage import RunUsageSnapshot, compute_run_usage
 
 SEALED_ARTIFACT_SCHEMA_ID = "eval.sealed-run"
 SEALED_ARTIFACT_SCHEMA_VERSION = 1
@@ -92,6 +93,9 @@ class SealedEvalArtifact(BaseModel):
     test_report_manifest_id: UUID
     registered_units: tuple[RegisteredUnit, ...]
     samples: tuple[SampleRecord, ...]
+    # ADR-002 的七项 token ROI 指标；None 表示该密封发生在 usage 归集之前
+    # （旧载荷），复核时按缺失处理而不是拒绝。
+    usage_metrics: Mapping[str, float] | None = None
 
     @field_validator(
         "code_digest",
@@ -109,7 +113,7 @@ class SealedEvalArtifact(BaseModel):
 
     def canonical_mapping(self) -> dict[str, Any]:
         """返回完整 canonical 载荷；digest 即对该 mapping 的 canonical JSON 求值。"""
-        return {
+        payload: dict[str, Any] = {
             "schema_id": SEALED_ARTIFACT_SCHEMA_ID,
             "schema_version": SEALED_ARTIFACT_SCHEMA_VERSION,
             "run_id": str(self.run_id),
@@ -138,6 +142,11 @@ class SealedEvalArtifact(BaseModel):
                 for sample in self.samples
             ],
         }
+        if self.usage_metrics is not None:
+            # 仅在存在 usage 快照时纳入 canonical 载荷：键的缺席本身是旧版
+            # 密封的确定标记，不能写成 null，否则旧载荷 digest 会漂移。
+            payload["usage_metrics"] = dict(self.usage_metrics)
+        return payload
 
 
 def build_sealed_artifact(
@@ -151,12 +160,21 @@ def build_sealed_artifact(
     migration_revision: str,
     test_report_digest: str,
     test_report_manifest_id: UUID,
+    usage: RunUsageSnapshot | None = None,
 ) -> tuple[SealedEvalArtifact, str]:
     """从 sealed EvalRunState 构建载荷并返回 (artifact, seal_digest)。
 
     samples 按注册单位排序后封存：同一 registry 的不同执行顺序必须产生逐字节相同的密封载荷。
+    usage 快照存在时，ADR-002 的七项 ROI 指标经复算后进入 canonical 载荷并参与
+    seal digest——改动任一指标都会改变密封，事后改数不可逃逸。
     """
     outcomes = sorted(state.outcomes, key=lambda outcome: unit_sort_key(outcome.unit))
+    usage_metrics: Mapping[str, float] | None = None
+    if usage is not None:
+        usage_metrics = {
+            name: float(value)
+            for name, value in compute_run_usage(usage).model_dump().items()
+        }
     artifact = SealedEvalArtifact(
         run_id=run_id,
         eval_run_id=eval_run_id,
@@ -180,6 +198,7 @@ def build_sealed_artifact(
             )
             for outcome in outcomes
         ),
+        usage_metrics=usage_metrics,
     )
     return artifact, digest(artifact.canonical_mapping())
 
@@ -221,6 +240,9 @@ def verify_sealed_artifact(
                 "test_report_manifest_id": payload["test_report_manifest_id"],
                 "registered_units": payload["registered_units"],
                 "samples": payload["samples"],
+                # 旧载荷无 usage_metrics 键：get 返回 None，与「usage 归集前密封」
+                # 的模型默认一致——向后兼容由键缺席表达，而不是版本分叉。
+                "usage_metrics": payload.get("usage_metrics"),
             }
         )
     except (KeyError, TypeError, ValidationError, ValueError) as exc:

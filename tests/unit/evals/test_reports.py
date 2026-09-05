@@ -8,9 +8,12 @@ environment）全部显式，不允许从环境猜测。
 from __future__ import annotations
 
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import pytest
+
+from zhiwei.contracts.canonical import digest
+from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.reports import (
     EVAL_REPORT_SCHEMA_ID,
     EVAL_REPORT_SCHEMA_VERSION,
@@ -20,14 +23,14 @@ from zhiwei.evals.reports import (
     PairedComparison,
     build_eval_report,
 )
-
-from zhiwei.contracts.canonical import digest
-from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.runs import _eval_schema_registry
 from zhiwei.evals.sealing import build_sealed_artifact
 
 RUN_ID = UUID("33333333-3333-4333-8333-333333333333")
 EVAL_RUN_ID = UUID("44444444-4444-4444-8444-444444444444")
+# manifest id 固定取值：digest 稳定性断言要求两次构建的输入完全一致。
+DATASET_MANIFEST_ID = UUID("55555555-5555-4555-8555-555555555555")
+TEST_REPORT_MANIFEST_ID = UUID("66666666-6666-4666-8666-666666666666")
 
 
 def _unit(sample_id: str, unit_id: str = "u-1") -> RegisteredUnit:
@@ -57,20 +60,27 @@ def _scope() -> EvalReportScopeInput:
     )
 
 
+def _seal_inputs(
+    outcomes: list[SampleOutcome],
+) -> dict[str, Any]:
+    """build_sealed_artifact 的固定输入：同一 registry 两次构建必须逐字节一致。"""
+    return {
+        "run_id": RUN_ID,
+        "eval_run_id": EVAL_RUN_ID,
+        "state": _StubState(tuple(outcomes)),
+        "dataset_digest": "sha256:" + "3" * 64,
+        "dataset_manifest_id": DATASET_MANIFEST_ID,
+        "suite_digest": "sha256:" + "4" * 64,
+        "migration_revision": "0014_cost_ledger",
+        "test_report_digest": "sha256:" + "5" * 64,
+        "test_report_manifest_id": TEST_REPORT_MANIFEST_ID,
+    }
+
+
 def _seal(
     outcomes: list[SampleOutcome],
 ) -> tuple[EvalReportArtifact, str]:
-    artifact, seal_digest = build_sealed_artifact(
-        run_id=RUN_ID,
-        eval_run_id=EVAL_RUN_ID,
-        state=_StubState(tuple(outcomes)),
-        dataset_digest="sha256:" + "3" * 64,
-        dataset_manifest_id=uuid4(),
-        suite_digest="sha256:" + "4" * 64,
-        migration_revision="0014_cost_ledger",
-        test_report_digest="sha256:" + "5" * 64,
-        test_report_manifest_id=uuid4(),
-    )
+    artifact, seal_digest = build_sealed_artifact(**_seal_inputs(outcomes))
     report, report_digest = build_eval_report(
         artifact,
         outcomes,
@@ -84,17 +94,7 @@ def _sealed_artifact(
     outcomes: list[SampleOutcome],
 ) -> tuple[Any, str]:
     """构造 (sealed artifact, seal_digest) 供报告构建与拒绝路径复用同一密封输入。"""
-    return build_sealed_artifact(
-        run_id=RUN_ID,
-        eval_run_id=EVAL_RUN_ID,
-        state=_StubState(tuple(outcomes)),
-        dataset_digest="sha256:" + "3" * 64,
-        dataset_manifest_id=uuid4(),
-        suite_digest="sha256:" + "4" * 64,
-        migration_revision="0014_cost_ledger",
-        test_report_digest="sha256:" + "5" * 64,
-        test_report_manifest_id=uuid4(),
-    )
+    return build_sealed_artifact(**_seal_inputs(outcomes))
 
 
 class _StubState:
