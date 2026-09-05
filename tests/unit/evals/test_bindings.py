@@ -21,6 +21,7 @@ from zhiwei.evals.bindings import (
     SourceBinding,
     ToolBinding,
     assert_identity_invariant,
+    ensure_live_gate,
 )
 from zhiwei.evals.domain import EvalMode
 
@@ -70,6 +71,62 @@ def test_implicit_live_construction_is_refused() -> None:
         BindingSpec.model_validate(
             {"mode": "live", "identity": IDENTITY, "model": _model(EvalMode.LIVE)}
         )
+
+
+def test_implicit_live_refusal_does_not_mutate_the_caller_payload() -> None:
+    # 校验器弹出哨兵必须在副本上进行：调用方传入的 dict 是引用，原地 pop 是
+    # 被拒绝方也能观察到的副作用（可掩盖伪造门禁痕迹）。
+    payload: dict[str, object] = {
+        "mode": EvalMode.LIVE,
+        "identity": IDENTITY,
+        "_operator_gate": "forged-sentinel",
+    }
+    with pytest.raises(ValueError, match="for_live"):
+        BindingSpec.model_validate(payload)
+    assert payload["_operator_gate"] == "forged-sentinel"
+
+
+def test_model_copy_cannot_bypass_the_live_gate_at_consumption() -> None:
+    # model_copy 绕过全部校验器：validator 级门禁在此失效，门禁必须在消费点
+    # （BindingSet 组装 / manifest 密封 / 身份不变量断言）路径完备地重查。
+    ungated_live = _spec(EvalMode.FIXTURE).model_copy(update={"mode": EvalMode.LIVE})
+    with pytest.raises(ValidationError, match="operator gate"):
+        BindingSet(identity=IDENTITY, specs=(ungated_live,))
+    with pytest.raises(ValueError, match="operator gate"):
+        ungated_live.manifest
+    with pytest.raises(ValueError, match="operator gate"):
+        ungated_live.manifest_digest
+    with pytest.raises(ValueError, match="operator gate"):
+        assert_identity_invariant([ungated_live])
+    with pytest.raises(ValueError, match="operator gate"):
+        ensure_live_gate(ungated_live)
+
+
+def test_model_construct_cannot_bypass_the_live_gate_at_consumption() -> None:
+    ungated_live = BindingSpec.model_construct(
+        mode=EvalMode.LIVE, identity=IDENTITY, model=_model(EvalMode.LIVE)
+    )
+    with pytest.raises(ValidationError, match="operator gate"):
+        BindingSet(identity=IDENTITY, specs=(ungated_live,))
+    with pytest.raises(ValueError, match="operator gate"):
+        ungated_live.manifest
+    with pytest.raises(ValueError, match="operator gate"):
+        ungated_live.manifest_digest
+    with pytest.raises(ValueError, match="operator gate"):
+        assert_identity_invariant([ungated_live])
+    with pytest.raises(ValueError, match="operator gate"):
+        ensure_live_gate(ungated_live)
+
+
+def test_gated_live_spec_passes_every_consumption_point() -> None:
+    # for_live 产出的 spec 携带私有门禁哨兵：组装、manifest 与不变量断言全放行。
+    spec = _spec(EvalMode.LIVE)
+    ensure_live_gate(spec)
+    assert spec.manifest["mode"] == "live"
+    assert spec.manifest_digest.startswith("sha256:")
+    binding_set = BindingSet(identity=IDENTITY, specs=(spec,))
+    assert {s.mode for s in binding_set.specs} == {EvalMode.LIVE}
+    assert_identity_invariant([spec])
 
 
 def test_for_live_requires_an_explicit_non_empty_operator_token() -> None:

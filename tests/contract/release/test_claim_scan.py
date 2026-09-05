@@ -21,13 +21,23 @@ NOW = "2026-09-06"
 STALE_AFTER_DAYS = 180
 
 
+AUTO_VALUE = object()
+
+
 def _claim(
     claim_id: str,
     *,
     status: ClaimStatus = ClaimStatus.OFFLINE_VERIFIED,
     environment: str = "offline-fixture",
     date: str = "2026-09-05",
+    value: str | None | object = AUTO_VALUE,
 ) -> ClaimRecord:
+    if value is AUTO_VALUE:
+        value = (
+            "0.95"
+            if status in (ClaimStatus.OFFLINE_VERIFIED, ClaimStatus.LIVE_VERIFIED)
+            else None
+        )
     return ClaimRecord(
         claim_id=claim_id,
         statement="FactQA accuracy {{accuracy}}",
@@ -40,9 +50,7 @@ def _claim(
             environment=environment,
         ),
         status=status,
-        bound_value=(
-            "0.95" if status in (ClaimStatus.OFFLINE_VERIFIED, ClaimStatus.LIVE_VERIFIED) else None
-        ),
+        bound_value=value,  # type: ignore[arg-type]
     )
 
 
@@ -110,6 +118,58 @@ class TestSeededSurfaceScan:
             {"docs/CLAIMS.md": text}, _registry(), now=NOW, stale_after_days=STALE_AFTER_DAYS
         )
         assert any(f.code is FindingCode.FIXTURE_LIVE_MIX for f in findings)
+
+
+class TestAdjacentNumberBinding:
+    """marker 紧邻的数字只有等于该 verified claim 的 bound_value 才被放行。
+
+    缺口：紧邻 verified marker 的任意数字此前被无条件豁免，伪造数字可借
+    「贴着已验证 claim」逃逸 UNSUPPORTED_NUMBER。
+    """
+
+    def _scan(self, body: str, registry: dict[str, ClaimRecord]) -> tuple:
+        return scan_release_surface(
+            {"docs/CLAIMS.md": f"<!-- claims:start -->\n{body}\n<!-- claims:end -->"},
+            registry,
+            now=NOW,
+            stale_after_days=STALE_AFTER_DAYS,
+        )
+
+    def test_adjacent_number_matching_bound_value_passes(self) -> None:
+        findings = self._scan(
+            "FactQA accuracy {{claim:factqa-v1.accuracy}} 0.95", _registry()
+        )
+        assert findings == ()
+
+    def test_adjacent_mismatching_number_flagged_with_claim_id(self) -> None:
+        findings = self._scan(
+            "FactQA accuracy {{claim:factqa-v1.accuracy}} 0.99", _registry()
+        )
+        assert [(f.code, f.claim_id) for f in findings] == [
+            (FindingCode.UNSUPPORTED_NUMBER, "factqa-v1.accuracy")
+        ]
+
+    def test_adjacent_number_with_unbound_verified_claim_flagged(self) -> None:
+        registry = {
+            "factqa-v1.unbound": _claim("factqa-v1.unbound", value=None),
+        }
+        findings = self._scan(
+            "FactQA accuracy {{claim:factqa-v1.unbound}} 0.95", registry
+        )
+        assert [(f.code, f.claim_id) for f in findings] == [
+            (FindingCode.UNSUPPORTED_NUMBER, "factqa-v1.unbound")
+        ]
+
+    def test_zero_width_gap_is_not_adjacency(self) -> None:
+        # 零宽字符不是空白：strip() 剥不掉，数字不算紧邻 marker——照常拦截，
+        # 且不允许借 verified marker 的 bound_value 相等性洗白（间隔不透明）。
+        registry = {
+            "factqa-v1.unbound": _claim("factqa-v1.unbound", value="0.99"),
+        }
+        findings = self._scan(
+            "FactQA accuracy {{claim:factqa-v1.unbound}}​0.99", registry
+        )
+        assert any(f.code is FindingCode.UNSUPPORTED_NUMBER for f in findings)
 
 
 class TestRenderSurface:

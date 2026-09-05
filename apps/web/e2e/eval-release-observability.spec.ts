@@ -10,13 +10,13 @@
 //   GET  /api/v1/claims              → api/claims.py ClaimView（status/evidence 元数据）
 //   GET  /api/v1/observability/failures → api/observability.py FailureTaxonomy
 //   GET  /api/v1/observability/costs   → api/observability.py CostSummary
-//   GET/POST /api/v1/evals…          → 【后端缺口】src/zhiwei/api/evals.py 不存在；
-//                                       字段名逐一对齐 evals/runs.py（RunPhase/
-//                                       SampleStatus/EvalMode）+ evals/reports.py
-//                                       EvalReportArtifact.canonical_mapping +
-//                                       persistence/models.py EvalRunRow。路径按
-//                                       specs/s9 §2 的 api/evals.py 资源名推导，
-//                                       后端 router 补齐前 UI 对 404 fail loud。
+//   GET/POST /api/v1/evals…          → api/evals.py（EvalRunDetailView 投影）；
+//                                       详情 report 恒 null（报告的 scope 标签
+//                                       只能由调用方显式声明，api/evals.py:145），
+//                                       报告经 GET .../report 现取：model/version/
+//                                       date/corpus/environment 五个查询参数全
+//                                       必填（缺参 422），未密封 409 not_sealed，
+//                                       密封但报告构建被拒 409 eval_report_refused。
 //   trace/span 视图：无任何 traces 端点 → 按任务纪律跳过，不发明端点。
 //
 // 纪律：
@@ -313,7 +313,9 @@ function evalDetail(run: EvalRun) {
     sealed_at: run.sealed_at,
     registered_units: run.registered_units,
     outcomes: run.outcomes,
-    report: run.report,
+    // 生产契约（api/evals.py EvalRunDetailView）：详情 report 恒 null——报告的
+    // scope 标签只能由调用方显式声明，详情不猜测；报告走 GET .../report。
+    report: null,
   };
 }
 
@@ -417,8 +419,40 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
     const evalReport = path.match(/^\/api\/v1\/evals\/([0-9a-f-]{36})\/report$/);
     if (evalReport && method === "GET") {
       const run = state.evals.find((r) => r.eval_run_id === evalReport[1]);
-      if (!run || !run.report) {
-        return fulfill(route, 404, { detail: "report not available for this eval run" });
+      if (!run) return fulfill(route, 404, { detail: "eval run not found" });
+      // 生产契约（api/evals.py get_eval_run_report）：scope 查询参数全必填，
+      // 缺失在请求校验层拒绝——FastAPI missing-field 422 形状，绝不代填默认值。
+      const params = new URL(req.url()).searchParams;
+      const missing = ["model", "version", "date", "corpus", "environment"].filter(
+        (name) => !params.get(name)
+      );
+      if (missing.length > 0) {
+        return fulfill(route, 422, {
+          detail: missing.map((name) => ({
+            type: "missing",
+            loc: ["query", name],
+            msg: "Field required",
+            input: null,
+          })),
+        });
+      }
+      // not_sealed 是端点的机器可读拒绝面（reason 码与 api/evals.py 一致）
+      if (run.status !== "sealed") {
+        return fulfill(route, 409, {
+          detail: {
+            reason: "not_sealed",
+            message: "eval run report requires a sealed run",
+          },
+        });
+      }
+      if (!run.report) {
+        // 密封但样本覆盖面不完整 → build_eval_report 拒绝（409 eval_report_refused）
+        return fulfill(route, 409, {
+          detail: {
+            reason: "eval_report_refused",
+            message: "outcomes do not cover sealed units",
+          },
+        });
       }
       return fulfill(route, 200, run.report);
     }
@@ -568,14 +602,16 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
             created_at: "2026-09-01T13:00:00+00:00",
           },
           {
-            // 未对账完成：分量 unknown 原样返回（不造 placeholder 0）
+            // 对账完成且无偏差：全列都是后端真实形状——persistence/models.py
+            // CostReconciliationRow 的 Numeric(18,6) 列全部 NOT NULL，"unknown"
+            // 字符串是后端不可能产生的载荷，对账行的诚实未知形态是 variance 0。
             reservation_id: "9e8d7c6b-5a4f-4e3d-8b2a-1c0d9e8f7a22",
             reserved_usd: "0.0040000",
-            actual_usd: "unknown",
-            variance_usd: "unknown",
-            retry_cost_usd: "unknown",
-            child_run_cost_usd: "unknown",
-            tool_external_cost_usd: "unknown",
+            actual_usd: "0.0040000",
+            variance_usd: "0.0000000",
+            retry_cost_usd: "0.0000000",
+            child_run_cost_usd: "0.0000000",
+            tool_external_cost_usd: "0.0000000",
             created_at: "2026-09-02T13:00:00+00:00",
           },
         ],
@@ -630,11 +666,12 @@ async function openSection(page: Page, section: string): Promise<void> {
 
 // ---------------------------------------------------------------------------
 // (a) Eval journey：列表 mode/sealed 状态；详情 scope 标签 + 含 refused/error
-//     的分母 + CI；unknown 原样展示；resume/seal 动作走真实状态机
+//     的分母 + CI；报告必须以显式 scope 五参数现取（缺参 422 / 拒绝 409 原样
+//     上浮）；resume/seal 动作走真实状态机
 // ---------------------------------------------------------------------------
 
 test.describe("S9 eval journey", () => {
-  test("lists sealed offline run, renders scope labels and full denominators, unknown stays unknown", async ({ browser }) => {
+  test("lists sealed offline run, loads report via explicit scope, surfaces 422/409 machine-readable errors", async ({ browser }) => {
     const state = newState();
     const context = await newContextWithMocks(browser, state, "builder");
     const page = await context.newPage();
@@ -650,6 +687,38 @@ test.describe("S9 eval journey", () => {
 
     await sealedRow.getByRole("button", { name: "Open" }).click();
     await expect(page.getByRole("heading", { name: "Eval run" })).toBeVisible();
+    // 详情 report 恒 null（api/evals.py 投影）：报告缺席 → scope/quality 诚实 unknown
+    await expect(page.getByText("model: unknown", { exact: true })).toBeVisible();
+    await expect(page.getByText("Quality: unknown")).toBeVisible();
+    // 状态分解：报告缺席时从真实 outcome 派生（refused/error 都在完整分母内）
+    await expect(page.getByText("completed: 2")).toBeVisible();
+    await expect(page.getByText("failed: 1")).toBeVisible();
+    await expect(page.getByText("refused: 1")).toBeVisible();
+    await expect(page.getByText("error: 1")).toBeVisible();
+    await expect(page.getByText("n_total: 5")).toBeVisible();
+
+    // 样本元数据：status + result_digest（正文 canary 不得渲染）
+    await expect(page.getByText(/s9-core-004\/u1: refused/)).toBeVisible();
+
+    // Load report 打开显式 scope 输入行：mode 预填自 run 详情（mode 只能来自
+    // 密封载荷，不可声明），五个查询参数由调用方显式提供
+    await page.getByRole("button", { name: "Load report" }).click();
+    const scopeRow = page.getByRole("group", { name: "Report scope" });
+    await expect(scopeRow).toBeVisible();
+    await expect(scopeRow.getByText("mode (from run): offline")).toBeVisible();
+
+    // 空提交 → 空参数省略 → 无参 GET → 生产 422 形状原样上浮（机器可读）
+    await scopeRow.getByRole("button", { name: "Fetch report" }).click();
+    await expect(page.getByText(/report refused \(422\)/)).toBeVisible();
+    await expect(page.getByText(/Field required/)).toBeVisible();
+
+    // 显式 scope 五参数 → 报告渲染：scope 标签 + Wilson CI + 完整分母以报告为权威
+    await scopeRow.getByLabel("model", { exact: true }).fill("qwen3-internal");
+    await scopeRow.getByLabel("version", { exact: true }).fill("v3");
+    await scopeRow.getByLabel("date", { exact: true }).fill("2026-09-01");
+    await scopeRow.getByLabel("corpus", { exact: true }).fill("frozen-s9");
+    await scopeRow.getByLabel("environment", { exact: true }).fill("offline-sandbox");
+    await scopeRow.getByRole("button", { name: "Fetch report" }).click();
     // scope 标签（来自密封报告，mode 只能来自密封载荷）；exact 避开大小写
     // 不敏感子串与详情头 "Mode: offline" 的歧义
     await expect(page.getByText("mode: offline", { exact: true })).toBeVisible();
@@ -659,18 +728,8 @@ test.describe("S9 eval journey", () => {
     await expect(page.getByText("corpus: frozen-s9", { exact: true })).toBeVisible();
     await expect(page.getByText("environment: offline-sandbox", { exact: true })).toBeVisible();
 
-    // 状态分解：refused/error 都在完整分母内（reports.py 冻结口径）
-    await expect(page.getByText("completed: 2")).toBeVisible();
-    await expect(page.getByText("failed: 1")).toBeVisible();
-    await expect(page.getByText("refused: 1")).toBeVisible();
-    await expect(page.getByText("error: 1")).toBeVisible();
-    await expect(page.getByText("n_total: 5")).toBeVisible();
-
     // 报告提供的 Wilson CI 数字
     await expect(page.getByText(/CI \[0\.1, 0\.74\]/)).toBeVisible();
-
-    // 样本元数据：status + result_digest（正文 canary 不得渲染）
-    await expect(page.getByText(/s9-core-004\/u1: refused/)).toBeVisible();
 
     // metadata-only：canary prompt/result 正文不得出现在 DOM 任何位置
     await expect(page.getByText(/CANARY-/)).toHaveCount(0);
@@ -693,9 +752,18 @@ test.describe("S9 eval journey", () => {
     await expect(page.getByText("Status: sealed")).toBeVisible();
     await expect(page.getByText("Sealed at: unknown")).toHaveCount(0);
 
-    // report 动作：无密封报告 → 404 → unknown 原样展示（错误显性化）
+    // report 动作：mock 密封后样本覆盖面仍不完整（3 注册单位 / 2 outcomes）→
+    // 生产 409 eval_report_refused 机器可读拒绝面原样上浮
     await page.getByRole("button", { name: "Load report" }).click();
-    await expect(page.getByText("report: unknown")).toBeVisible();
+    const partialScope = page.getByRole("group", { name: "Report scope" });
+    await partialScope.getByLabel("model", { exact: true }).fill("qwen3-internal");
+    await partialScope.getByLabel("version", { exact: true }).fill("v3");
+    await partialScope.getByLabel("date", { exact: true }).fill("2026-09-06");
+    await partialScope.getByLabel("corpus", { exact: true }).fill("frozen-s9");
+    await partialScope.getByLabel("environment", { exact: true }).fill("offline-sandbox");
+    await partialScope.getByRole("button", { name: "Fetch report" }).click();
+    await expect(page.getByText(/report refused \(409\)/)).toBeVisible();
+    await expect(page.getByText(/eval_report_refused/)).toBeVisible();
 
     // mutation PEP 契约：POST seal 携带 CSRF + Idempotency-Key（api.ts）
     expect(state.lastSeal).not.toBeNull();
@@ -820,9 +888,21 @@ test.describe("S9 observability and costs journey", () => {
     await expect(page.getByText("exact")).toBeVisible();
     await expect(page.getByText("estimated-internal", { exact: true })).toBeVisible();
     await expect(page.getByText("estimated", { exact: true })).toBeVisible();
-    // variance 行（对账完成）+ unknown 分量原样展示
-    await expect(page.getByText("-0.0012")).toBeVisible();
-    await expect(page.getByText("actual: unknown")).toBeVisible();
+    // variance 行（对账完成）+ 零偏差行原样展示：对账行全列 NOT NULL Numeric
+    // （persistence/models.py），"unknown" 字符串是后端不可能产生的载荷。
+    // 断言锚定对账表内行：reservation id 同样出现在 reservations 表。
+    const reconciliations = page
+      .getByRole("table")
+      .filter({ hasText: "Variance (USD)" });
+    const varianceRow = reconciliations
+      .getByRole("row")
+      .filter({ hasText: "9e8d7c6b-5a4f-4e3d-8b2a-1c0d9e8f7a11" });
+    await expect(varianceRow).toContainText("-0.0012");
+    const zeroVarianceRow = reconciliations
+      .getByRole("row")
+      .filter({ hasText: "9e8d7c6b-5a4f-4e3d-8b2a-1c0d9e8f7a22" });
+    await expect(zeroVarianceRow).toContainText("0.0040000");
+    await expect(zeroVarianceRow).toContainText("0.0000000");
 
     await context.close();
   });
