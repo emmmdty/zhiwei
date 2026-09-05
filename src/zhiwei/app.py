@@ -27,6 +27,7 @@ from zhiwei.api.auth import (
     create_session_actor_dependency,
 )
 from zhiwei.api.claims import create_claims_router
+from zhiwei.api.evals import create_evals_router
 from zhiwei.api.events import create_events_router
 from zhiwei.api.memberships import create_memberships_router
 from zhiwei.api.observability import create_observability_router
@@ -243,6 +244,18 @@ def create_app(
 
         app.include_router(
             create_claims_router(
+                actor_dependency=session_actor,
+                sessions=app_sessions,
+                policy_enforcer=policy_enforcer,
+                object_store=PosixObjectStore(settings.object_store_root),
+            )
+        )
+        # S9-T7 补口：eval run 治理面（列表/详情/resume/seal/密封报告）。
+        # EvalFoundationService 与 seal/report 都依赖 object store（test report
+        # artifact 落盘、密封件独立复核）——与 claims 同一按需挂载纪律：缺配置
+        # 不提供半途而废的端点。
+        app.include_router(
+            create_evals_router(
                 actor_dependency=session_actor,
                 sessions=app_sessions,
                 policy_enforcer=policy_enforcer,
