@@ -14,8 +14,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # Core 中禁止出现任何 ChangeBrief 标识的层（App 逻辑只允许存在于 solution-packs/ 与
-# web renderers/）。src/zhiwei/evals 的 suite 资产层与 cli/evals.py 的 suite-id 注册
-# 是既有「评测资产=数据」模式（factqa/memory/security 同型），明确豁免。
+# web renderers/）。src/zhiwei/evals 的 suite 资产层与 cli/evals.py、cli/assets.py 的
+# suite-id/资产目录注册同属「评测资产=数据」模式（factqa/memory/security 同型，
+# 注册表是数据不是 App 条件分支），明确豁免。
 CORE_BANNED_LAYERS = (
     "src/zhiwei/agents",
     "src/zhiwei/api",
@@ -114,16 +115,17 @@ class TestCoreDoesNotKnowChangeBrief:
         assert violations == []
 
     def test_eval_asset_layer_is_the_only_sanctioned_registration(self) -> None:
-        # evals 资产层与 cli/evals.py 的 suite-id 注册按既有模式豁免；这里断言豁免面
-        # 没有扩大：除这两个位置外，src/zhiwei 其余 python 文件必须全部干净。
-        exempt = {
+        # evals 资产层与 cli/evals.py、cli/assets.py 的注册数据按既有模式豁免；这里
+        # 断言豁免面没有扩大：除这些位置外，src/zhiwei 其余 python 文件必须全部干净。
+        exempt_files = {
             REPO_ROOT / "src/zhiwei/cli/evals.py",
-            REPO_ROOT / "src/zhiwei/evals",
+            REPO_ROOT / "src/zhiwei/cli/assets.py",
         }
+        exempt_dirs = {REPO_ROOT / "src/zhiwei/evals"}
         violations: list[str] = []
         for path in _python_files(REPO_ROOT / "src/zhiwei"):
-            if path in exempt or any(
-                exempt_dir in path.parents for exempt_dir in exempt
+            if path in exempt_files or any(
+                exempt_dir in path.parents for exempt_dir in exempt_dirs
             ):
                 continue
             if CHANGE_BRIEF_PATTERN.search(path.read_text(encoding="utf-8")):

@@ -76,6 +76,7 @@ async def stack(tmp_path: Path) -> AsyncIterator[tuple[async_sessionmaker[AsyncS
     engine = create_database_engine(APP_URL)
     sessions = create_session_factory(engine)
     context = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
+    assert context.organization_id is not None and context.workspace_id is not None
     async with tenant_session(sessions, context) as session:
         repository = TenantRepository(session, context)
         await repository.create_organization(context.organization_id, status="active")
@@ -277,8 +278,9 @@ class TestPublishGoesThroughReleaseCommands:
             )
             assert created.status_code == 201, created.text
             release = cast_dict(created.json())
+            # 列表形状遵循既有 S9 锁定契约（test_releases_api.py：裸数组，不信封）。
             listing = await client.get("/api/v1/releases")
-            release_ids = {
-                cast_dict(r)["release_id"] for r in cast_dict(listing.json())["releases"]
-            }
+            releases = listing.json()
+            assert isinstance(releases, list)
+            release_ids = {UUID(str(cast_dict(r)["release_id"])) for r in releases}
             assert UUID(str(release["release_id"])) in release_ids

@@ -17,7 +17,7 @@ app = typer.Typer(
     help="冻结基准资产与校验和 lock", no_args_is_help=True, pretty_exceptions_enable=False
 )
 
-_ART_DIRS = ("novels", "questions", "risk", "knowledge")
+_ART_DIRS = ("novels", "questions", "risk", "knowledge", "change-brief")
 
 
 def _scan_artifacts(evals_dir: Path) -> dict[str, str]:
