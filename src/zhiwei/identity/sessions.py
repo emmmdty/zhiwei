@@ -643,12 +643,12 @@ class SessionService:
 
         # 数据库侧 attempt：acquire 事务内取 DB now() 作为 attempt 时间，
         # 与 updated_at 同源（验收阻断 2：应用/DB 时钟偏差不得误判并发 winner）
-        owner_token, attempted_at = await self._session_store.acquire_refresh_lease(
+        owner_token, _attempted_at = await self._session_store.acquire_refresh_lease(
             session_id, expected_version, REFRESH_LEASE
         )
         if owner_token is None:
             return await self._wait_for_winner(
-                session_id, expected_version, attempted_at=attempted_at
+                session_id, expected_version, initial_version=session.version
             )
         try:
             return await self._refresh_as_winner(session, expected_version, owner_token)
@@ -735,15 +735,18 @@ class SessionService:
         return refreshed
 
     async def _wait_for_winner(
-        self, session_id: UUID, expected_version: int, *, attempted_at: datetime
+        self, session_id: UUID, expected_version: int, *, initial_version: int
     ) -> AuthSession:
         """lease 竞争失败后的确定性判定：读取 winner 新版本或 fail closed。
 
         acquire 失败后立刻重读行，按状态区分四种情形：
         - version != expected_version：expected_version 已过期。若行版本恰好是
-          expected+1 且 updated_at 晚于本调用 attempt 的数据库时刻（attempted_at），
-          说明是并发赢家在我们 acquire 与读之间完成了刷新 → 返回 winner 的新版本
-          （绝不复用旧 refresh token）；否则是纯 stale 调用 → SessionConflictError；
+          expected+1 且本调用**发起时**读到的就是 expected（initial_version），
+          则观察到的推进只能是并发赢家在本次调用窗口内完成——无论其提交早于或
+          晚于本方 acquire——返回 winner 的新版本（绝不复用旧 refresh token）；
+          发起时读到更高版本的是纯 stale 调用 → SessionConflictError（与顺序
+          stale 契约 test_refresh_with_stale_expected_version_fails_closed 一致，
+          也避免依赖跨语句时钟比较——应用/DB 时钟偏差不得影响判定）；
         - version == expected_version 且 leased/calling（未过期）：并发 refresh 在途
           → 轮询 winner，等待上界 = lease 剩余（数据库时钟），不是固定轮询预算；
         - version == expected_version 且 calling 已过期：owner 已进入 calling 但状态
@@ -756,7 +759,7 @@ class SessionService:
         if current.version != expected_version:
             if (
                 current.version == expected_version + 1
-                and current.updated_at >= attempted_at
+                and initial_version == expected_version
             ):
                 return current
             raise SessionConflictError("stale expected_version for refresh")
