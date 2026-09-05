@@ -15,6 +15,7 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+
 from zhiwei.agents.claims import (
     ClaimEvidence,
     ClaimRecord,
@@ -22,13 +23,15 @@ from zhiwei.agents.claims import (
     ClaimScope,
     ClaimStatus,
     ClaimUpgradeDenied,
+    SealedValue,
+    render_claim,
     upgrade_claim,
 )
 from zhiwei.agents.release import ReleaseManifest, ReleaseService, ReleaseState
 from zhiwei.agents.rollout import Cohort, RollbackPolicy, RolloutPolicy
-
 from zhiwei.contracts.canonical import digest_bytes
-from zhiwei.evals.domain import EvalMode, EvalRunState, RegisteredUnit, SampleOutcome, SampleStatus
+from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
+from zhiwei.evals.runs import EvalRunState
 from zhiwei.evals.sealing import build_sealed_artifact, verify_sealed_artifact
 from zhiwei.persistence.tenant import TenantContextRequired
 
@@ -64,8 +67,9 @@ class TestManifestPersistenceRoundtrip:
         assert restored.content_digest == manifest.content_digest
 
     def test_payload_tampering_changes_content_digest(self) -> None:
+        # content_digest 覆盖不可变依赖集：篡改依赖 digest 必然改变内容指纹
         payload = _manifest().model_dump(mode="json")
-        payload["agent_version"] = 4
+        payload["pack_digest"] = "sha256:" + "9" * 64
         assert ReleaseManifest.model_validate(payload).content_digest != _manifest().content_digest
 
 
@@ -144,6 +148,38 @@ class TestClaimUpgradeThroughRealSealVerify:
                 evidence,
                 target=ClaimStatus.OFFLINE_VERIFIED,
                 verified_seal_digest="sha256:" + "9" * 64,
+            )
+
+    def test_render_digest_anchor_follows_bound_evidence(self) -> None:
+        # 锚点语义：claim 绑定 evidence 后，render 只接受该密封 digest 的值；
+        # 草稿渲染（无 evidence、未传复核 digest）不产生绑定结论。
+        evidence, seal_digest = self._verified_seal()
+        bound = self._implemented_claim().model_copy(
+            update={"status": ClaimStatus.OFFLINE_VERIFIED, "evidence": evidence}
+        )
+        filled = render_claim(
+            bound,
+            {
+                "accuracy": SealedValue(
+                    value="0.95", source="sealed_artifact", seal_digest=seal_digest
+                ),
+                "environment": None,
+            },
+            verified_seal_digest=seal_digest,
+        )
+        assert "0.95" in filled and "{{accuracy}}" not in filled
+        with pytest.raises(ClaimUpgradeDenied):
+            render_claim(
+                bound,
+                {
+                    "accuracy": SealedValue(
+                        value="0.95",
+                        source="sealed_artifact",
+                        seal_digest="sha256:" + "9" * 64,
+                    ),
+                    "environment": None,
+                },
+                verified_seal_digest=seal_digest,
             )
 
 

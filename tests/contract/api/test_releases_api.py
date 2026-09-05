@@ -21,12 +21,12 @@ from fastapi import FastAPI
 from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
-from zhiwei.agents.release import ReleaseManifest, ReleaseService
+
+from tests.fixtures.policy_fake import FakePolicyEnforcer
+from zhiwei.agents.release import ReleaseManifest, ReleaseService, ReleaseState
 from zhiwei.agents.rollout import RollbackPolicy, RolloutPolicy
 from zhiwei.api.claims import create_claims_router
 from zhiwei.api.releases import create_releases_router
-
-from tests.fixtures.policy_fake import FakePolicyEnforcer
 from zhiwei.identity.domain import ActorContext, ActorRoleBinding
 from zhiwei.object_store.posix import PosixObjectStore
 from zhiwei.persistence.database import create_database_engine, create_session_factory
@@ -246,7 +246,11 @@ class TestReleaseEndpoints:
                 ),
                 {"id": agent_id, "org": context.organization_id, "ws": context.workspace_id},
             )
-            created = await ReleaseService(session, context).create_draft(_manifest(agent_id))
+            service = ReleaseService(session, context)
+            created = await service.create_draft(_manifest(agent_id))
+            # builder 先推进到 evaluated：其后再请求 review 即 SoD 拒绝路径
+            await service.advance(created.release_id, target=ReleaseState.SANDBOX, role="builder")
+            await service.advance(created.release_id, target=ReleaseState.EVALUATED, role="builder")
         builder = _actor(context, "agent_builder")
         app = _releases_app(sessions, builder)
         transport = ASGITransport(app=app)

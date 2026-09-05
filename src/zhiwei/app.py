@@ -26,10 +26,12 @@ from zhiwei.api.auth import (
     create_auth_router,
     create_session_actor_dependency,
 )
+from zhiwei.api.claims import create_claims_router
 from zhiwei.api.events import create_events_router
 from zhiwei.api.memberships import create_memberships_router
 from zhiwei.api.observability import create_observability_router
 from zhiwei.api.organizations import create_organizations_router
+from zhiwei.api.releases import create_releases_router
 from zhiwei.api.runs import create_runs_router
 from zhiwei.api.scim import create_scim_router
 from zhiwei.api.workspaces import create_workspaces_router
@@ -225,6 +227,28 @@ def create_app(
             policy_enforcer=policy_enforcer,
         )
     )
+
+    # S9-T4：release 治理面（生命周期 SoD / canary / rollback）。不需要 object
+    # store，组合期直接挂载；claim registry 升级要独立复算密封件，依赖 store
+    # 根目录——按需挂载（同 temporal 的纪律：缺配置不提供半途而废的端点）。
+    app.include_router(
+        create_releases_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            policy_enforcer=policy_enforcer,
+        )
+    )
+    if settings.object_store_root is not None:
+        from zhiwei.object_store.posix import PosixObjectStore
+
+        app.include_router(
+            create_claims_router(
+                actor_dependency=session_actor,
+                sessions=app_sessions,
+                policy_enforcer=policy_enforcer,
+                object_store=PosixObjectStore(settings.object_store_root),
+            )
+        )
 
     # S2-T7：runtime 面（runs/SSE）。TEMPORAL_TARGET 未声明则不注册——
     # 本地产品按需声明，不在缺配置时提供半途而废的端点。

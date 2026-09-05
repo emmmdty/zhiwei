@@ -25,6 +25,8 @@ from fastapi import FastAPI
 from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
+from tests.fixtures.policy_fake import FakePolicyEnforcer
 from zhiwei.agents.release import (
     ReleaseManifest,
     ReleaseNotFound,
@@ -40,8 +42,6 @@ from zhiwei.agents.rollout import (
     RolloutPolicy,
 )
 from zhiwei.api.releases import create_releases_router
-
-from tests.fixtures.policy_fake import FakePolicyEnforcer
 from zhiwei.identity.domain import ActorContext, ActorRoleBinding
 from zhiwei.persistence.database import create_database_engine, create_session_factory
 from zhiwei.persistence.models import AuditEvent
@@ -219,6 +219,7 @@ class TestLifecycleRoleSeparation:
         _, sessions, context = database
         agent_id = await _seed_agent(sessions, context)
         other = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
+        assert other.workspace_id is not None
         async with tenant_session(sessions, other) as session:
             await TenantRepository(session, other).create_organization(
                 other.organization_id, status="active"
@@ -245,7 +246,12 @@ class TestRoleRefusalAuditTrail:
         agent_id = await _seed_agent(sessions, context)
         async with tenant_session(sessions, context) as session:
             created = await ReleaseService(session, context).create_draft(_manifest(agent_id))
-        # agent_builder 只能推进 draft 侧：evaluated→review 的复核是 reviewer 职责。
+            service = ReleaseService(session, context)
+            # builder 先把 release 推进到 evaluated：之后的 evaluated→review 是
+            # reviewer 职责，builder 的 advance 必须被 SoD 拒绝并记录 failed 审计
+            await service.advance(created.release_id, target=ReleaseState.SANDBOX, role="builder")
+            await service.advance(created.release_id, target=ReleaseState.EVALUATED, role="builder")
+        # agent_builder 不能复核：evaluated→review 的 SoD 拒绝（policy fake 放行后由域层拒绝）
         builder = _actor(context, "agent_builder")
         app = FastAPI()
         app.include_router(

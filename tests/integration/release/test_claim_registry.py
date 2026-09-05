@@ -19,6 +19,7 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+
 from zhiwei.agents.claims import (
     ClaimAlreadyRegistered,
     ClaimNotFound,
@@ -27,7 +28,6 @@ from zhiwei.agents.claims import (
     ClaimStatus,
     ClaimUpgradeDenied,
 )
-
 from zhiwei.contracts.canonical import digest_bytes
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.runs import (
@@ -142,6 +142,10 @@ class TestClaimUpgradeFromRealSeal:
                 statement="FactQA accuracy {{accuracy}}（{{environment}}）",
                 scope=_scope(),
             )
+            # 状态机必须逐级：planned → implemented（手工）→ offline_verified（密封件）
+            await registry.upgrade(
+                "factqa-v1.accuracy", target=ClaimStatus.IMPLEMENTED, eval_run_id=None
+            )
             upgraded = await registry.upgrade(
                 "factqa-v1.accuracy",
                 target=ClaimStatus.OFFLINE_VERIFIED,
@@ -214,6 +218,7 @@ class TestClaimUpgradeFromRealSeal:
     ) -> None:
         _, sessions, context, store = database
         other = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
+        assert other.workspace_id is not None
         async with tenant_session(sessions, other) as session:
             repository = TenantRepository(session, other)
             await repository.create_organization(other.organization_id, status="active")

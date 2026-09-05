@@ -1351,3 +1351,108 @@ class CostReconciliationRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class AgentReleaseRow(Base):
+    """S9 agent release（0015）：发布状态机 + 不可变 manifest 投影。
+
+    manifest payload 与 digest 冻结不可变（无 UPDATE 授权）：manifest 内容
+    digest 覆盖全部依赖，改写即伪造发布身份。可变列仅 state（生命周期转移）与
+    rollout_policy（活跃路由策略）——rollback 改 default pin 时 manifest 逐字节
+    不变，cohort pin 不重写（canary 计划独立于回滚）。
+    """
+
+    __tablename__ = "agent_releases"
+    __table_args__ = (
+        CheckConstraint("agent_version > 0", name="agent_version"),
+        CheckConstraint(
+            "state IN ('draft', 'sandbox', 'evaluated', 'review', 'staged', "
+            "'published', 'deprecated', 'retired')",
+            name="release_state",
+        ),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_agent_releases_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "agent_id"],
+            [
+                "agent_definitions.organization_id",
+                "agent_definitions.workspace_id",
+                "agent_definitions.id",
+            ],
+            name="fk_agent_releases_agent",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_agent_releases_scope_id"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    agent_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    agent_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    manifest_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    manifest: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    rollout_policy: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ClaimRegistryRow(Base):
+    """S9 claim registry（0015）：公开声明的状态机与密封证据绑定。
+
+    statement/scope 冻结不可变（口径是声明的身份，改口径 = 新声明）；可变列仅
+    status（升级状态机）、evidence（复核通过的密封证据）、bound_value（registry
+    渲染后的绑定值，只由服务层落库）。
+    """
+
+    __tablename__ = "claim_registry"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('planned', 'implemented', 'offline_verified', "
+            "'live_verified', 'retired')",
+            name="claim_status",
+        ),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_claim_registry_workspace",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "claim_id",
+            name="uq_claim_registry_scope_claim",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    claim_id: Mapped[str] = mapped_column(Text, nullable=False)
+    statement: Mapped[str] = mapped_column(Text, nullable=False)
+    scope: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    bound_value: Mapped[str | None] = mapped_column(Text)
+    evidence: Mapped[dict[str, Any] | None] = mapped_column(JSON_VALUE)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
