@@ -26,6 +26,8 @@ const OIDC_SUBJECT: Record<string, string> = {
   approver: "approver-oidc",
   member: "member-oidc",
   auditor: "auditor-oidc",
+  // operator 2026-09-05 修订裁决新增：无组织首登用户，供 empty-state 使用。
+  newuser: "newuser-oidc",
 };
 
 // 播种的 principal UUID（S1 e2e 种子：compose identity profile + DB seed 脚本）。
@@ -43,6 +45,12 @@ const KC_PASSWORD = process.env.KEYCLOAK_TEST_USER_PASSWORD ?? "s1-dev-user-pass
 
 // RED helper：登录入口。点 "Sign in" 触发 OIDC BFF redirect 到 Keycloak；
 // 在 Keycloak 登录页填入测试用户凭据，回调后回到应用。
+//
+// 登录态断言（operator 2026-09-05 修订裁决）：有角色用户断言角色文本可见；
+// 首登用户（零角色、无组织，bootstrap 前置状态）断言 Create organization
+// 入口可见——两者互斥由 PEP 的 bootstrap_org_create（零角色）保证，helper
+// 用 .or() 兼容 owner 在 test 1（首登）与 test 2/UI states（已 bootstrap）
+// 两种状态。
 async function signIn(page: Page, role: string) {
   await page.goto("/");
   await page.getByRole("link", { name: /sign in/i }).click();
@@ -52,7 +60,12 @@ async function signIn(page: Page, role: string) {
   await page.click('button[type="submit"]');
   // OIDC BFF callback 完成后回到应用
   await page.waitForURL("http://localhost:5173/", { timeout: 15_000 });
-  await expect(page.getByText(new RegExp(role, "i"))).toBeVisible();
+  await expect(
+    page
+      .getByText(new RegExp(role, "i"))
+      .or(page.getByRole("button", { name: /create organization/i }))
+      .first()
+  ).toBeVisible();
 }
 
 // 播种的 org id（e2e DB 种子）
@@ -115,13 +128,6 @@ test.describe("Owner journey", () => {
     await expect(page.getByText("core-platform")).toBeVisible();
   });
 
-  test("removes a member and sees membership list update", async ({ page }) => {
-    await signIn(page, "owner");
-    await page.getByText(PRINCIPAL_UUID.member).click();
-    await page.getByRole("button", { name: /remove member/i }).click();
-    await page.getByRole("button", { name: /confirm removal/i }).click();
-    await expect(page.getByText(PRINCIPAL_UUID.member)).toHaveCount(0);
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -203,18 +209,38 @@ test.describe("Auditor journey", () => {
   });
 });
 
+// operator 2026-09-05 修订（状态流）：remove 移至角色 journey 之后——
+// 移除 member 会摧毁 Member/Builder/Auditor journey 依赖的邀请状态，
+// 原声明顺序使后续 journey 无法登录到已授权上下文。
+  test("removes a member and sees membership list update", async ({ page }) => {
+    await signIn(page, "owner");
+    await page.getByText(PRINCIPAL_UUID.member).click();
+    await page.getByRole("button", { name: /remove member/i }).click();
+    await page.getByRole("button", { name: /confirm removal/i }).click();
+    await expect(page.getByText(PRINCIPAL_UUID.member)).toHaveCount(0);
+  });
+
 // ---------------------------------------------------------------------------
 // 状态：loading / empty / error / 403 / revoked
 // ---------------------------------------------------------------------------
 
 test.describe("UI states", () => {
   test("shows loading indicator while fetching resources", async ({ page }) => {
+    // operator 2026-09-05 修订：本地栈 fetch 毫秒级完成，登录态断言结束时初始
+    // fetch 已结束——延迟 orgs GET 使 loading 窗口可观察（不影响角色解析，
+    // 角色来自 members 端点）。
+    await page.route("**/api/v1/organizations", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await route.continue();
+    });
     await signIn(page, "owner");
     await expect(page.getByText(/loading/i)).toBeVisible({ hidden: false });
   });
 
   test("shows empty state when no workspaces exist", async ({ page }) => {
-    await signIn(page, "owner");
+    // operator 2026-09-05 修订：empty-state 改用无组织首登用户 newuser——
+    // owner 在此前 journey 中已创建 Engineering，无法回到空状态。
+    await signIn(page, "newuser");
     await expect(page.getByText(/no workspaces yet/i)).toBeVisible();
   });
 
