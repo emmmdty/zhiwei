@@ -122,7 +122,12 @@ class TestCheck:
         assert "ZHIWEI_DATABASE_URL" in result.output
         assert calls == [], "registry load must not be reached without a DSN"
 
-    def test_missing_surface_path_fails_closed(self, tmp_path: Path, monkeypatch: Any) -> None:
+    def test_missing_surface_path_reported_not_fatal(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # R2-A（T3）：required-if-exist 语义——缺失表面不构成 fatal 错误，但绝不
+        # 静默：per-path 条目（missing=true, checked=0）必须出现在 JSON 输出里；
+        # exit code 只由 findings 决定。
         _patch_registry(monkeypatch)
         result = runner.invoke(
             app,
@@ -132,9 +137,54 @@ class TestCheck:
                 "--db-dsn", FAKE_DSN,
             ],
         )
-        assert result.exit_code != 0
+        assert result.exit_code == 0, result.output
         assert TRACEBACK_MARKER not in result.output
-        assert "absent.md" in result.output
+        payload = _json_payload(result.output)
+        assert payload["surface"] == [
+            {"path": str(tmp_path / "absent.md"), "checked": 0, "missing": True}
+        ]
+        assert payload["findings"] == []
+
+    def test_default_surface_includes_demo(self, tmp_path: Path, monkeypatch: Any) -> None:
+        # R2-A（T3）：默认表面在 docs 之后追加 demo；三个面都存在时逐面可见。
+        _patch_registry(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        Path("README.md").write_text(GOOD_README, encoding="utf-8")
+        Path("docs").mkdir()
+        Path("docs/CLAIMS.md").write_text("claims\n", encoding="utf-8")
+        Path("demo").mkdir()
+        Path("demo/README.md").write_text("demo\n", encoding="utf-8")
+        Path("demo/nested.md").write_text("nested\n", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            ["release", "check", "--db-dsn", FAKE_DSN, "--now", "2026-09-06"],
+        )
+        assert result.exit_code == 0, result.output
+        payload = _json_payload(result.output)
+        assert [(entry["path"], entry["checked"], entry["missing"]) for entry in payload["surface"]] == [
+            ("README.md", 1, False),
+            ("docs", 1, False),
+            ("demo", 2, False),
+        ]
+
+    def test_missing_demo_in_default_surface_is_visible_not_fatal(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        _patch_registry(monkeypatch)
+        monkeypatch.chdir(tmp_path)
+        Path("README.md").write_text(GOOD_README, encoding="utf-8")
+        result = runner.invoke(
+            app,
+            ["release", "check", "--strict", "--db-dsn", FAKE_DSN, "--now", "2026-09-06"],
+        )
+        assert result.exit_code == 0, result.output
+        payload = _json_payload(result.output)
+        assert [(entry["path"], entry["missing"]) for entry in payload["surface"]] == [
+            ("README.md", False),
+            ("docs", True),
+            ("demo", True),
+        ]
+        assert payload["findings"] == []
 
 
 class TestAttest:
