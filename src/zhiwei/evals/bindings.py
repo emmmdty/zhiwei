@@ -5,6 +5,11 @@ Runtime/Policy/Evidence 身份必须逐字段一致——漂移在收集处（as
 与 BindingSet）fail closed，而不是等到密封后才发现不可比。live 是唯一有前置门禁的
 模式：BindingSpec 的常规构造路径直接拒绝 live，只有 for_live 携带显式 operator token
 才能产出；token 是审批凭据，绝不进入 manifest（manifest 才会被冻结复算）。
+
+门禁是路径完备（path-total）的：pydantic 校验器只覆盖 model_validate，model_copy/
+model_construct 会绕过它，因此 for_live 在实例上留私有哨兵，所有消费点
+（BindingSet 组装、manifest 密封、身份不变量断言）经 ensure_live_gate 重查——
+未过门的 live spec 无法被组装、密封或使用。
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, PrivateAttr, field_validator, model_validator
 
 from zhiwei.contracts.canonical import digest
 from zhiwei.evals.domain import EvalMode
@@ -112,11 +117,28 @@ def assert_identity_invariant(specs: Sequence[BindingSpec]) -> None:
     if first is None:
         return
     for spec in specs:
+        ensure_live_gate(spec)
         if spec.identity != first.identity:
             raise ValueError(
                 f"binding identity drift: mode {spec.mode.value!r} does not preserve "
                 "the shared AgentVersion/TaskGraph/Runtime/Policy/Evidence identity"
             )
+
+
+def ensure_live_gate(spec: BindingSpec) -> None:
+    """live spec 的消费点门禁：非 for_live 产出的 live 实例一律拒绝。
+
+    model_copy/model_construct 不经过任何校验器，构造级门禁对它们不可见；
+    门禁因此必须在消费处重查（私有哨兵只由 for_live 写入），保证未过门的
+    live spec 无法组装、密封或参与不变量断言。
+    """
+    if not _is_live_mode(spec.mode):
+        return
+    if spec._live_gate is not _OPERATOR_GATE:
+        raise ValueError(
+            "live binding spec did not pass the for_live operator gate "
+            "(live specs can only be produced by BindingSpec.for_live)"
+        )
 
 
 class BindingSpec(BaseModel):
@@ -130,6 +152,11 @@ class BindingSpec(BaseModel):
     sources: tuple[SourceBinding, ...] = ()
     tools: tuple[ToolBinding, ...] = ()
 
+    # 私有门禁哨兵：不在字段面（extra=forbid 不受影响），只由 for_live 写入。
+    # model_copy 会连带复制私有属性，model_construct 留默认值——两者在消费点
+    # 由 ensure_live_gate 区分。
+    _live_gate: object = PrivateAttr(default=None)
+
     @model_validator(mode="before")
     @classmethod
     def _refuse_implicit_live(cls, data: object) -> object:
@@ -137,6 +164,9 @@ class BindingSpec(BaseModel):
             # 已构造的 live 实例只可能来自 for_live；重校验放行。
             return data
         if isinstance(data, dict) and _is_live_mode(data.get("mode")):
+            # 复制后再弹哨兵：调用方传入的 dict 是引用，原地 pop 会让被拒绝方
+            # 观察到副作用（伪造门禁痕迹被消费）。
+            data = dict(data)
             gate = data.pop("_operator_gate", None)
             if gate is not _OPERATOR_GATE:
                 raise ValueError(
@@ -159,7 +189,8 @@ class BindingSpec(BaseModel):
         if not isinstance(operator_token, str) or not operator_token.strip():
             raise ValueError("live binding requires an explicit non-empty operator token")
         # 门禁哨兵经原始 payload 传递（model_validate 不做形参检查），before 校验器
-        # 消费后弹出，pydantic 的 extra=forbid 校验不受影响。
+        # 消费后弹出，pydantic 的 extra=forbid 校验不受影响；消费点哨兵在实例
+        # 私有属性上留痕，供 ensure_live_gate 重查。
         payload: dict[str, Any] = {
             "mode": EvalMode.LIVE,
             "identity": identity,
@@ -168,11 +199,14 @@ class BindingSpec(BaseModel):
             "tools": tools,
             "_operator_gate": _OPERATOR_GATE,
         }
-        return cls.model_validate(payload)
+        spec = cls.model_validate(payload)
+        spec._live_gate = _OPERATOR_GATE
+        return spec
 
     @property
     def manifest(self) -> dict[str, Any]:
         """可冻结的绑定 manifest；只含声明数据，绝不含 operator token。"""
+        ensure_live_gate(self)
         return {
             "mode": self.mode.value,
             "identity": {
@@ -211,6 +245,9 @@ class BindingSet(BaseModel):
 
     @model_validator(mode="after")
     def _assert_shared_identity(self) -> BindingSet:
+        for spec in self.specs:
+            # 组装是消费点：未过 for_live 门的 live spec 不得进入 BindingSet。
+            ensure_live_gate(spec)
         assert_identity_invariant(self.specs)
         for spec in self.specs:
             if spec.identity != self.identity:

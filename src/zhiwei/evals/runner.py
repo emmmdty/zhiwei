@@ -4,9 +4,10 @@
 EvalFoundationService.record_outcome（行锁串行化 + 终态校验 + 持久化），
 pending 单位从既有 EvalSample 行读出；pause/seal/verify 直接委托服务。
 
-质量口径：executor 产出原始 SampleOutcome，注册的确定性 scorer 在 COMPLETED
-结果上计算 pass/fail 并写回 result["passed"]——scorer 是唯一质量权威，executor
-自带的任何通过标记都会被覆盖（后者只是 scorer 的输入，不是平行结论）。
+质量口径：executor 产出原始 SampleOutcome；注册了确定性 scorer 时，COMPLETED
+结果由 scorer 计算 pass/fail 并写回 result["passed"]——scorer 是唯一质量权威，
+executor 自带的通过标记只是 scorer 的输入，不是平行结论。scorer=None 时不打分：
+executor 提供的 result["passed"]（如有）原样生效，runner 不代判也不覆盖。
 refused/error 终态不再评分：它们已在完整分母内计为非成功，对其补打分等于
 用缺失输出伪造质量信号。
 """

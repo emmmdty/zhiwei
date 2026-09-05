@@ -30,7 +30,7 @@ def _claim(
     status: ClaimStatus = ClaimStatus.OFFLINE_VERIFIED,
     environment: str = "offline-fixture",
     date: str = "2026-09-05",
-    value: str | None | object = AUTO_VALUE,
+    value: str | object | None = AUTO_VALUE,
 ) -> ClaimRecord:
     if value is AUTO_VALUE:
         value = (

@@ -9,9 +9,9 @@
   --mode offline 密封）；
 - bound_value 聚合自密封 run 的 sample 终态（EvalSample.result 的逐 outcome
   落账，result digest 已封进密封件）；模板填充走 render_claim 的 SealedValue
-  provenance 路径，digest 锚点为服务层复算 digest。bound_value 落库走 0015
-  迁移显式授权的列级 UPDATE（status/evidence/bound_value/updated_at）——服务
-  层暂无绑定值入口，种子层按迁移授权面写入；
+  provenance 路径，digest 锚点为服务层复算 digest；落库经服务层 bind_value
+  唯一入口（verified 态 + 证据 seal_digest 一致才写入，使用 0015 迁移授权的
+  bound_value 列级 UPDATE 面）；
 - 外部基准（longmemeval）只注册 planned：unavailable 密封件是不可用性的绑定
   证据，不解锁质量 claim（specs/s9 §7：缺数据时 claim 保持 planned）。
 
@@ -52,7 +52,7 @@ from zhiwei.contracts.time import utc_now
 from zhiwei.evals.runs import EvalFoundationService
 from zhiwei.object_store.posix import PosixObjectStore
 from zhiwei.persistence.database import create_database_engine, create_session_factory
-from zhiwei.persistence.models import ClaimRegistryRow, EvalRun, EvalSample, Workspace
+from zhiwei.persistence.models import EvalRun, EvalSample, Workspace
 from zhiwei.persistence.repositories import TenantRepository
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 
@@ -272,14 +272,9 @@ async def seed(runs_json: Path) -> int:
                 },
                 verified_seal_digest=digest,
             )
-            row = await session.scalar(
-                select(ClaimRegistryRow).where(ClaimRegistryRow.claim_id == spec.claim_id)
-            )
-            if row is None:
-                raise RuntimeError(f"{spec.claim_id}: registry 行丢失")
-            row.bound_value = rendered
-            row.updated_at = utc_now()
-            await session.flush()
+            # 绑定值经服务层唯一入口落库（fail closed：verified 态 + 证据
+            # seal_digest 与复核 digest 一致才写入）
+            await registry.bind_value(spec.claim_id, rendered, digest)
             results.append(
                 {
                     "claim_id": spec.claim_id,

@@ -11,11 +11,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from zhiwei.agents.claims import (
     ClaimEvidence,
@@ -82,7 +84,11 @@ def _evidence() -> dict[str, object]:
 def _service(row: _FakeRow | None, tmp_path: Path) -> tuple[ClaimRegistryService, _FakeSession]:
     context = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
     session = _FakeSession(row)
-    return ClaimRegistryService(session, context, PosixObjectStore(tmp_path / "objects")), session
+    # session 替身只实现 bind_value 路径触达的 scalar/flush 面
+    registry = ClaimRegistryService(
+        cast(AsyncSession, session), context, PosixObjectStore(tmp_path / "objects")
+    )
+    return registry, session
 
 
 def _verified_row(status: ClaimStatus = ClaimStatus.OFFLINE_VERIFIED) -> _FakeRow:

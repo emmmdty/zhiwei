@@ -33,7 +33,6 @@ from zhiwei.runtime.handlers.model_actions import (
 from zhiwei.telemetry.traces import (
     GENAI_SEMCONV_REVISION,
     SpanNames,
-    metadata_attributes,
     start_span,
 )
 
@@ -128,17 +127,17 @@ class ModelActivity:
         """
         # S9-T6 唯一埋点：model 域 span（metadata only）。默认 NoOp provider 下
         # 零副作用；operator 配置 exporter 后 span 经 W3C context 关联 run/task。
+        # 属性不经 metadata_attributes 预包装：start_span 统一在 telemetry 层做
+        # body key 剥离 + 非标量降级，调用点再包一层是重复处理。
         with start_span(
             SpanNames.MODEL,
-            metadata_attributes(
-                {
-                    "run_id": input.run_id,
-                    "task_id": input.task_id,
-                    "attempt_id": input.attempt_id,
-                    "task_type": input.task_type,
-                    GENAI_SEMCONV_REVISION_ATTRIBUTE: GENAI_SEMCONV_REVISION,
-                }
-            ),
+            {
+                "run_id": input.run_id,
+                "task_id": input.task_id,
+                "attempt_id": input.attempt_id,
+                "task_type": input.task_type,
+                GENAI_SEMCONV_REVISION_ATTRIBUTE: GENAI_SEMCONV_REVISION,
+            },
         ):
             return self._execute(input)
 

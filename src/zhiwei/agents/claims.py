@@ -57,7 +57,15 @@ _LIVE_MODES = frozenset({"live", "shadow"})
 
 
 class ClaimUpgradeDenied(RuntimeError):
-    """claim 升级/填充被拒：跳级、回退、终态、证据缺失或口径混写。"""
+    """claim 升级/填充被拒：跳级、回退、终态、证据缺失或口径混写。
+
+    reason 是稳定机器码（服务层拒绝面的程序化判别用），消息是人类可读补充；
+    缺省 None 保持既有 raise 点行为不变。
+    """
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 class ClaimNotFound(LookupError):
@@ -154,6 +162,9 @@ _EVIDENCE_EDGES: Mapping[tuple[ClaimStatus, ClaimStatus], frozenset[str]] = {
     (ClaimStatus.IMPLEMENTED, ClaimStatus.OFFLINE_VERIFIED): frozenset({"offline"}),
     (ClaimStatus.OFFLINE_VERIFIED, ClaimStatus.LIVE_VERIFIED): _LIVE_MODES,
 }
+
+# bind_value 只接受 artifact-verified 态：绑定值必须能追溯到密封证据。
+_BINDABLE_STATUSES = frozenset({ClaimStatus.OFFLINE_VERIFIED, ClaimStatus.LIVE_VERIFIED})
 
 
 def upgrade_claim(
@@ -358,6 +369,42 @@ class ClaimRegistryService:
         row.updated_at = utc_now()
         await self._session.flush()
         return upgraded
+
+    async def bind_value(self, claim_id: str, value: str, seal_digest: str) -> ClaimRecord:
+        """把 render_claim 产出的绑定值落库（bound_value 的唯一服务入口）。
+
+        fail closed：claim 必须在租户内、已到 verified 态、证据在场且证据
+        seal_digest 与调用方提供的复核 digest 一致——绑定值不允许脱离密封证据
+        单独写入（否则 release 表面数字可以绕过 artifact 直接落库）。落库走
+        0015 迁移显式授权的 bound_value 列级 UPDATE 面。
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise ClaimUpgradeDenied(
+                "bind_value requires a non-empty string value",
+                reason="value_empty",
+            )
+        row = await self._load(claim_id, for_update=True)
+        record = self._record(row)
+        if record.status not in _BINDABLE_STATUSES:
+            raise ClaimUpgradeDenied(
+                f"claim status {record.status.value!r} is not artifact-verified; "
+                "bound_value requires offline_verified or live_verified",
+                reason="status_not_verified",
+            )
+        if record.evidence is None:
+            raise ClaimUpgradeDenied(
+                "verified claim has no bound evidence to anchor the value",
+                reason="evidence_missing",
+            )
+        if record.evidence.seal_digest != seal_digest:
+            raise ClaimUpgradeDenied(
+                "seal digest does not match the claim's verified evidence",
+                reason="seal_digest_mismatch",
+            )
+        row.bound_value = value
+        row.updated_at = utc_now()
+        await self._session.flush()
+        return record.model_copy(update={"bound_value": value})
 
     async def _load(self, claim_id: str, *, for_update: bool) -> ClaimRegistryRow:
         statement = select(ClaimRegistryRow).where(

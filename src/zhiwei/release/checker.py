@@ -5,9 +5,13 @@ marker 绑定 Claim Registry 中 artifact-verified 的 claim。fail closed 语�
 
 - 只有 `<!-- claims:start -->` / `<!-- claims:end -->` 围成的声明块受扫描；
   未闭合的块按「延伸到文件末尾」处理——宁可多扫不漏扫；
-- 声明块内的数字只有与 claim marker 紧邻（仅空白间隔）才算被支撑；marker
-  本身无论解析成败都被独立校验（未知 id / 非 verified 状态都会产生 finding），
-  因此数字无法借道无效 marker 逃逸；
+- 声明块内的数字只有紧邻（仅空白间隔）verified claim marker 且数值与该 claim
+  的 bound_value 逐字符一致（whitespace 归一后）才算被支撑；紧邻 verified
+  marker 但数值不符（或 claim 未绑定值）是 UNSUPPORTED_NUMBER——伪造数字不能
+  借「贴着已验证 claim」逃逸；
+- marker 本身无论解析成败都被独立校验（未知 id / 非 verified 状态都会产生
+  finding），紧邻这类 marker 的数字不重复计 finding，因此数字无法借道无效
+  marker 逃逸；
 - marker span 内的数字属于 claim id（如 factqa-v1 里的 "1"），不是表面数字；
 - ISO-8601 日期（口径标注）从数字扫描中剔除：scope date 是声明身份的一部分
   而非质量数字，否则 Task 8 生成的口径表会被自己的 checker 拦截。
@@ -112,7 +116,27 @@ def _scan_line(
         span = number.span()
         if _inside_any(span, marker_spans):
             continue
+        adjacent_claim = _adjacent_verified_claim(span, markers, registry, masked)
+        if isinstance(adjacent_claim, _AllowedNumber):
+            # 紧邻 verified marker 且数值与该 claim 的 bound_value 一致：唯一放行路径
+            continue
+        if isinstance(adjacent_claim, str):
+            findings.append(
+                Finding(
+                    code=FindingCode.UNSUPPORTED_NUMBER,
+                    path=path,
+                    line=line_no,
+                    detail=(
+                        "number adjacent to a verified claim marker does not match "
+                        "the claim's bound value"
+                    ),
+                    claim_id=adjacent_claim,
+                )
+            )
+            continue
         if _adjacent_to_any(span, marker_spans, masked):
+            # 紧邻无效/非 verified marker 的数字由 _check_marker 的独立 finding
+            # 覆盖（未知 id / 无 artifact 支撑），数字不重复计 finding。
             continue
         findings.append(
             Finding(
@@ -196,6 +220,56 @@ def _check_marker(
 def _inside_any(span: tuple[int, int], marker_spans: list[tuple[int, int]]) -> bool:
     start, end = span
     return any(start < marker_end and marker_start < end for marker_start, marker_end in marker_spans)
+
+
+class _AllowedNumber:
+    """哨兵类型：紧邻 verified marker 且数值与 bound_value 一致——唯一放行路径。"""
+
+
+_ALLOWED_NUMBER = _AllowedNumber()
+
+
+def _normalize_ws(value: str) -> str:
+    return " ".join(value.split())
+
+
+def _adjacent_verified_claim(
+    span: tuple[int, int],
+    markers: list[re.Match[str]],
+    registry: Mapping[str, ClaimRecord],
+    line: str,
+) -> str | _AllowedNumber | None:
+    """裁决紧邻 verified marker 的数字（缺口仅空白）。
+
+    返回 _ALLOWED_NUMBER：数值与某个 verified claim 的 bound_value 逐字符一致
+    （whitespace 归一后）——放行；返回 str：紧邻 verified claim 但数值不符或
+    bound_value 缺失——拒绝，携带该 claim_id；返回 None：与 verified marker 无关
+    （未紧邻，或紧邻的是无效/非 verified marker，后者由 _check_marker 独立拦截）。
+    """
+    start, end = span
+    number_text = _normalize_ws(line[start:end])
+    rejected_claim_id: str | None = None
+    for marker in markers:
+        marker_start, marker_end = marker.span()
+        if marker_end <= start:
+            gap = line[marker_end:start]
+        elif end <= marker_start:
+            gap = line[end:marker_start]
+        else:
+            continue
+        if gap.strip():
+            continue
+        record = registry.get(marker.group(1))
+        if record is None or record.status not in _VERIFIED_STATUSES:
+            continue
+        if (
+            record.bound_value is not None
+            and number_text == _normalize_ws(record.bound_value)
+        ):
+            return _ALLOWED_NUMBER
+        if rejected_claim_id is None:
+            rejected_claim_id = marker.group(1)
+    return rejected_claim_id
 
 
 def _adjacent_to_any(

@@ -93,9 +93,9 @@ def test_model_copy_cannot_bypass_the_live_gate_at_consumption() -> None:
     with pytest.raises(ValidationError, match="operator gate"):
         BindingSet(identity=IDENTITY, specs=(ungated_live,))
     with pytest.raises(ValueError, match="operator gate"):
-        ungated_live.manifest
+        _ = ungated_live.manifest
     with pytest.raises(ValueError, match="operator gate"):
-        ungated_live.manifest_digest
+        _ = ungated_live.manifest_digest
     with pytest.raises(ValueError, match="operator gate"):
         assert_identity_invariant([ungated_live])
     with pytest.raises(ValueError, match="operator gate"):
@@ -109,9 +109,9 @@ def test_model_construct_cannot_bypass_the_live_gate_at_consumption() -> None:
     with pytest.raises(ValidationError, match="operator gate"):
         BindingSet(identity=IDENTITY, specs=(ungated_live,))
     with pytest.raises(ValueError, match="operator gate"):
-        ungated_live.manifest
+        _ = ungated_live.manifest
     with pytest.raises(ValueError, match="operator gate"):
-        ungated_live.manifest_digest
+        _ = ungated_live.manifest_digest
     with pytest.raises(ValueError, match="operator gate"):
         assert_identity_invariant([ungated_live])
     with pytest.raises(ValueError, match="operator gate"):

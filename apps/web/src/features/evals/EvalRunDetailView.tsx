@@ -3,12 +3,16 @@
 // 纪律：
 // - 报告（evals/reports.py EvalReportArtifact）在场时，scope 标签（mode 只能来自
 //   密封载荷）与分母/CI 以报告为权威；报告缺席 → unknown 原样展示，不造 placeholder。
+// - 报告必须经 GET /report 以显式 scope 查询参数现取（api/evals.py：model/version/
+//   date/corpus/environment 五参数全必填，缺参 422；未密封/构建被拒 409 携带
+//   机器可读 reason）。"Load report" 只打开 scope 输入行，不猜测任何默认值；
+//   422/409 的机器可读拒绝面原样上浮在报告区内联。
 // - 样本 outcome 只渲染 status + result_digest（metadata only）——result 正文
 //   （prompt/completion）可能含敏感内容，永不进 DOM。
 // - resume/seal 的状态机门禁只管 UI 入口；sealed 无出边等语义由 server 强制。
 
 import { useEffect, useState } from "react";
-import { api, SessionExpiredError } from "../../lib/api";
+import { ApiError, api, SessionExpiredError } from "../../lib/api";
 
 interface RegisteredUnit {
   sample_id: string;
@@ -69,6 +73,33 @@ interface EvalRunDetail {
 
 const ERROR_TEXT = "Something went wrong";
 
+// GET /report 的显式 scope 查询参数（api/evals.py get_eval_run_report，全必填）。
+// mode 不在其中：mode 只能来自密封载荷，不可声明。
+type ScopeField = "model" | "version" | "date" | "corpus" | "environment";
+const SCOPE_FIELDS: { name: ScopeField; label: string }[] = [
+  { name: "model", label: "model" },
+  { name: "version", label: "version" },
+  { name: "date", label: "date" },
+  { name: "corpus", label: "corpus" },
+  { name: "environment", label: "environment" },
+];
+const EMPTY_SCOPE: Record<ScopeField, string> = {
+  model: "",
+  version: "",
+  date: "",
+  corpus: "",
+  environment: "",
+};
+
+// 422/409 的机器可读拒绝面原样上浮：409 detail 是 {reason, message}，422 是
+// FastAPI 校验错误数组——保留 status 与逐字 detail，不退化成模糊文案。
+function formatReportError(error: unknown): string {
+  if (error instanceof ApiError) {
+    return `report refused (${error.status}): ${error.detail}`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 interface EvalRunDetailViewProps {
   evalRunId: string;
   readOnly: boolean;
@@ -87,12 +118,16 @@ export function EvalRunDetailView({
   const [error, setError] = useState<string | null>(null);
   const [confirmAction, setConfirmAction] = useState<"resume" | "seal" | null>(null);
   const [acting, setActing] = useState(false);
-  const [reportState, setReportState] = useState<"idle" | "loading" | "absent">("idle");
+  const [scopeOpen, setScopeOpen] = useState(false);
+  const [scope, setScope] = useState<Record<ScopeField, string>>(EMPTY_SCOPE);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState<string | null>(null);
 
   const apply = (next: EvalRunDetail) => {
     setRun(next);
     setConfirmAction(null);
-    setReportState("idle");
+    setScopeOpen(false);
+    setReportError(null);
   };
 
   const load = async () => {
@@ -125,18 +160,29 @@ export function EvalRunDetailView({
     }
   };
 
-  const loadReport = async () => {
-    setReportState("loading");
-    setError(null);
+  const fetchReport = async () => {
+    setReportLoading(true);
+    setReportError(null);
     try {
-      const report = await api.get<ReportArtifact>(`/api/v1/evals/${evalRunId}/report`);
+      // scope 五参数由调用方显式提供；空字段省略（不代填默认值），缺参由
+      // 服务端 422 拒绝——机器可读拒绝面在报告区内联上浮。
+      const params = new URLSearchParams();
+      for (const { name } of SCOPE_FIELDS) {
+        const value = scope[name].trim();
+        if (value) params.set(name, value);
+      }
+      const query = params.toString();
+      const report = await api.get<ReportArtifact>(
+        `/api/v1/evals/${evalRunId}/report${query ? `?${query}` : ""}`
+      );
       setRun((prev) => (prev ? { ...prev, report } : prev));
-      setReportState("idle");
+      setScopeOpen(false);
+      setScope(EMPTY_SCOPE);
     } catch (e) {
       if (e instanceof SessionExpiredError) return onSessionExpired();
-      // 404 = 该 run 没有可引用的报告——按「无报告」呈现，不造空成功值
-      setError(e instanceof Error ? e.message : String(e));
-      setReportState("absent");
+      setReportError(formatReportError(e));
+    } finally {
+      setReportLoading(false);
     }
   };
 
@@ -228,6 +274,32 @@ export function EvalRunDetailView({
       ) : (
         <p>Quality: unknown</p>
       )}
+      {reportError && (
+        <div role="alert" aria-label="Report error">
+          {reportError}
+        </div>
+      )}
+      {scopeOpen && (
+        <fieldset aria-label="Report scope">
+          <legend>Report scope</legend>
+          {/* mode 只能来自密封载荷，不可声明：预填自 run 详情，仅作展示 */}
+          <p>mode (from run): {run.mode}</p>
+          {SCOPE_FIELDS.map(({ name, label }) => (
+            <label key={name} htmlFor={`report-scope-${name}`}>
+              {label}
+              <input
+                id={`report-scope-${name}`}
+                name={name}
+                value={scope[name]}
+                onChange={(e) => setScope((prev) => ({ ...prev, [name]: e.target.value }))}
+              />
+            </label>
+          ))}
+          <button onClick={fetchReport} disabled={reportLoading}>
+            Fetch report
+          </button>
+        </fieldset>
+      )}
 
       <h3>Actions</h3>
       <div>
@@ -253,10 +325,16 @@ export function EvalRunDetailView({
             Confirm seal
           </button>
         )}
-        <button onClick={loadReport} disabled={readOnly || reportState === "loading"}>
+        <button
+          onClick={() => {
+            setScopeOpen((open) => !open);
+            setReportError(null);
+          }}
+          disabled={readOnly || reportLoading}
+          aria-expanded={scopeOpen}
+        >
           Load report
         </button>
-        {reportState === "absent" && <span>report: unknown</span>}
       </div>
     </section>
   );
