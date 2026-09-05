@@ -7,9 +7,11 @@ security suspend 不受 release pin 保护——全部在本文件冻结。
 
 from __future__ import annotations
 
+from itertools import pairwise
+from uuid import UUID, uuid4
+
 import pytest
 from pydantic import ValidationError
-from uuid import uuid4
 
 from zhiwei.agents.release import (
     ReleaseManifest,
@@ -41,7 +43,7 @@ class TestLifecycleTransitions:
             ReleaseState.DEPRECATED,
             ReleaseState.RETIRED,
         ]
-        for current, target in zip(path, path[1:]):
+        for current, target in pairwise(path):
             validate_transition(current, target)
 
     def test_skip_transition_denied(self) -> None:
@@ -142,16 +144,17 @@ class TestReleaseManifest:
 
 
 class TestCohortRouting:
-    def _policy(self) -> RolloutPolicy:
+    def _policy(self) -> tuple[RolloutPolicy, UUID, UUID]:
         workspace = uuid4()
         user = uuid4()
-        return RolloutPolicy(
+        policy = RolloutPolicy(
             default_version=1,
             cohorts=(
                 Cohort(kind="workspace", selector_id=workspace, version=2),
                 Cohort(kind="user", selector_id=user, version=3),
             ),
-        ), workspace, user
+        )
+        return policy, workspace, user
 
     def test_user_cohort_wins(self) -> None:
         policy, _workspace, user = self._policy()

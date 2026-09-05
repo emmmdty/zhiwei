@@ -7,6 +7,8 @@ GREEN 阶段不得修改、skip 或放宽本文件。
 
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 
 from zhiwei.evals.domain import RegisteredUnit, SampleOutcome, SampleStatus
@@ -69,7 +71,7 @@ class TestHolmCorrection:
         adjusted = holm_correction([0.2, 0.004, 0.01, 0.04])
         ordered = sorted(adjusted)
         assert ordered == sorted(ordered)
-        assert all(later >= earlier for earlier, later in zip(ordered, ordered[1:]))
+        assert all(later >= earlier for earlier, later in pairwise(ordered))
 
     def test_empty_family(self) -> None:
         assert holm_correction([]) == ()

@@ -30,12 +30,12 @@ from zhiwei.evals.ask_contracts import ASK_V1_SUITE
 from zhiwei.evals.external import (
     EXTERNAL_ADAPTER_NAMES,
     ExternalAdapterSpec,
+    diagnostic_scope,
+    ensure_diagnostic_scope,
     load_adapter_manifest,
     probe_adapter,
     resolve_external_adapter,
     run_available_adapter,
-    diagnostic_scope,
-    ensure_diagnostic_scope,
 )
 from zhiwei.evals.external.holdout import (
     HoldoutKey,

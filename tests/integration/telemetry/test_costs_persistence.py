@@ -14,6 +14,7 @@ import os
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
+from typing import Protocol
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -61,6 +62,20 @@ class _Tenant:
         )
 
 
+class _TenantLike(Protocol):
+    """_seed_run 只需要结构化的 org/ws 标识（_Tenant 与 TenantContext 均满足）。
+
+    用只读 property 声明：frozen dataclass / TenantContext 的字段都是只读面，
+    可变协议成员会让只读实现不可赋值。
+    """
+
+    @property
+    def organization_id(self) -> UUID: ...
+
+    @property
+    def workspace_id(self) -> UUID: ...
+
+
 async def _insert_tenant_rows(organization_id: UUID, workspace_id: UUID) -> None:
     connection = await asyncpg.connect(ADMIN_DSN)
     try:
@@ -79,7 +94,7 @@ async def _insert_tenant_rows(organization_id: UUID, workspace_id: UUID) -> None
         await connection.close()
 
 
-async def _seed_run(tenant: _Tenant) -> UUID:
+async def _seed_run(tenant: _TenantLike) -> UUID:
     run_id = uuid4()
     connection = await asyncpg.connect(ADMIN_DSN)
     try:

@@ -18,17 +18,18 @@ from fastapi import FastAPI
 from fixtures.policy_fake import FakePolicyEnforcer
 from httpx2 import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
-from zhiwei.api.observability import create_observability_router
-from zhiwei.telemetry.costs import PersistentCostLedger, ReserveRequest
-from zhiwei.telemetry.failures import FailureCode
 
 from tests.integration.telemetry.test_costs_persistence import (
     _insert_tenant_rows,
     _seed_run,
+    _Tenant,
 )
+from zhiwei.api.observability import create_observability_router
 from zhiwei.identity.domain import ActorContext
 from zhiwei.persistence.database import create_database_engine, create_session_factory
 from zhiwei.persistence.tenant import TenantContext
+from zhiwei.telemetry.costs import PersistentCostLedger, ReserveRequest
+from zhiwei.telemetry.failures import FailureCode
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 ADMIN_DSN = "postgresql://zhiwei_migrator@127.0.0.1:55432/zhiwei_test"
@@ -76,7 +77,9 @@ class TestCostSummaryEndpoint:
         context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
         app, sessions, engine = _router_app(_actor(organization_id, workspace_id))
         try:
-            run_id = await _seed_run(context)
+            run_id = await _seed_run(
+                _Tenant(organization_id=organization_id, workspace_id=workspace_id)
+            )
             ledger = PersistentCostLedger(sessions, context)
             reservation = await ledger.reserve(
                 ReserveRequest(
