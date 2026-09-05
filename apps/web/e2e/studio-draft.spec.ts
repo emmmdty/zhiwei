@@ -346,8 +346,10 @@ async function createDraftViaUi(page: Page): Promise<void> {
   for (const heading of SECTION_HEADINGS) {
     await expect(page.getByRole("heading", { name: heading })).toBeVisible();
   }
-  // Release 分区：T3 占位如实呈现（本任务不伪装发布流）
-  await expect(page.getByText("Release flow arrives with S10-T3")).toBeVisible();
+  // Release 分区：T3 起为完整发布流（readiness + S9 release commands 接管 T2
+  // 的诚实最小面——占位文本随占位一起移除，plan Task 3 交接口）
+  await expect(page.getByRole("heading", { name: "Release", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Check readiness" })).toBeVisible();
 }
 
 // ---------------------------------------------------------------------------
