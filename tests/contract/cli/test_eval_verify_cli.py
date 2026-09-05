@@ -112,8 +112,9 @@ class TestReport:
     def test_report_command_registered(self) -> None:
         result = runner.invoke(app, ["eval", "report", "--help"])
         assert result.exit_code == 0, result.output
+        # eval_run_id 是 Argument，help 面板里不带 -- 前缀
         for option in (
-            "--eval-run-id", "--organization-id", "--workspace-id",
+            "eval_run_id", "--organization-id", "--workspace-id",
             "--seal", "--model", "--version", "--date", "--corpus", "--environment",
         ):
             assert option in result.output

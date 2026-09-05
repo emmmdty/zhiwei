@@ -8,7 +8,19 @@ from __future__ import annotations
 
 import typer
 
-from zhiwei.cli import assets, context, db, dev, evals, models, providers, risk, runtime, sources
+from zhiwei.cli import (
+    assets,
+    context,
+    db,
+    dev,
+    evals,
+    models,
+    providers,
+    release,
+    risk,
+    runtime,
+    sources,
+)
 
 app = typer.Typer(
     help="知微 ZhiWei — 企业 Agent Core 命令行工具",
@@ -19,6 +31,7 @@ app.add_typer(dev.app, name="dev", help="开发诊断与调试命令")
 app.add_typer(db.app, name="db", help="数据库迁移与 schema 检查")
 app.add_typer(assets.app, name="assets", help="冻结基准资产与校验和 lock")
 app.add_typer(evals.app, name="eval", help="评测执行与密封")
+app.add_typer(release.app, name="release", help="Release 声明检查与出处 attestation")
 app.add_typer(risk.app, name="risk", help="Numeric Risk Detector Pack：风险发现生成与校验")
 app.add_typer(runtime.app, name="runtime", help="Agent Runtime 诊断与评测绑定")
 app.add_typer(context.app, name="verify", help="验证上下文清单与线绑定完整性")

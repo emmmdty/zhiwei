@@ -25,7 +25,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from zhiwei.config.settings import Settings, load_settings
-from zhiwei.contracts.canonical import digest, digest_bytes
+from zhiwei.contracts.canonical import canonical_json, digest, digest_bytes
 from zhiwei.evals.ask_contracts import ASK_V1_SUITE
 from zhiwei.evals.domain import EvalMode, RegisteredUnit, SampleOutcome, SampleStatus
 from zhiwei.evals.executors import EmptyExecutor, LegacyExecutor
@@ -47,15 +47,20 @@ from zhiwei.evals.memory_suites import (
     ENTERPRISE_MEMORY_V1,
     resolve_memory_suite,
 )
+from zhiwei.evals.reports import EvalReportArtifact, EvalReportScopeInput, build_eval_report
 from zhiwei.evals.risk_suites import NUMERIC_RISK_V1, RISK_SUITE_NAMES
 from zhiwei.evals.runs import (
     CreateEvalRunCommand,
     EvalFoundationService,
+    EvalSchemaRegistry,
     SealEmptyCommand,
 )
+from zhiwei.object_store.manifests import ArtifactManifestCommand
+from zhiwei.object_store.ports import ObjectNamespace
 from zhiwei.object_store.posix import PosixObjectStore
+from zhiwei.object_store.service import ArtifactService
 from zhiwei.persistence.database import create_database_engine, create_session_factory
-from zhiwei.persistence.models import EvalRun, EvalSample, Run
+from zhiwei.persistence.models import ArtifactManifest, EvalRun, EvalSample, Run
 from zhiwei.persistence.repositories import TenantRepository
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 
@@ -1122,6 +1127,180 @@ def seal(
     payload = _run_flow(
         sessions,
         lambda s: _seal_flow(s, context, store, eval_run_id),
+        context,
+    )
+    _emit_json(payload)
+
+
+async def _verify_all_sealed_flow(database_url: str, object_root: Path) -> dict[str, Any]:
+    """跨租户枚举全部 sealed EvalRun 并逐个独立复核密封件（系统级 maintenance DSN）。
+
+    任何一个 run 的密封件不可读/损坏/digest 不符都计入 failures——不静默跳过。
+    空密封集合是 vacuous 成功：没有密封件就没有可证伪的声明，checked=0 如实
+    出现在 JSON 里供 Gate 审阅（与 EvalRunState.is_complete 的空 registry 语义一致）。
+    """
+    store = PosixObjectStore(object_root)
+    sessions = create_session_factory(create_database_engine(database_url))
+    async with sessions() as session:
+        rows = (
+            await session.scalars(
+                select(EvalRun).where(EvalRun.status == "sealed").order_by(EvalRun.id)
+            )
+        ).all()
+        checked = 0
+        verified = 0
+        failures: list[dict[str, str]] = []
+        for row in rows:
+            checked += 1
+            context = TenantContext(
+                organization_id=row.organization_id, workspace_id=row.workspace_id
+            )
+            try:
+                async with tenant_session(sessions, context) as tenant_sess:
+                    service = EvalFoundationService(tenant_sess, context, store)
+                    await service.verify_sealed(row.id)
+            except Exception as exc:
+                reason = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
+                failures.append({"eval_run_id": str(row.id), "reason": reason})
+            else:
+                verified += 1
+    return {"checked": checked, "verified": verified, "failures": failures}
+
+
+@app.command("verify")
+def verify(
+    all_sealed: Annotated[
+        bool,
+        typer.Option("--all-sealed", help="系统级复核全部 sealed EvalRun 的密封件"),
+    ] = False,
+) -> None:
+    """独立复核密封件：unreadable/corrupt 计入 failures，绝不静默跳过。"""
+    if not all_sealed:
+        _fail("verify 必须显式指定 --all-sealed（系统级全量复核，暂无单 run 入口）")
+    settings = _load_settings()
+    if settings.database_url is None or settings.object_store_root is None:
+        _fail("ZHIWEI_DATABASE_URL / ZHIWEI_OBJECT_STORE_ROOT 未配置，无法复核密封件")
+    try:
+        payload = asyncio.run(
+            _verify_all_sealed_flow(
+                settings.database_url.get_secret_value(), settings.object_store_root
+            )
+        )
+    except Exception as exc:
+        _fail(f"eval verify 失败: {str(exc).splitlines()[0]}")
+    _emit_json(payload)
+    if payload["failures"]:
+        raise typer.Exit(1)
+
+
+async def _report_flow(
+    session: Any,
+    context: TenantContext,
+    store: PosixObjectStore,
+    eval_run_id: UUID,
+    scope: EvalReportScopeInput,
+    seal: bool,
+) -> dict[str, Any]:
+    """从已复核密封件构建 eval.report；scope 全显式，不从环境/时间猜测。"""
+    if context.workspace_id is None:
+        raise RuntimeError("report 需要 workspace 上下文")
+    service = EvalFoundationService(session, context, store)
+    artifact = await service.verify_sealed(eval_run_id)
+    seal_manifest = await session.scalar(
+        select(ArtifactManifest).where(
+            ArtifactManifest.organization_id == context.organization_id,
+            ArtifactManifest.workspace_id == context.workspace_id,
+            ArtifactManifest.owner_resource_type == "eval_run",
+            ArtifactManifest.owner_resource_id == eval_run_id,
+        )
+    )
+    if seal_manifest is None:
+        raise RuntimeError("seal manifest is missing")
+    sample_rows = (
+        await session.scalars(
+            select(EvalSample)
+            .where(
+                EvalSample.organization_id == context.organization_id,
+                EvalSample.workspace_id == context.workspace_id,
+                EvalSample.eval_run_id == eval_run_id,
+            )
+            .order_by(EvalSample.sample_id, EvalSample.unit_id)
+        )
+    ).all()
+    outcomes = [
+        SampleOutcome(
+            unit=RegisteredUnit(sample_id=row.sample_id, unit_id=row.unit_id),
+            status=SampleStatus(row.status),
+            result=dict(row.result or {}),
+        )
+        for row in sample_rows
+    ]
+    report, report_digest = build_eval_report(
+        artifact,
+        outcomes,
+        seal_digest=seal_manifest.content_digest,
+        scope=scope,
+    )
+    payload: dict[str, Any] = {
+        "eval_run_id": str(eval_run_id),
+        "report_digest": report_digest,
+        "report": report.canonical_mapping(),
+        "sealed": False,
+    }
+    if seal:
+        namespace = ObjectNamespace(
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+        )
+        schema_registry = EvalSchemaRegistry()
+        schema_registry.register("eval.report", 1, EvalReportArtifact)
+        artifacts = ArtifactService(session, context, store, schema_registry)
+        report_bytes = canonical_json(report.canonical_mapping())
+        temporary_key = store.write_temporary(namespace, [report_bytes])
+        committed = await artifacts.commit_upload(
+            temporary_key,
+            ArtifactManifestCommand(
+                owner_resource_type="eval_run",
+                owner_resource_id=eval_run_id,
+                content_digest=report_digest,
+                size_bytes=len(report_bytes),
+                media_type="application/json",
+                artifact_schema_id="eval.report",
+                artifact_schema_version=1,
+                classification="PUBLIC",
+                retention={},
+            ),
+        )
+        payload["sealed"] = True
+        payload["manifest_id"] = str(committed.manifest_id)
+    return payload
+
+
+@app.command("report")
+def report(
+    eval_run_id: EVAL_RUN_ID_ARG,
+    organization_id: ORGANIZATION_ID_OPT,
+    workspace_id: WORKSPACE_ID_OPT,
+    model_name: Annotated[str, typer.Option("--model", help="口径：model 标签")],
+    version: Annotated[str, typer.Option("--version", help="口径：version 标签")],
+    date_label: Annotated[str, typer.Option("--date", help="口径：ISO-8601 date 标签")],
+    corpus: Annotated[str, typer.Option("--corpus", help="口径：corpus 标签")],
+    environment: Annotated[str, typer.Option("--environment", help="口径：environment 标签")],
+    seal: SEAL_ARG = False,
+) -> None:
+    """从已复核密封件构建 eval.report（可选 --seal 上传为 eval.report artifact）。"""
+    _, _, _, store, sessions = _settings_runtime()
+    context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
+    scope = EvalReportScopeInput(
+        model=model_name,
+        version=version,
+        date=date_label,
+        corpus=corpus,
+        environment=environment,
+    )
+    payload = _run_flow(
+        sessions,
+        lambda s: _report_flow(s, context, store, eval_run_id, scope, seal),
         context,
     )
     _emit_json(payload)

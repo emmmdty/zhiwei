@@ -138,52 +138,56 @@ class TestCheck:
 
 
 class TestAttest:
-    def test_dry_run_covers_surface_and_never_mutates(self, tmp_path: Path) -> None:
-        with runner.isolated_filesystem(temp_dir=str(tmp_path)) as workdir:
-            Path("README.md").write_text(GOOD_README, encoding="utf-8")
-            Path("docs").mkdir()
-            Path("docs/CLAIMS.md").write_text("claims", encoding="utf-8")
-            Path("artifacts").mkdir()
-            Path("artifacts/report.json").write_text("{}", encoding="utf-8")
+    def test_dry_run_covers_surface_and_never_mutates(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        Path("README.md").write_text(GOOD_README, encoding="utf-8")
+        Path("docs").mkdir()
+        Path("docs/CLAIMS.md").write_text("claims", encoding="utf-8")
+        Path("artifacts").mkdir()
+        Path("artifacts/report.json").write_text("{}", encoding="utf-8")
 
-            def _snapshot() -> dict[str, bytes]:
-                return {
-                    path.relative_to(workdir).as_posix(): path.read_bytes()
-                    for path in sorted(Path(workdir).rglob("*"))
-                    if path.is_file()
-                }
-
-            before = _snapshot()
-            result = runner.invoke(
-                app,
-                [
-                    "release", "attest", "--dry-run",
-                    "--commit", COMMIT,
-                    "--generated-at", GENERATED_AT,
-                ],
-            )
-            assert result.exit_code == 0, result.output
-            payload = _json_payload(result.output)
-            assert payload["signed"] is False
-            assert "signature" not in payload
-            assert payload["provenance"]["commit"] == COMMIT
-            assert set(payload["content_digests"]) == {
-                "README.md", "docs/CLAIMS.md", "artifacts/report.json",
+        def _snapshot() -> dict[str, bytes]:
+            return {
+                path.relative_to(tmp_path).as_posix(): path.read_bytes()
+                for path in sorted(tmp_path.rglob("*"))
+                if path.is_file()
             }
-            assert _snapshot() == before, "dry-run must not create or change files"
 
-    def test_dry_run_is_deterministic_for_fixed_inputs(self, tmp_path: Path) -> None:
+        before = _snapshot()
+        result = runner.invoke(
+            app,
+            [
+                "release", "attest", "--dry-run",
+                "--commit", COMMIT,
+                "--generated-at", GENERATED_AT,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = _json_payload(result.output)
+        assert payload["signed"] is False
+        assert "signature" not in payload
+        assert payload["provenance"]["commit"] == COMMIT
+        assert set(payload["content_digests"]) == {
+            "README.md", "docs/CLAIMS.md", "artifacts/report.json",
+        }
+        assert _snapshot() == before, "dry-run must not create or change files"
+
+    def test_dry_run_is_deterministic_for_fixed_inputs(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        Path("README.md").write_text(GOOD_README, encoding="utf-8")
         args = [
             "release", "attest", "--dry-run",
             "--commit", COMMIT,
             "--generated-at", GENERATED_AT,
         ]
-        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
-            Path("README.md").write_text(GOOD_README, encoding="utf-8")
-            first = runner.invoke(app, args)
-            second = runner.invoke(app, args)
-            assert first.exit_code == 0, first.output
-            assert first.output == second.output
+        first = runner.invoke(app, args)
+        second = runner.invoke(app, args)
+        assert first.exit_code == 0, first.output
+        assert first.output == second.output
 
     def test_sign_without_key_file_refuses(self) -> None:
         result = runner.invoke(app, ["release", "attest", "--sign", "--output", "out.json"])
@@ -203,29 +207,31 @@ class TestAttest:
         assert result.exit_code != 0
         assert TRACEBACK_MARKER not in result.output
 
-    def test_sign_writes_verifiable_attestation(self, tmp_path: Path) -> None:
+    def test_sign_writes_verifiable_attestation(
+        self, tmp_path: Path, monkeypatch: Any
+    ) -> None:
         from zhiwei.release.attestation import AttestationDraft, verify_attestation
 
-        with runner.isolated_filesystem(temp_dir=str(tmp_path)):
-            Path("README.md").write_text(GOOD_README, encoding="utf-8")
-            Path("key.bin").write_bytes(b"k" * 32)
-            result = runner.invoke(
-                app,
-                [
-                    "release", "attest", "--sign",
-                    "--key-file", "key.bin",
-                    "--output", "attestation.json",
-                    "--commit", COMMIT,
-                    "--generated-at", GENERATED_AT,
-                ],
-            )
-            assert result.exit_code == 0, result.output
-            attestation = json.loads(Path("attestation.json").read_text(encoding="utf-8"))
-            assert attestation["signature"]
-            signed = AttestationDraft(
-                provenance=attestation["provenance"],
-                content_digests=attestation["content_digests"],
-                signed=True,
-                signature=attestation["signature"],
-            )
-            assert verify_attestation(signed, key=b"k" * 32) is None
+        monkeypatch.chdir(tmp_path)
+        Path("README.md").write_text(GOOD_README, encoding="utf-8")
+        Path("key.bin").write_bytes(b"k" * 32)
+        result = runner.invoke(
+            app,
+            [
+                "release", "attest", "--sign",
+                "--key-file", "key.bin",
+                "--output", "attestation.json",
+                "--commit", COMMIT,
+                "--generated-at", GENERATED_AT,
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        attestation = json.loads(Path("attestation.json").read_text(encoding="utf-8"))
+        assert attestation["signature"]
+        signed = AttestationDraft(
+            provenance=attestation["provenance"],
+            content_digests=attestation["content_digests"],
+            signed=True,
+            signature=attestation["signature"],
+        )
+        assert verify_attestation(signed, key=b"k" * 32) is None
