@@ -1,6 +1,8 @@
 # S3 - Models, Canonical Context and Handoff
 
 > Status: frozen implementation specification  
+> Revised: 2026-09-04（Gate 命令与已实现 CLI 表面对账，见 ADR-013：attestation 全量即默认、
+> verify context 走内置篡改场景集；live attestation 为 operator 显式路径，当前版本未接线）  
 > Depends on: S2  
 > Unlocks: S4
 
@@ -148,10 +150,10 @@ analysis 再冻结；结构 preservation gate 与 continuation quality 分开。
 ```bash
 uv run pytest tests/contract/models tests/unit/context -q
 uv run pytest tests/integration/context tests/security/model_egress -q
-uv run zhiwei verify context tests/fixtures/context --all
-uv run zhiwei models attest --mode fixture --all
-# live probe only by explicit operator after preflight:
-uv run zhiwei models attest --mode live --endpoint opencode-go --model <id>
+uv run zhiwei verify context --all
+uv run zhiwei models attest
+# live attestation 为 operator 显式路径（preflight + 人工确认后执行）；当前版本 CLI
+# 仅提供 fixture attestation，live 接线前本行以「计划实现」登记，不得据此宣称 live 已验证。
 ```
 
 ## 7. Claim boundary

@@ -21,7 +21,7 @@
 | 遗留 Pre-existing | 1 test failure |
 | ruff check | ✅ 0 errors |
 | pyright | ✅ 0 errors, 0 warnings |
-| 单元测试 | ✅ 1417 passed, 1 failed (pre-existing) |
+| 单元测试 | ✅ 1417 passed（初轮报告的 1 failed 经查为审计误标——verifier 测试过滤子串漂移，非 pre-existing 缺陷，已修复） |
 | 契约测试 | ✅ 850 passed, 1 skipped |
 
 ---
@@ -158,14 +158,19 @@
 | pyright src/ | ✅ 0 errors, 0 warnings |
 | import httpx (stale) | ✅ Clean |
 | import zhiwei | ✅ OK |
-| pytest tests/unit/ | ✅ 1417 passed, 1 failed (pre-existing) |
+| pytest tests/unit/ | ✅ 1417 passed（初轮 1 failed 见 §5.2 更正：审计误标，已修复） |
 | pytest tests/contract/ | ✅ 850 passed, 1 skipped |
 
 ### 5.2 Pre-existing Issues (不在本次审计范围)
 
+> 更正（2026-09-04）：初版报告将 `test_canonical_digest_computable` 标为 pre-existing failure；
+> 复核确认该失败源于审计轮对 `tests/unit/evidence/test_verifier.py` 的过滤子串与实现 check_id
+> 漂移（恒失败属测试侧缺陷，非实现缺陷），修复后全量回归 0 failed（pytest 2938 passed /
+> 6 skipped / 20 deselected，2026-09-04 终态）。
+
 | Issue | 状态 |
 |-------|------|
-| `test_canonical_digest_computable` | Pre-existing failure (digest_checks empty) |
+| `test_canonical_digest_computable` | 审计误标 pre-existing（测试过滤子串漂移），已修复并复验 |
 | `pytest-httpx` conflict with httpx2 | 已从 dev deps 移除 |
 | hypothesis property tests 未使用 | 已声明但未编写 (P2 遗留) |
 
@@ -246,7 +251,7 @@
 ✅ **Phase 5 (Regression):** PASS — ruff/pyright/test 全部通过
 
 **遗留项 (非阻塞):**
-- 1 个 pre-existing test failure (test_canonical_digest_computable)
+- ~~1 个 pre-existing test failure (test_canonical_digest_computable)~~ 已更正：审计误标（测试过滤子串漂移），修复后全量 0 failed
 - hypothesis property tests 待编写 (P2)
 - 8 个安全测试目录待创建 (P2)
 - 5 个 E2E Playwright spec 待创建 (P2)

@@ -138,6 +138,59 @@
   本地 venv 残留包掩盖）。远程仓库 `origin = github.com/emmmdty/zhiwei`，README/AGENTS.md
   已同步实现状态。
 
+## 2026-09-04：S3–S8 Gate 对账修复与阶段补全（ADR-013 驱动，subagent 分波执行 + 独立验收）
+
+- **Wave A（spec/文档修复，独立验收 PASS）**：S8 spec 围栏损坏修复（§4.1–§8 章节恢复正常渲染）；
+  S3 spec Gate 命令对账（`models attest` 全量默认、`verify context --all`，live attestation 登记
+  「计划实现」）；S1 spec Gate 纳入 identity 真实 OPA slow 行（ADR-012 §5）；progress.md 与
+  FINAL_AUDIT_REPORT 三处过时/虚假声明更正；ADR-013 入库（9 条反例 + 修订/补能力裁决）。
+- **真实栈接线缺陷（已验证）**：slow SCIM「真实 OPA」测试的 fixture 把 PEP 指向不可解析的
+  `http://opa.test:8181`，OPA 决策日志零记录——测试从未连上真实 OPA。修复后以 decision_id/
+  policy_revision 作为真实栈断言证据。
+- **S3 补全**：`verify context --all` 聚合入口；`ClassificationCeiling` 补 `__gt__/__ge__`
+  （"internal" > "public" 恒 False 的真实比较 bug）；pre-send 分类门禁 + profiles ceiling 解析 +
+  env override 优先级；tests/security/model_egress（18 条）；hidden reasoning 不持久化
+  （reducer + unit_of_work.append_event 统一 scrub 为确定性 opaque ref）；unverified endpoint
+  首次使用 canonical event + audit（事件流查重 + advisory lock，并发恰一条）。
+- **S4**：无新增后端缺口；e2e capability-hub 被前端能力缺失阻塞（非环境），例外条目登记。
+- **S5 补全**：4 个 knowledge suite 经生产 Retrieve handler→Knowledge Planner 路径密封
+  （doc 15 / code 15 / cross-source 12 / acl-freshness 11 units）；语料注册进 validator，
+  口径 110 → 822 项、冻结资产 21 → 26 个；修复 knowledge/acl.py 漏消费查询期 deny 的
+  真实缺陷（ADR-006 pre-filter/re-check 语义）。
+- **S6 补全**：`verify evidence` CLI（退出码 0/2/4/5/6 与 verifier 分层一一对应，未知内部异常
+  落保留码 70 不伪装 bundle 判定）+ valid/tampered bundle fixtures；factqa-v1 经冻结 snapshot
+  原生 SQLite 重放密封 120/120；ask-v1 经生产 AgentRuntime + VerifyHandler 密封 6/6；
+  Case 补 CREATED 状态与 canonical 生命周期事件；ADR-006 访问通道（evidence/access.py：
+  撤权占位/Auditor 可见/eval 复算通道）。
+- **S7 补全**：`eval external-status` 双分支（unavailable artifact 机器可读原因 + available
+  fixture 验证），LongMemEval claim 恒 planned/unavailable；enterprise-memory-v1 密封 12/12
+  （含 ADR-009 队列收敛负载单位）；memory PG 持久化补齐（migration 0012 + FORCE RLS +
+  状态机复用域层，无第二套状态机）；security/memory（ServiceAccount personal-memory 拒绝、
+  poisoning corpus 15 条全拒）。
+- **S8 补全**：`risk generate` CLI（D0–D6 真实口径：recall 0.786、easy/medium 1.0、hard 0.25
+  如实报告；refutation_rate=0.675 证伪机制真实工作）；numeric-risk-v1（22 units）与
+  discover-blind-v1（5 units）密封；NegativeProbe 确定性求值器 + RiskFingerprint +
+  evidence/patterns；trigger→StartRun 生产路径；ActionManager SoD 组合复用 S2 审批语义；
+  suite 定义落位 evals/risk_suites.py。
+- **e2e**：runtime-approval.spec.ts 以 mock 模式真实跑通（3/3，ADR-012 的 S2 例外可关闭）；
+  S4/S6/S7/S8 e2e 因被测前端能力缺失（非环境阻塞）按 ADR-012 例外四要素登记于 docs/handoffs/。
+- **终态（已验证，2026-09-04，全新库口径）**：pytest 3311 passed / 6 skipped / 20 deselected /
+  **0 failed**（前置条件：`compose.test.yaml` 干净库 + 单进程顺序执行；脏库/复用库下存在**既有**
+  测试隔离缺陷——session 级迁移 fixture 与连接池互锁致 DeadlockDetectedError、文件内状态污染，
+  该缺陷在 HEAD 即可复现（git worktree 验证），非本轮引入，登记为独立债务）；ruff 0；pyright 0；
+  `make evals` 822 项全过；`make determinism` 逐字节一致；S3–S8 spec Gate 命令全部可执行
+  （S4/S6/S7/S8 e2e 四项按 ADR-012 例外条目；S1/S2 的 Gate 稳定性受上述隔离缺陷影响，
+  阶段状态判「有条件收口」而非收口）。未 commit——提交边界建议见最终汇报。
+- **独立评审（3 路 subagent）修复轮**：ACL context-deny killer 测试（变异体实证）；memory
+  principal_kind 必填化（fail-open 消除）+ BackgroundRunContext 推导入口；S3 跨 endpoint
+  热切换 egress 复检（evaluate_model_switch）与 endpoint 中立性 architecture 测试（均经
+  变异体 RED 实证）；webhook secret 常数时间比较、生产 assert 消除、Temporal 注释失实修正、
+  falsification_coverage 改真实口径、security 目录 `__init__.py`、私有名公共化。
+- **登记「计划实现」**：classification_gate/CaptureTransport 的生产 egress 组装接线（机制已
+  实现并有测试，生产 ModelActivity 接 egress 时必须经此唯一入口）；hidden reasoning 的
+  Object Store/Temporal payload/Redis/log/trace 四个持久化面测试待补（当前覆盖 PG event +
+  projection + 内存投影 + 编译产物）。
+
 ## 待办
 
 - S3–S8 未提交批次：先由 operator 决定整批验收/提交边界（无法按原 per-Task 边界补拆），
@@ -147,9 +200,17 @@
 - S9 Eval/Release、S10 Studio/Third App、S11 Production Reference 未开始。
 - S2 修复轮登记的开放债务（详见 `docs/handoffs/s2-repair-round.md` §7）：SCIM group
   审计同事务、Child-run delegation 集成测试、SSE 心跳/游标下推、Web SSE 客户端等。
-- S5「评测先行」债务：`evals/knowledge/` 语料未注册进 validator（110 项口径未覆盖）。
-- 审计 P2 遗留：8 个 spec 要求的安全测试目录、5 个 E2E Playwright spec、hypothesis
-  reducer property tests、S5 dense index 生产化选型（pgvector/FAISS）。
-- token estimator spike（P0）仍未执行；wire capture spike 已于 2026-09-04 在 httpx2 下复验。
+- ~~S5「评测先行」债务：`evals/knowledge/` 语料未注册进 validator~~（2026-09-04 已关闭：
+  validator 口径 110 → 822 项、冻结资产 26 个）。
+- 审计 P2 遗留余项：S4/S6/S7/S8 的 E2E Playwright spec（例外条目已登记，待对应前端 features）、
+  hypothesis reducer property tests、S5 dense index 生产化选型（pgvector/FAISS）。
+- S3–S8 补全轮登记的实现缺口（详见各 Wave 交付报告）：Ask task_graph.yaml 输入模板未在生产
+  workflow 实现图内数据流（ask-v1 经场景数据驱动生产 handler）；Case 仓储仍为 InMemory
+  （canonical 事件已落账，PG 表未建）；discover trigger watermark 为进程内状态（跨重启重置）；
+  RISK_EVAL 10-seed 计划仅单 seed 冻结（10-seed 扩充需走资产冻结流程）；D5/D6（人评/故障负载）
+  不在离线口径。
+- token estimator spike（P0）已于 2026-09-03 入库（`a34a11f`，代码
+  `spikes/token_calibration/` + evidence JSON），2026-09-04 复跑 exit 0；wire capture spike
+  已于 2026-09-04 在 httpx2 下复验。
 - 委托集成测试：S3 Delegate handler 实现后必须补 integration 级委托链 + 环检测端到端 + 两路径
   共用计数验证。

@@ -58,6 +58,10 @@ falsification）：`FalsificationResult` 不是一段自由文本，而是一组
 RiskHypothesis
   → 生成 N 个 typed NegativeProbe：「若此假设为假，应观察到 X」
   → X 归约为 {metric, entity_scope, window, comparator, threshold} 之类可机器求值的结构
+  → 逐个执行，每个 probe 结果作为独立 EvidenceRef 附加
+  → 序贯累积证据并控制 Type-I error
+  → 未被推翻且证据充分 → human triage；被推翻 → 终止并保留完整证伪轨迹
+```
 
 ### 4.1 NegativeProbe model
 
@@ -88,10 +92,6 @@ class NegativeProbe:
 
 Probe 的求值必须由确定性组件完成（见 §4 三条硬约束之「模型只提出、不判定」）。
 每个 probe 结果作为独立 EvidenceRef 附加到 Hypothesis，不可合并或省略。
-  → 逐个执行，每个 probe 结果作为独立 EvidenceRef 附加
-  → 序贯累积证据并控制 Type-I error
-  → 未被推翻且证据充分 → human triage；被推翻 → 终止并保留完整证伪轨迹
-```
 
 三条硬约束：
 

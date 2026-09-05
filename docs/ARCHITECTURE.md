@@ -62,7 +62,10 @@ src/zhiwei/
   context/         state classes、compiler、budget、manifests
   models/          profiles、router、three transports、usage
   knowledge/       Source Ledger、connectors、planner、indexes、graph
-  memory/          records、policy、candidate、retrieval、forget
+  memory/          records、policy、candidate、retrieval、forget、repositories（2026-09-04
+                   修订：S7 plan 指定 memory/repositories.py 承载 PG 仓储，域状态机仍只在
+                   memory 域层实现，repository 复用之；依赖方向不变——域逻辑不反向依赖
+                   persistence，仅该模块作为 adapter 例外落位于此）
   capabilities/    catalog、admission、connections、MCP/OpenAPI/Skill/SDK
   evidence/        refs、canonical values、claims、bundles、verify、receipts
   cases/           Case lifecycle、cross-App sharing、resolution

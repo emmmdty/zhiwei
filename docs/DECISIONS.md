@@ -24,6 +24,7 @@
 | [ADR-010](#adr-010) | Provider 中立：OpenCode Go 降为 EndpointProfile 实例 | S3 | accepted |
 | [ADR-011](#adr-011) | Endpoint 分级信任、运行时注册与模型热切换 | S3 | accepted |
 | [ADR-012](#adr-012) | 契约测试层级、Gate 例外与读路径授权（S0–S2 复审修订） | S0–S3 | accepted |
+| [ADR-013](#adr-013) | Gate 命令对账与真实栈测试接线（S3–S8 全仓审计修订） | S1、S3–S8 | accepted |
 
 ---
 
@@ -924,6 +925,72 @@ spec Required tests 场景不得只存在于默认 deselect 的 marker 之后；
 - e2e（Playwright 五角色 journey、runtime-approval）在真实 Keycloak 可用前以例外条目存在，
   不宣称全绿。
 - 已收口阶段的「有条件收口」状态由修复轮消除：例外条目转绿或转为显式债务登记后才可宣称收口。
+
+---
+
+<a id="adr-013"></a>
+
+## ADR-013：Gate 命令对账与真实栈测试接线 —— S3–S8 全仓审计修订
+
+**影响阶段**：S1、S3–S8　**状态**：accepted
+
+### 问题
+
+S3–S8 批量实现入库后（2026-09-04 全仓审计），逐条按 spec Gate 原文执行验证，暴露两类
+规格级缺口：
+
+1. **Gate 命令与 CLI 表面漂移**：部分 Gate 命令引用了不存在的 CLI 选项/命令/ suite，
+   或 CLI 已按更合理的契约实现而 spec 仍写旧表面。任何一条不可执行，该阶段 Gate 即无法
+   成立（fail closed 是对的，但「永远无法执行的 Gate」等于没有 Gate）。
+2. **真实栈测试从未接通真实栈**：被 slow marker deselect 的「真实 OPA」集成测试，其
+   fixture 把 PEP 指向不可解析的假地址，OPA 决策日志零记录——测试实际验证的是
+   「OPA 不可达 fail closed」，而非授权矩阵语义。这正是 ADR-012 §5 预警的失效模式
+   （必需场景藏在默认 deselect 之后）与 §3 Fake 边界（Fake 与真实栈分歧是缺陷信号）的
+   双重实例。
+
+### 反例清单（均已源码/运行核实，2026-09-04）
+
+| # | 反例 | 位置 | 缺口类型 |
+| --- | --- | --- | --- |
+| 1 | `zhiwei models attest --mode fixture --all` → `No such option: --mode` | `specs/s3 §6` vs `cli/models.py` | Gate 命令漂移 |
+| 2 | `zhiwei verify context tests/fixtures/context --all` → `No such option: --all`（实际为 `--scenario` 枚举） | `specs/s3 §6` vs `cli/context.py` | Gate 命令漂移 |
+| 3 | `zhiwei verify evidence <bundle>`：`verify` 下无 `evidence` 子命令，`tests/fixtures/evidence/` 不存在 | `specs/s6 §3/§7` vs `cli/context.py` | 能力缺口 |
+| 4 | `zhiwei eval external-status` 命令不存在 | `specs/s7 §8` vs `cli/evals.py` | 能力缺口 |
+| 5 | `zhiwei risk generate` 命令不存在（cli/ 无 risk 模块） | `specs/s8 §8` vs `cli/main.py` | 能力缺口 |
+| 6 | S5–S8 Gate 的 9 个 suite id（knowledge-doc-v1 等）未注册，`eval run` 仅接受 `legacy-assets`/`runtime-contract-v1` | `specs/s5–s8` vs `cli/evals.py` | 能力缺口（评测先行债务） |
+| 7 | slow SCIM real-OPA 测试 403：fixture 以 `OPA_BASE_URL="http://opa.test:8181"`（不可解析）构建 app，真实 OPA 决策日志零记录；真实矩阵语义由 PEP 探针验证为 allow | `tests/integration/identity/test_scim_lifecycle.py:75` | 真实栈接线 |
+| 8 | 4 个 spec Gate 要求的安全测试目录缺失（`tests/security/{model_egress,evidence_access,memory,discover_identity}`） | `specs/s3/s6/s7/s8` | Gate 项缺失 |
+| 9 | 5 个 Gate 要求的 Playwright spec 缺失（runtime-approval、capability-hub、ask-evidence、memory-center、discover-case-action） | `specs/s2/s4/s6/s7/s8` | Gate 项缺失（部分已按 ADR-012 登记例外） |
+
+### 决策
+
+对每条 Gate 命令反例，按「能力缺口必须补能力、表面漂移才修 spec」裁决：
+
+1. **修订 spec 表面（反例 1/2，S3）**：`models attest` 的已实现契约（默认对全部 fixture
+   profiles 执行 offline schema attestation，覆盖不足即退出非零）完整覆盖 spec 意图，
+   `--mode/--all` 仅为旧表面；`verify context` 的内置七场景（valid + 五类篡改 + transition）
+   即 spec 所指的「全部验证场景」，补 `--all` 聚合入口。候选方案「为对齐字面而实现
+   `--mode/--all/--endpoint/--model`」被否决：为废弃语义加兼容旗标属于表面仪式，不产生
+   新的可验证行为。live attestation 显式登记为「计划实现」，不得宣称已验证。
+2. **补齐能力（反例 3–6，S5–S8）**：`verify evidence` CLI + bundle fixtures、
+   `eval external-status`（sealed unavailable artifact 路径）、`risk generate`、9 个 suite
+   的注册与可执行——这些是 spec 定义的真实产品能力，禁止以修订 spec 的方式消除。
+   suite 先于被评测能力细化（评测先行），ground truth 从已冻结/可复算语料确定性导出。
+3. **真实栈接线（反例 7，S1）**：real-OPA fixture 必须以 `REAL_OPA_BASE_URL` 覆盖
+   settings（或等价显式注入），并以「OPA 决策日志/decision_id 非空」作为「真实栈」的
+   断言证据——连接不上真实 OPA 的测试必须失败，不得静默退化为 fail-closed 演练。
+   同时按 ADR-012 §5 把 identity 真实 OPA slow 测试显式纳入 S1 Gate。
+4. **Gate 项缺失（反例 8/9）**：按 specs 补齐测试目录与 spec 文件；环境阻塞的（如需
+   Keycloak 的 Playwright journey）按 ADR-012 §2 例外机制登记，不得以缺失状态宣称 Gate。
+
+### 后果
+
+- S3–S8 的阶段 Gate 恢复「可执行」状态；执行结果与 artifacts 是收口判断的唯一依据。
+- S1 Gate 新增 identity slow 行；`capability-hub/ask-evidence/memory-center/discover-case-action`
+  四个 e2e 因被测前端能力缺失按 ADR-012 例外条目存在（2026-09-04）；`runtime-approval.spec.ts`
+  已以 mock 模式落盘并 3/3 通过，S2 的对应例外条目具备关闭条件（复执行记录见 e2e spec 顶部注释）。
+- 影响 `specs/s1`、`specs/s3`（Revised 头）、`specs/s5–s8`（Gate 可执行性）、
+  `docs/progress.md`、`docs/FINAL_AUDIT_REPORT.md`（两处过时声明更正）。
 
 ---
 
