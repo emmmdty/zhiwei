@@ -76,7 +76,7 @@ class TestFabricatedNumber:
 
     def test_marked_verified_number_passes(self) -> None:
         text = CLAIMS_BLOCK.format(body="FactQA accuracy {{claim:factqa-v1.accuracy}}")
-        assert _scan() == ()
+        assert _scan(text) == ()
 
     def test_planned_claim_reference_flagged(self) -> None:
         # planned/implemented 的 claim 没有 artifact 支撑，引用即拦截。
