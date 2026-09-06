@@ -7,13 +7,14 @@
 
 项目按 S0–S11 阶段推进（见 [docs/ROADMAP.md](docs/ROADMAP.md)）：
 
-- **已完成**：冻结总设计与 ADR-001~012、12 份阶段规格与任务计划、评测资产（`make evals` 110 项
-  validator、`make determinism` 21 个发布资产两次重建逐字节一致）。
+- **已完成**：冻结总设计与 ADR-001~012、12 份阶段规格与任务计划、评测资产（`make evals` 1205 项
+  validator、`make determinism` 32 个发布资产两次重建逐字节一致）。
 - **S0–S2**（Foundation / Tenancy / Runtime）：阶段 Gate 收口，交接单见 `docs/handoffs/`。
 - **S3–S8**（Models/Context、Capability Hub、Knowledge、Evidence/Ask、Memory、Discover/Actions）：
   核心实现已入库，通过全仓 Gate：ruff 0、pyright 0、pytest 全量通过（含 OPA + PostgreSQL
   集成层），CI 在每次 push/PR 复验。
-- **未开始**：S9 Eval/Release、S10 Studio/Third App、S11 Production Reference。
+- **S9**（Eval/Release/Observability）：收口 2026-09-06。**S10**（Studio/Third App）：本轮入库。
+  **未开始**：S11 Production Reference。
 
 纪律不变：不调用 live 模型；没有 Gate artifact 支撑的数字不写进任何文档。当前不存在模型效果、
 检索质量、成本、延迟、吞吐或生产可用性声明——上述测试结果证明的是实现纪律与契约正确性，

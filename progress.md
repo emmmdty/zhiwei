@@ -222,7 +222,8 @@
 - S3–S8 批次按模块边界分批入库（deps 迁移 → 既有模块加固 → S3–S8 各阶段 → 接线 →
   solution packs → 审计文档与 spec 修订）；~~整批验收以全量 Gate 为准，不声称逐 Task 收口~~
   （已验收；逐 Task 收口口径不变）。
-- S9 Eval/Release、S10 Studio/Third App、S11 Production Reference 未开始。
+- ~~S9 Eval/Release、S10 Studio/Third App、S11 Production Reference 未开始~~（2026-09-06 更新：
+  S9 收口 2026-09-06；S10 本轮入库；S11 未开始）。
 - S2 修复轮登记的开放债务（详见 `docs/handoffs/s2-repair-round.md` §7）：SCIM group
   审计同事务、Child-run delegation 集成测试、SSE 心跳/游标下推、Web SSE 客户端等。
 - ~~S5「评测先行」债务：`evals/knowledge/` 语料未注册进 validator~~（2026-09-04 已关闭：
