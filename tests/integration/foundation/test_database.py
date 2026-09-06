@@ -79,6 +79,10 @@ REQUIRED_TABLES = {
     # 四轮 RED 机制修订登记：REQUIRED_TABLES 契约随新表扩展（0011 同款）。
     "agent_releases",
     "claim_registry",
+    # S10-T4b（0017）：Case surface 持久层（S6 收口补齐；FORCE RLS、org+ws 作用域）
+    # REQUIRED_TABLES 契约随新表扩展（0011 同款登记协议）。
+    "cases",
+    "case_events",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -106,6 +110,9 @@ WORKSPACE_TABLES = {
     # S9-T4（0015）：release 与 claim 行均为 workspace 作用域租户数据
     "agent_releases",
     "claim_registry",
+    # S10-T4b（0017）：case 行与生命周期台账均为 workspace 作用域租户数据
+    "cases",
+    "case_events",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级

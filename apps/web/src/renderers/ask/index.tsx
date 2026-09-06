@@ -1,22 +1,15 @@
-// S10-T1：Ask（solution-packs/ask，pack_id: ask-v1）的 ViewManifest 首注册。
-// 本任务冻结的是机制：App 专属 input/result renderer 由后续任务交付——当前
-// 如实渲染 "not built" + run 元数据（经通用 primitives），不发明 Ask 专属 UI。
-// run template ↔ app 的绑定同为数据行：pack run 的 templateId 取 pack_id。
+// S10-T4b：Ask 的 ViewManifest 注册（appId: "ask"，templateId: "ask-v1"，
+// T1 冻结的绑定约定）。input/result renderer 由本目录文件交付；run template ↔
+// app 的绑定是数据行——composition root（App.tsx）只 import 本模块一次，
+// 通用层永不按名字引用本 App。
 
-import { StateBanner } from "../../components/StateBanner";
-import { registerRenderer, registerRunBinding, type ViewManifestProps } from "../registry";
-
-function AskResultRenderer({ run }: ViewManifestProps) {
-  return (
-    <section aria-label="Ask app view">
-      <p>App view not built (ask)</p>
-      <StateBanner tone="empty" text={`run ${run.runId}: ${run.status}`} />
-    </section>
-  );
-}
+import { registerRenderer, registerRunBinding } from "../registry";
+import { AskInputRenderer } from "./input";
+import { AskResultRenderer } from "./result";
 
 registerRunBinding({ templateId: "ask-v1", appId: "ask" });
 registerRenderer({
   appId: "ask",
+  InputRenderer: AskInputRenderer,
   ResultRenderer: AskResultRenderer,
 });

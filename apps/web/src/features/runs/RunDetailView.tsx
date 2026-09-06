@@ -38,6 +38,7 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [live, setLive] = useState(false);
+  const [createdCaseId, setCreatedCaseId] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -47,6 +48,21 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  // S10-T4b：从完成的 run 创建 Case（api/cases.py；409/404 语义 server-driven，
+  // 前端不硬判）。入口 gated on run 终态——非终态 run 无此控件。
+  const createCase = async () => {
+    setError(null);
+    try {
+      const created = await api.post<{ id: string }>(`/api/v1/runs/${runId}/cases`, {
+        title: `Case for run ${runId.slice(0, 8)}`,
+      });
+      setCreatedCaseId(created.id);
+    } catch (e) {
+      if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -104,6 +120,10 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
           </li>
         ))}
       </ul>
+      {run.status === "completed" && !createdCaseId && (
+        <button onClick={createCase}>Create case</button>
+      )}
+      {createdCaseId && <p>Case created: {createdCaseId}</p>}
       <AppRendererSlot
         run={{
           runId: run.run_id,

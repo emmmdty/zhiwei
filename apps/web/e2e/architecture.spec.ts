@@ -250,8 +250,9 @@ test.describe("S10 architecture — live resync", () => {
 
     await openRunDetail(page, LIVE_RUN);
 
-    // 机制 happy path：template ask-v1 → 已注册 renderer（如实渲染 not built）
-    await expect(page.getByText("App view not built (ask)")).toBeVisible();
+    // 机制 happy path：template ask-v1 → 已注册 renderer（S10-T4b 起为真实
+    // evidence 视图；非终态 run 的 evidence 投影未生成 → 如实渲染 pending 态）
+    await expect(page.getByText(/Evidence pending \(run/)).toBeVisible();
 
     // 默认关：零 SSE 连接（默认 journey 行为不变）
     expect(state.sseRequests).toHaveLength(0);

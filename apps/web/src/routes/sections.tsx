@@ -15,6 +15,7 @@ import { KnowledgeView } from "../features/knowledge/KnowledgeView";
 import { CapabilitiesView } from "../features/capabilities/CapabilitiesView";
 import { MemoryView } from "../features/memory/MemoryView";
 import { AdminView } from "../features/admin/AdminView";
+import { CaseView } from "../features/cases/CaseView";
 import { hasRole, type SessionUser } from "../lib/session";
 
 export interface SectionContext {
@@ -125,6 +126,13 @@ export const SECTIONS: readonly SectionDescriptor[] = [
         onSessionExpired={ctx.onSessionExpired}
       />
     ),
+  },
+  // S10-T4b：case surface 分区（S6 §4 通用 Case 面；创建入口在 RunDetailView，
+  // 本分区只读呈现列表/详情，状态机转移 API 未落地前不提供操作控件）
+  {
+    key: "cases",
+    label: "Cases",
+    render: (ctx) => <CaseView onSessionExpired={ctx.onSessionExpired} />,
   },
 ];
 

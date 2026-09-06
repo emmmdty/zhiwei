@@ -401,8 +401,12 @@ test.describe("S6 ask evidence — case journeys", () => {
     await expect(page.getByText("Status: created")).toBeVisible();
     await expect(page.getByText(new RegExp(EVIDENCE_RUN))).toBeVisible();
 
-    // 刷新恢复：详情从 server projection 重取（重载后仍渲染）
+    // 刷新恢复：shell 无 URL 路由（分区状态不跨 reload 保留），刷新后经分区
+    // 导航重新打开 case，详情从 server projection 重取（请求计数自证恢复）
     await page.reload();
+    await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+    await page.getByRole("button", { name: "Cases", exact: true }).click();
+    await page.getByRole("button", { name: "Open" }).click();
     await expect(page.getByRole("heading", { name: "Case", exact: true })).toBeVisible();
     await expect(page.getByText("Status: created")).toBeVisible();
     expect(state.caseDetailRequests).toBeGreaterThanOrEqual(2);

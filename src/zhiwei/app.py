@@ -27,10 +27,12 @@ from zhiwei.api.auth import (
     create_session_actor_dependency,
 )
 from zhiwei.api.capabilities import create_capabilities_router
+from zhiwei.api.cases import create_cases_router
 from zhiwei.api.claims import create_claims_router
 from zhiwei.api.connections import create_connections_router
 from zhiwei.api.evals import create_evals_router
 from zhiwei.api.events import create_events_router
+from zhiwei.api.evidence import create_evidence_router
 from zhiwei.api.knowledge import create_knowledge_router
 from zhiwei.api.memberships import create_memberships_router
 from zhiwei.api.memory import create_memory_router
@@ -335,6 +337,22 @@ def create_app(
                 tenant_context_factory=_actor_tenant_context,
                 run_exists=_make_run_exists(app_sessions),
                 redis_stream=redis_stream,
+            )
+        )
+
+        # S10-T4b：Case surface + run evidence 投影（S6 收口补齐）。cases 的
+        # 创建语义依赖 run 终态（canonical reduce），与 runtime 面同门槛挂载。
+        app.include_router(
+            create_cases_router(
+                actor_dependency=session_actor,
+                sessions=app_sessions,
+                policy_enforcer=policy_enforcer,
+            )
+        )
+        app.include_router(
+            create_evidence_router(
+                actor_dependency=session_actor,
+                sessions=app_sessions,
             )
         )
 

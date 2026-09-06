@@ -1470,3 +1470,120 @@ class ClaimRegistryRow(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class CaseRow(Base):
+    """S6 Case 持久层（0017）：S6-T3 Case 聚合的 PG 投影（S6 收口补齐）。
+
+    Case 引用 answer/evidence 的 id，不复制 transcript（answer_ids/
+    evidence_bundle_ids 为 JSONB id 列表，与域模型 tuple-of-UUID 语义一致）。
+    origin_run_id 是「从 run 创建」的溯源列（可空——聚合本身不绑定 run）；
+    生命周期状态机的转移语义在 zhiwei.cases 层，本表无 UPDATE 授权（转移
+    API 未落地前不提供部分列更新，防绕过状态机写路径）。
+    """
+
+    __tablename__ = "cases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('created', 'active', 'triaged', 'open', 'resolved', 'archived')",
+            name="case_status",
+        ),
+        CheckConstraint("length(title) >= 1", name="case_title"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_cases_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "origin_run_id"],
+            ["runs.organization_id", "runs.workspace_id", "runs.id"],
+            name="fk_cases_origin_run",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_cases_scope_id"
+        ),
+        Index(
+            "ix_cases_origin_run",
+            "organization_id",
+            "workspace_id",
+            "origin_run_id",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    origin_run_id: Mapped[UUID | None] = mapped_column(Uuid)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default=text("''")
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    answer_ids: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    evidence_bundle_ids: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSON_VALUE, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class CaseEventRow(Base):
+    """S6 Case 生命周期台账（0017）：Run 外生命周期事件的追加式持久层。
+
+    commands 层约定「caller 负责持久化 canonical 生命周期事件」（与 eval seal
+    事件同模式）；(case_id, event_type, payload_digest) 唯一键让重放幂等。
+    只有 SELECT/INSERT 授权（台账只追加）。
+    """
+
+    __tablename__ = "case_events"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_case_events_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "case_id"],
+            ["cases.organization_id", "cases.workspace_id", "cases.id"],
+            name="fk_case_events_case",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "case_id",
+            "event_type",
+            "payload_digest",
+            name="uq_case_events_transition",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    case_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_status: Mapped[str | None] = mapped_column(String(16))
+    to_status: Mapped[str | None] = mapped_column(String(16))
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
