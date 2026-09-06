@@ -35,15 +35,15 @@ annotations——endpoint 签名里的 `Annotated[ActorContext, Depends(actor_de
 引用工厂闭包变量，必须在 def 期立即求值才能被 FastAPI 解析。
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
-from typing import Annotated, Any, cast
+from typing import Annotated, Any, Literal, NamedTuple, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, func, select, update
 from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -63,6 +63,8 @@ from zhiwei.contracts.time import utc_now
 from zhiwei.identity.domain import ActorContext
 from zhiwei.persistence.models import AgentDefinition as AgentDefinitionRow
 from zhiwei.persistence.models import AgentVersion
+from zhiwei.persistence.models import EvalRun as EvalRunRow
+from zhiwei.persistence.models import Run as RunRow
 from zhiwei.persistence.tenant import TenantContext, tenant_session
 from zhiwei.policy.enforcement import PolicyEnforcer
 from zhiwei.policy.roles import Action, Purpose, ResourceType
@@ -123,6 +125,161 @@ class AgentDraftView(BaseModel):
     revision: int
     lifecycle: str
     updated_at: datetime
+
+
+class AgentDiffField(BaseModel):
+    """版本 diff 字段条目（S10-T3）：kind 词汇冻结为五类，budget 待版本快照
+    存储落库后由任务图派生（0016 迁移 docstring 明确把 revision 历史留给后续
+    表）——当前存储不出该 kind，词汇先行冻结以保证 UI 渲染面稳定。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    field: str
+    # wire 键是保留字 "from"，只能落在序列化别名上（验证别名取字段名——
+    # pydantic/pyright 会按验证别名合成 __init__，保留字无法作 kwargs）
+    from_value: str | None = Field(default=None, serialization_alias="from")
+    to: str | None = None
+    kind: Literal["dependency", "permission", "budget", "schema", "other"]
+
+
+class AgentRevisionDiff(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    fields: list[AgentDiffField]
+
+
+class ReleaseReadinessCheck(BaseModel):
+    """一条就绪检查结果：可计算的检查真算（缺数据=missing，绝不假设满足）；
+    无法从 agent 记录泛化计算的检查以 kind=unknown 如实呈报原因（fail closed，
+    unknown 与 missing 同样不计入 ready）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal["eval_seal", "connection", "capability_publish", "unknown"]
+    detail: str
+
+
+class ReleaseReadiness(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    ready: bool
+    missing: list[ReleaseReadinessCheck]
+
+
+class _RevisionSnapshot(NamedTuple):
+    """一个 revision 参与字段级 diff 的全部已存储事实（缺项=该侧未记录）。"""
+
+    schema_version: int | None
+    content_digest: str | None
+    manifest: ReleaseManifest | None
+
+
+# release manifest 字段 → diff kind：依赖 digest 集（pack/model/knowledge/memory）
+# 是依赖面，capability/policy digest 是权限面——manifest 是版本间唯一有字段级
+# 落库记录的差异面（api/releases.py ReleaseManifest 冻结投影）。
+_MANIFEST_DIFF_KINDS: Mapping[str, Literal["dependency", "permission"]] = {
+    "pack_digest": "dependency",
+    "model_digest": "dependency",
+    "knowledge_digest": "dependency",
+    "memory_digest": "dependency",
+    "capability_digest": "permission",
+    "policy_digest": "permission",
+}
+
+
+async def _resolve_revision_snapshot(
+    session: AsyncSession,
+    context: TenantContext,
+    row: AgentDefinitionRow,
+    revision: int,
+) -> _RevisionSnapshot:
+    """revision → 参与 diff 的已存事实。agent_versions 行优先（不可变既定参照，
+    同号冲突时压过移动中的 draft）；draft 只有当前 revision 可寻址——0016 不存
+    revision 历史，draft 侧可参与 diff 的事实只有 schema_version（历史快照表
+    落库后 budget/依赖等任务图派生字段随之接入，见迁移 docstring）。"""
+    version_row = await session.scalar(
+        select(AgentVersion).where(
+            AgentVersion.organization_id == context.organization_id,
+            AgentVersion.workspace_id == context.workspace_id,
+            AgentVersion.agent_definition_id == row.id,
+            AgentVersion.version == revision,
+        )
+    )
+    if version_row is not None:
+        # 同 agent_version 的多个 release 取最新（list 按 created_at, id 升序，
+        # 反向首个即最新）；manifest 是发布时刻冻结的不可变依赖记录
+        releases = await ReleaseService(session, context).list()
+        manifest = next(
+            (
+                record.manifest
+                for record in reversed(releases)
+                if record.agent_id == row.id and record.agent_version == revision
+            ),
+            None,
+        )
+        return _RevisionSnapshot(
+            schema_version=version_row.schema_version,
+            content_digest=version_row.content_digest,
+            manifest=manifest,
+        )
+    if revision == row.revision:
+        return _RevisionSnapshot(
+            schema_version=row.schema_version, content_digest=None, manifest=None
+        )
+    raise LookupError(f"revision {revision} not found for agent {row.id}")
+
+
+def _diff_revisions(
+    from_snapshot: _RevisionSnapshot, to_snapshot: _RevisionSnapshot
+) -> AgentRevisionDiff:
+    """只比较两侧都有记录的字段：单侧未记录的一律不产出条目（不发明 from/to 值）。"""
+    fields: list[AgentDiffField] = []
+    if (
+        from_snapshot.schema_version is not None
+        and to_snapshot.schema_version is not None
+        and from_snapshot.schema_version != to_snapshot.schema_version
+    ):
+        fields.append(
+            AgentDiffField(
+                field="schema_version",
+                from_value=str(from_snapshot.schema_version),
+                to=str(to_snapshot.schema_version),
+                kind="schema",
+            )
+        )
+    if (
+        from_snapshot.content_digest is not None
+        and to_snapshot.content_digest is not None
+        and from_snapshot.content_digest != to_snapshot.content_digest
+    ):
+        fields.append(
+            AgentDiffField(
+                field="content_digest",
+                from_value=from_snapshot.content_digest,
+                to=to_snapshot.content_digest,
+                kind="other",
+            )
+        )
+    from_manifest = from_snapshot.manifest
+    to_manifest = to_snapshot.manifest
+    if from_manifest is not None and to_manifest is not None:
+        for field_name, kind in _MANIFEST_DIFF_KINDS.items():
+            previous = getattr(from_manifest, field_name)
+            current = getattr(to_manifest, field_name)
+            if previous != current:
+                fields.append(
+                    AgentDiffField(field=field_name, from_value=previous, to=current, kind=kind)
+                )
+        if list(from_manifest.eval_digests) != list(to_manifest.eval_digests):
+            fields.append(
+                AgentDiffField(
+                    field="eval_digests",
+                    from_value=", ".join(from_manifest.eval_digests) or None,
+                    to=", ".join(to_manifest.eval_digests) or None,
+                    kind="other",
+                )
+            )
+    return AgentRevisionDiff(fields=fields)
 
 
 def _parse_if_match(header: str) -> int | None:
@@ -566,5 +723,151 @@ def create_agents_router(
             manifest_digest=record.manifest.content_digest,
             default_version=record.rollout.default_version,
         )
+
+    @router.get("/{agent_id}/release-readiness", response_model=ReleaseReadiness)
+    async def get_release_readiness(
+        agent_id: UUID,
+        request_scope: Request,
+        actor: Annotated[ActorContext, Depends(actor_dependency)],
+    ) -> ReleaseReadiness:
+        """发布就绪检查（只读支撑面，S10-T3）：eval_seal 经 PG 绑定链真算；
+        connection/capability_publish 的状态在 capability hub 的进程内存储里、
+        与 agent 记录之间没有任何持久化关联，无法泛化计算——以 unknown 呈报
+        而非假设满足（NO fabricated readiness）。"""
+        context = _tenant(actor)
+        _, trace_id = request_trace(request_scope)
+        await authorize_read(
+            enforcer=policy_enforcer,
+            actor=actor,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            policy_type=ResourceType.AGENT_DRAFT,
+            policy_action=Action.READ,
+            resource_id=agent_id,
+            trace_id=trace_id,
+        )
+        async with tenant_session(sessions, context) as session:
+            row = await session.scalar(
+                select(AgentDefinitionRow).where(
+                    AgentDefinitionRow.id == agent_id,
+                    AgentDefinitionRow.organization_id == context.organization_id,
+                    AgentDefinitionRow.workspace_id == context.workspace_id,
+                )
+            )
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="agent not found"
+                )
+            # eval_seal 绑定链：eval_runs.run_id → runs.agent_version_id →
+            # agent_versions.agent_definition_id；sealed_at 为空不算密封件
+            sealed = await session.scalar(
+                select(EvalRunRow.id)
+                .join(
+                    RunRow,
+                    and_(
+                        RunRow.organization_id == EvalRunRow.organization_id,
+                        RunRow.workspace_id == EvalRunRow.workspace_id,
+                        RunRow.id == EvalRunRow.run_id,
+                    ),
+                )
+                .join(
+                    AgentVersion,
+                    and_(
+                        AgentVersion.organization_id == RunRow.organization_id,
+                        AgentVersion.workspace_id == RunRow.workspace_id,
+                        AgentVersion.id == RunRow.agent_version_id,
+                    ),
+                )
+                .where(
+                    EvalRunRow.organization_id == context.organization_id,
+                    EvalRunRow.workspace_id == context.workspace_id,
+                    AgentVersion.agent_definition_id == agent_id,
+                    EvalRunRow.sealed_at.is_not(None),
+                )
+                .limit(1)
+            )
+        missing: list[ReleaseReadinessCheck] = [
+            ReleaseReadinessCheck(
+                kind="unknown",
+                detail=(
+                    "connection readiness cannot be computed from the agent record: "
+                    "workspace connections are capability-scoped in the capability hub "
+                    "with no agent linkage in persistent storage"
+                ),
+            ),
+            ReleaseReadinessCheck(
+                kind="unknown",
+                detail=(
+                    "capability publish state cannot be computed from the agent record: "
+                    "declared capabilities are opaque strings with no capability-version "
+                    "mapping in persistent storage"
+                ),
+            ),
+        ]
+        if sealed is None:
+            missing.insert(
+                0,
+                ReleaseReadinessCheck(
+                    kind="eval_seal",
+                    detail=(
+                        "no sealed eval run is bound to this agent "
+                        "(eval_runs.run_id -> runs.agent_version_id -> agent_versions)"
+                    ),
+                ),
+            )
+        return ReleaseReadiness(ready=not missing, missing=missing)
+
+    @router.get("/{agent_id}/diff", response_model=AgentRevisionDiff)
+    async def diff_agent_revisions(
+        agent_id: UUID,
+        request_scope: Request,
+        actor: Annotated[ActorContext, Depends(actor_dependency)],
+        from_revision: int = Query(..., ge=1),
+        to_revision: int = Query(..., ge=1),
+    ) -> AgentRevisionDiff:
+        """版本 diff（只读支撑面，S10-T3）：字段级条目只来自真实存储（release
+        manifest digest 集 / content_digest / schema_version）；未知 revision
+        一律 404（fail closed，不猜测未记录的版本状态）。"""
+        context = _tenant(actor)
+        if from_revision > to_revision:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="from_revision must not exceed to_revision",
+            )
+        _, trace_id = request_trace(request_scope)
+        await authorize_read(
+            enforcer=policy_enforcer,
+            actor=actor,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            policy_type=ResourceType.AGENT_DRAFT,
+            policy_action=Action.READ,
+            resource_id=agent_id,
+            trace_id=trace_id,
+        )
+        async with tenant_session(sessions, context) as session:
+            row = await session.scalar(
+                select(AgentDefinitionRow).where(
+                    AgentDefinitionRow.id == agent_id,
+                    AgentDefinitionRow.organization_id == context.organization_id,
+                    AgentDefinitionRow.workspace_id == context.workspace_id,
+                )
+            )
+            if row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="agent not found"
+                )
+            try:
+                from_snapshot = await _resolve_revision_snapshot(
+                    session, context, row, from_revision
+                )
+                to_snapshot = await _resolve_revision_snapshot(
+                    session, context, row, to_revision
+                )
+            except LookupError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+                ) from None
+        return _diff_revisions(from_snapshot, to_snapshot)
 
     return router

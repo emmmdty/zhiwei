@@ -113,6 +113,28 @@ class ReleaseView(BaseModel):
     default_version: int | None
 
 
+class ReleaseManifestView(BaseModel):
+    """S10-T3 Studio 不可变 manifest 展示面：全字段 verbatim（digest 不截断、
+    approver 原样）——ReleaseView 投影之外的 manifest 记录字段经本面读出。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    release_id: str
+    agent_id: str
+    agent_version: int
+    manifest_digest: str
+    pack_digest: str
+    model_digest: str
+    knowledge_digest: str
+    memory_digest: str
+    capability_digest: str
+    policy_digest: str
+    eval_digests: list[str]
+    approver: str
+    rollout: RolloutPolicy
+    rollback: RollbackPolicy
+
+
 # release 角色 → 平台角色绑定（docs/PERMISSIONS.md §3.1 冻结矩阵）
 _RELEASE_ROLE_PLATFORM_ROLES = {
     "builder": {"agent_builder"},
@@ -241,6 +263,50 @@ def create_releases_router(
                     status_code=status.HTTP_404_NOT_FOUND, detail="release not found"
                 ) from None
         return _view(record)
+
+    @router.get("/{release_id}/manifest", response_model=ReleaseManifestView)
+    async def get_release_manifest(
+        release_id: UUID,
+        request_scope: Request,
+        actor: Annotated[ActorContext, Depends(actor_dependency)],
+    ) -> ReleaseManifestView:
+        context = _tenant(actor)
+        _, trace_id = request_trace(request_scope)
+        # 读路径 PEP：与列表/详情同 cell（冻结矩阵 agent_publish.read_manifest）
+        await authorize_read(
+            enforcer=policy_enforcer,
+            actor=actor,
+            organization_id=context.organization_id,
+            workspace_id=context.workspace_id,
+            policy_type=ResourceType.AGENT_PUBLISH,
+            policy_action=Action.READ_MANIFEST,
+            resource_id=release_id,
+            trace_id=trace_id,
+        )
+        async with tenant_session(sessions, context) as session:
+            try:
+                record = await ReleaseService(session, context).get(release_id)
+            except ReleaseNotFound:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="release not found"
+                ) from None
+        manifest = record.manifest
+        return ReleaseManifestView(
+            release_id=str(record.release_id),
+            agent_id=str(record.agent_id),
+            agent_version=record.agent_version,
+            manifest_digest=manifest.content_digest,
+            pack_digest=manifest.pack_digest,
+            model_digest=manifest.model_digest,
+            knowledge_digest=manifest.knowledge_digest,
+            memory_digest=manifest.memory_digest,
+            capability_digest=manifest.capability_digest,
+            policy_digest=manifest.policy_digest,
+            eval_digests=list(manifest.eval_digests),
+            approver=manifest.approver,
+            rollout=manifest.rollout,
+            rollback=manifest.rollback,
+        )
 
     @router.post("", status_code=status.HTTP_201_CREATED, response_model=ReleaseView)
     async def create_release(

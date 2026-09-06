@@ -13,8 +13,8 @@
 // - 13 分区（specs/s10 §3）：Overview/Instructions/Task/Budget/Access 接真实
 //   draft 面；Knowledge/Memory/Tools/Triggers/Model/Evidence/Evals 是 S10-T4
 //   的 journey——无后端 action 的控件不出现，只留如实占位；Release 是 T3 的
-//   完整发布流：本任务只有「创建 S9 draft release」一条真实命令，依赖 digest
-//   由 builder 显式提供（T3 接管 digest 管线前的诚实最小面）。
+//   完整发布流（release/ReleasePanel）：readiness、版本 diff、S9 release
+//   commands（create/advance/rollback）与不可变 manifest 展示。
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
@@ -29,6 +29,7 @@ import {
 } from "../../api/client";
 import { RefusalNotice } from "../../components/RefusalNotice";
 import { StateBanner } from "../../components/StateBanner";
+import { ReleasePanel } from "./release/ReleasePanel";
 
 // 13 Core primitives（镜像 src/zhiwei/agents/task_graph.py TaskPrimitive）
 const PRIMITIVES = [
@@ -55,15 +56,6 @@ const BUDGET_LABELS: Record<(typeof BUDGET_KEYS)[number], string> = {
   max_tokens: "Max tokens",
   max_usd_micros: "Max USD micros",
 };
-
-const DIGEST_FIELDS = [
-  ["pack_digest", "Pack digest"],
-  ["model_digest", "Model digest"],
-  ["knowledge_digest", "Knowledge digest"],
-  ["memory_digest", "Memory digest"],
-  ["capability_digest", "Capability digest"],
-  ["policy_digest", "Policy digest"],
-] as const;
 
 interface StudioViewProps {
   readOnly: boolean;
@@ -276,11 +268,6 @@ function DraftEditor({
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [issues, setIssues] = useState<StudioValidationIssue[]>([]);
-  const [digests, setDigests] = useState<Record<string, string>>({});
-  const [rolloutVersion, setRolloutVersion] = useState("1");
-  const [rollback, setRollout] = useState<"complete" | "terminate">("complete");
-  const [releaseId, setReleaseId] = useState<string | null>(null);
-  const [releaseError, setReleaseError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -478,31 +465,6 @@ function DraftEditor({
       }
     } finally {
       setSaving(false);
-    }
-  };
-
-  const createRelease = async () => {
-    if (!draft) return;
-    setReleaseError(null);
-    try {
-      const view = await studioApi.createRelease(agentId, {
-        pack_digest: digests.pack_digest ?? "",
-        model_digest: digests.model_digest ?? "",
-        knowledge_digest: digests.knowledge_digest ?? "",
-        memory_digest: digests.memory_digest ?? "",
-        capability_digest: digests.capability_digest ?? "",
-        policy_digest: digests.policy_digest ?? "",
-        eval_digests: [],
-        rollout: {
-          default_version: Number(rolloutVersion) > 0 ? Number(rolloutVersion) : null,
-          cohorts: [],
-        },
-        rollback: { in_flight: rollback },
-      });
-      setReleaseId(view.release_id);
-    } catch (e) {
-      if (e instanceof SessionExpiredError) return onSessionExpired();
-      setReleaseError(e instanceof Error ? e.message : String(e));
     }
   };
 
@@ -767,42 +729,11 @@ function DraftEditor({
       </Section>
 
       <Section title="Release">
-        <p>Full release flow arrives with S10-T3; the command below creates the S9 draft release only.</p>
-        {releaseId && <p>Draft release created: {releaseId}</p>}
-        {releaseError && <StateBanner tone="error" text={`Error: ${releaseError}`} />}
-        {!readOnly && (
-          <div>
-            {DIGEST_FIELDS.map(([key, label]) => (
-              <label key={key}>
-                {label}
-                <input
-                  value={digests[key] ?? ""}
-                  onChange={(e) => setDigests({ ...digests, [key]: e.target.value })}
-                />
-              </label>
-            ))}
-            <label>
-              Rollout default version
-              <input
-                type="number"
-                min={1}
-                value={rolloutVersion}
-                onChange={(e) => setRolloutVersion(e.target.value)}
-              />
-            </label>
-            <label>
-              Rollback in-flight
-              <select
-                value={rollback}
-                onChange={(e) => setRollout(e.target.value as "complete" | "terminate")}
-              >
-                <option value="complete">complete</option>
-                <option value="terminate">terminate</option>
-              </select>
-            </label>
-            <button onClick={() => void createRelease()}>Create draft release</button>
-          </div>
-        )}
+        <ReleasePanel
+          agentId={draft.agent_id}
+          readOnly={readOnly}
+          onSessionExpired={onSessionExpired}
+        />
       </Section>
 
       {/* Save 恒渲染（auditor disabled 呈现只读面）；428 不可达因为 etag 缺失

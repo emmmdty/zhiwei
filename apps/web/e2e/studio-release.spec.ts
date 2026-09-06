@@ -39,7 +39,10 @@ const ORG_ID = "3a1a8d1c-a63f-4bed-87d1-b67948aea7ac";
 const WS_ID = "6f1c2a34-9b7e-4d0a-8f61-0c5b2d7e9a11";
 const CSRF = "e2e-csrf-token";
 const AGENT_ID = "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99";
-const RELEASE_ID = "9f8e7d6c-5b4a-3c2d-1e0f-a1b2c3d4e5f";
+// RED 修订说明：原常量末组只有 11 个 hex 位（35 字符，非良构 UUID），本 spec
+// 自己的 advance/rollback 路由按 36 字符 id 正则匹配——请求永远落入 fail-loud
+// 500，journey 不可能通过。仅修 fixture 常量，不动任何断言。
+const RELEASE_ID = "9f8e7d6c-5b4a-3c2d-1e0f-a1b2c3d4e5f0";
 const IN_FLIGHT_RUN_ID = "4c5d6e7f-8a9b-0c1d-2e3f-4a5b6c7d8e9f";
 
 const DIGEST = "sha256:" + "a".repeat(64);
