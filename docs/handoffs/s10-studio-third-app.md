@@ -48,9 +48,8 @@
 
 ## 4. 例外与遗留（ADR-012，artifacts/gates/s10/report.md §11/§16）
 
-**继承四例外（S4/S6/S7/S8 e2e）**：解锁条件已满足（spec 落盘+通过+UI 真实）——**正式关闭待 operator 确认**。
-**新登记**：E2 tenancy e2e 需真实栈复执行（compose identity profile + seed；seed 为 operator 保留动作，
-程序见 s1-tenancy-e2e-repair.md §3）；E3 discover-v1 注册未可执行（无 fixture 语料；解锁=资产冻结流程）；
+**继承四例外（S4/S6/S7/S8 e2e）**：**已正式关闭**（2026-09-06）——解锁条件满足（R1/R3 独立核验）+ spec 复执行通过 + operator 会话指令确认（ADR-012 §2，记录见 s10 report §17）。
+**新登记**：E2 tenancy e2e：**已关闭**（真实栈 13/13，runbook 修正补记 §3.1）；E3 discover-v1 注册未可执行（无 fixture 语料；解锁=资产冻结流程）；
 E4 auditor agent_draft.read deny（冻结矩阵，解锁=设计决策）；E5 Tools/Artifacts/Context/Memory 面板
 诚实 pending（解锁=通用后端投影）；E7 真实 evidence 投影暂不含 brief 载荷（renderer 契约面由 mock e2e
 证明；解锁=通用投影扩展）；A2 pack bundle digest 口径；route-coverage 清单 4 路由范围；registry.test.ts
@@ -61,6 +60,6 @@ audit 事件列表端点缺失（S1 余项）；policy ResourceContext 结构性
 
 ## 5. S11 放行
 
-S10 Gate 全绿（E2 为唯一环境型例外，复执行程序在案），**放行进入 S11**。S11 开工注意：
-「未开始」仅剩 S11；四例外正式关闭需 operator 在 S10 Gate 复执行轮逐条确认；E3/E5/E7 的
+S10 Gate 全绿、无未决例外（E2 已关闭、四继承例外已关闭），**放行进入 S11**。S11 开工注意：
+「未开始」仅剩 S11；四例外已关闭（关闭记录见 report §17）；E3/E5/E7 的
 解锁路径均为通用机制扩展（资产冻结/通用投影），不引入 App 条件分支。

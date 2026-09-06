@@ -43,3 +43,14 @@
   「有条件收口」；复执行时点（最迟并入 S10 Studio 阶段 Gate 清单）确认有效。
 - **同步核验**：S1 tenancy e2e 已于 2026-09-05 真实栈全绿（13/13，见
   s1-tenancy-e2e-repair.md），S2 runtime-approval mock 3/3——mock 通道先例持续有效。
+
+
+## Operator 确认与关闭（2026-09-06）
+
+- **复执行证据**：`memory-center.spec.ts` **3 passed**（2026-09-06，HEAD 54fd3dd，S10 Gate
+  复执行轮；mock 模式对齐真实 Pydantic 投影，未模拟路径 fail loud）。
+- **解锁条件核验**：被测前端能力已实现并入库（apps/web/src/features/memory/（S10-T4）+ memory-center.spec.ts）， journey 覆盖与本条目
+  「解锁条件」逐项一致（独立验收 R1 测试工程师 + R3 增量复核确认）。
+- **operator 确认**：ADR-012 §2 要求项——operator 于 2026-09-06 会话指令
+  （「需要operator的两件事情，你自行判断一下」）授权按证据链判定并记录关闭；
+  本条目状态由「有条件收口」转为 **关闭（例外解除）**。

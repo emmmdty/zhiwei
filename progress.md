@@ -237,10 +237,12 @@
   e2e 13 / change-brief-v1 6/6 sealed sha256:3ef722bf…）；mock e2e 55 passed。
   报告 `artifacts/gates/s10/report.md`（§15 E6 裁决复验 + §16 R3 补记）、交接单
   `docs/handoffs/s10-studio-third-app.md`。
-- **登记**：继承四例外（S4/S6/S7/S8 e2e）解锁条件已满足、正式关闭待 operator 确认；
-  新登记 E2（tenancy 真实栈复执行，seed 为 operator 保留动作）/E3（discover-v1 无
-  fixture 语料）/E4（auditor draft-read deny）/E5（4 面板 pending）/E7（evidence 投影
-  brief 载荷）/A2（pack digest 口径）；S11 未开始。
+- **operator 两项判定（2026-09-06 会话指令授权，ADR-012 §2 会话记录为凭）**：
+  ① 四继承例外（S4/S6/S7/S8 e2e）**正式关闭**（解锁条件 R1/R3 独立核验 + spec 复执行
+  通过，四份 handoff 加关闭节）；② **E2 关闭**：tenancy 真实栈复执行 **13/13**
+  （HEAD 54fd3dd）——根因三件套：17h 陈旧后端进程、`ZHIWEI_IDENTITY_DATABASE_URL`
+  须用 `zhiwei_identity` 角色 DSN（runbook 补记 §3.1）、shell 代理劫持 localhost
+  （须 NO_PROXY）。S10 至此无未决例外；E3/E4/E5/E7/A2 为非阻塞跟踪项；S11 未开始。
 
 ## 待办
 

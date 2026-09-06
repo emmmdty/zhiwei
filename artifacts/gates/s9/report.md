@@ -303,7 +303,7 @@ $ npm --prefix apps/web run test:e2e -- runtime-approval.spec.ts
 | live / shadow / human 模式 suite 全部未执行 | 不调用 live 模型是全仓纪律；live 只由 operator 显式触发（release_mode=fixture_only） | operator 显式 live 授权 + production_reference 档 | operator 触发后；live_verified claim 状态机已就绪 |
 | BIRD / LoCoMo / Promptfoo / Inspect 外部诊断未执行、claim 保持 planned | 外部数据/许可未就绪（longmemeval 探测输出即同类机器可读原因）；本 Gate 按 runbook 仅探测 longmemeval-adapter | operator 放置许可/version/data 后 `eval external-status --seal` 走 available 分支 | 数据就位后 |
 | LongMemEval 质量诊断 | 同上 + 质量诊断需 live 模型 | 同上 | 同上 |
-| S4/S6/S7/S8 e2e 例外条目 | 各阶段既有登记（ADR-012 例外，条件四要素在案） | 既有登记的解锁条件 | 最迟并入 S10 Studio Gate 清单（operator 已确认的既有口径，本轮不变） |
+| S4/S6/S7/S8 e2e 例外条目 | 各阶段既有登记（ADR-012 例外，条件四要素在案） | 既有登记的解锁条件 | 最迟并入 S10 Studio Gate 清单（→ 已于 2026-09-06 S10 Gate 复执行关闭，见 artifacts/gates/s10/report.md §17） |
 | hidden reasoning 四个持久化面测试 | S3 遗留债务（既有登记） | 既有登记 | 既有登记 |
 | pytest 6 skipped / 20 deselected | `addopts = -m 'not live and not slow'`（live/slow 按 ADR-012 §5 显式排除，本轮未加 `-m slow`） | 显式 `-m slow` 复跑 | S1 slow（OPA）已在本轮 Gate 之外既有口径中覆盖；本轮按 runbook 命令清单执行 |
 

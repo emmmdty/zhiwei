@@ -45,6 +45,22 @@ compose 容器未发布 55432 端口时，宿主机原生 postgres 若占用了 
 连接的是它（本轮曾因此误判「schema 消失」）——bring-up 前先核对
 `docker port zhiwei-s0-postgres-1`。
 
+**§3.1 复执行补记（2026-09-06，S10 Gate E2 关闭轮）**——两条曾造成误诊的精确性缺口：
+
+1. `ZHIWEI_IDENTITY_DATABASE_URL` 必须指向 **`zhiwei_identity` 角色**（如
+   `postgresql://zhiwei_identity@127.0.0.1:55432/zhiwei_test`），不能与
+   `ZHIWEI_DATABASE_URL`（zhiwei_app）同值：`oidc_login_attempts` 等身份数据面的
+   GRANT 授的是 identity 角色，配成 app DSN 时 `/auth/login` 以 500
+   `permission denied for table oidc_login_attempts` 失败（现象是登录页永不出现，
+   e2e 全部 timeout 在 `#username`）。
+2. 本机 shell 若存在 HTTP 代理（env `http_proxy/https_proxy`），Vite(5173)、
+   后端(8000)、Keycloak(8080) 的 localhost 流量都会被代理劫持（curl 得 502、
+   浏览器同样）——playwright 运行前必须 `export no_proxy/NO_PROXY=localhost,127.0.0.1`。
+   曾据此误诊「Vite 进程死亡/陈旧服务」。
+
+复执行证据：2026-09-06，HEAD 54fd3dd，按本节程序（identity 角色 DSN + NO_PROXY）
+`tenancy.spec.ts` **13/13 passed**（18.7s）。
+
 ## 4. Gate 输出（2026-09-05，干净库）
 
 ```text

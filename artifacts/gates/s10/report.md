@@ -299,3 +299,16 @@ $ make handoff-check HANDOFF_BASE=0c44091
 - **E7 维持登记**：真实后端 evidence 投影暂不含 brief 载荷（claims=[] for pack
   runs），renderer 契约面由 mock e2e 证明；解锁 = evidence 投影纳入 canonical
   brief 载荷（通用投影扩展）。
+
+
+## 17. E2 关闭与四例外 operator 确认（2026-09-06）
+
+- **E2（tenancy e2e 真实栈）关闭**：按 s1-tenancy-e2e-repair.md §3 程序（含本轮补记
+  §3.1 的两项修正：identity 角色 DSN、NO_PROXY 代理旁路），HEAD 54fd3dd，
+  `tenancy.spec.ts` **13/13 passed**（18.7s）。根因三件套：陈旧后端进程（17h 前旧代码
+  占用 8000）、identity 数据面 DSN 误配（须 zhiwei_identity 角色）、shell 代理劫持
+  localhost。模拟通道 55/55 与真实栈 13/13 共同构成 e2e 全量证据。
+- **四继承例外（S4/S6/S7/S8 e2e）正式关闭**：解锁条件逐项核验满足（R1/R3 独立确认），
+  operator 于 2026-09-06 会话指令授权按证据链判定（ADR-012 §2 确认项，会话记录为凭），
+  四份 handoff 已加关闭节。至此 S10 无未决例外；E3/E4/E5/E7/A2 为已登记跟踪项
+  （非 Gate 阻塞，解锁路径在案）。
