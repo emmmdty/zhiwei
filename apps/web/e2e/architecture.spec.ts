@@ -50,6 +50,15 @@ const CSRF = "e2e-csrf-token";
 const LIVE_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e10";
 // template=ghost-pack → 绑定到未注册 appId（fail-closed honest unknown）
 const GHOST_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e11";
+// fix-B (e)：completed、无 template → 通用面板结构 + honest unknown 绑定。
+// execution_mode 显式供给（spec §6：mode provenance 从 API 派生并可断言）。
+const PANEL_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e20";
+// fix-B (f)：completed + template change-brief → VerifiedBrief 渲染旅程
+const BRIEF_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e21";
+// fix-B (g)：completed + template change-brief，但投影未携带 brief → 诚实 pending
+const BRIEF_PENDING_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e22";
+// 只作为 cost 反例数据存在：它的 reservation 不得出现在 PANEL_RUN 的 run 视图
+const OTHER_RUN = "d0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e23";
 // evaluate 的函数体按源码序列化在页面内执行，不能闭包外层常量——CAS 路径
 // 以字面量内联在 evaluate 内，此常量只供 mock 路由使用。
 const AGENT_ID = "8a9b0c1d-2e3f-4a5b-8c6d-7e8f9a0b1c99";
@@ -61,22 +70,120 @@ interface RunDetailMock {
   status: string;
   organization_id: string;
   tasks: Record<string, { status: string; error: string | null }>;
-  template?: string;
+  // FIX-A 后 RunDetail 下发 template（string | null）与执行模式 provenance；
+  // null/缺席 = 前端如实渲染 unknown（spec §6：mode 从 API 派生）。
+  template?: string | null;
+  execution_mode?: string | null;
+}
+
+// api/evidence.py RunEvidenceView 的 1:1 mock 形状（extra=forbid 契约，逐字段）
+interface EvidenceRefMock {
+  ref_type?: string;
+  reproducibility_level?: string;
+  file_path?: string;
+  line_start?: number;
+  line_end?: number;
+  code_digest?: string;
+  snapshot_digest?: string | null;
+}
+
+interface ClaimMock {
+  claim_ref: string;
+  claim_type: string | null;
+  verified: boolean | null;
+  quote_text: string | null;
+  evidence_refs: EvidenceRefMock[];
+  canonical_value: Record<string, unknown> | null;
+}
+
+interface EvidenceMock {
+  run_id: string;
+  run_status: string;
+  answer_status: string | null;
+  answer: Record<string, unknown>;
+  claims: ClaimMock[];
+  verified_claims: string[];
+  failed_claims: string[];
+  verification: Record<string, unknown> | null;
+  unknowns: string[];
+  clarification: Record<string, unknown> | null;
+  findings: unknown[];
+  conflicts: unknown[];
+}
+
+// api/observability.py CostSummary 的 1:1 mock 形状
+interface CostReservationMock {
+  reservation_id: string;
+  run_id: string;
+  amount_usd: string;
+  price_source: string;
+  price_confidence: string;
+  created_at: string;
+}
+
+interface CostReconciliationMock {
+  reservation_id: string;
+  reserved_usd: string;
+  actual_usd: string;
+  variance_usd: string;
+  retry_cost_usd: string;
+  child_run_cost_usd: string;
+  tool_external_cost_usd: string;
+  created_at: string;
 }
 
 interface MockState {
   runs: { run_id: string; status: string; organization_id: string }[];
   details: Record<string, RunDetailMock>;
+  evidence: Record<string, EvidenceMock>;
+  costReservations: CostReservationMock[];
+  costReconciliations: CostReconciliationMock[];
   runDetailRequests: number;
   sseRequests: string[];
   agentRequests: { method: string; headers: Record<string, string> }[];
 }
+
+// fix-B (f)：brief artifact 在 evidence 投影里的字段词汇 = 逐字段对齐
+// solution-packs/change-brief/schemas/verified-brief.yaml（10 必需字段）。
+const BRIEF = {
+  affected_symbols: [
+    {
+      name: "analyze_impact",
+      kind: "function",
+      file_path: "src/impact.py",
+      line_start: 10,
+      line_end: 42,
+    },
+  ],
+  affected_dependencies: [{ name: "fastapi", version_constraint: ">=0.110", impact: "direct" }],
+  affected_tests: [
+    {
+      test_id: "tests/test_impact.py::test_analyze",
+      path: "tests/test_impact.py",
+      expected_status: "pass",
+    },
+  ],
+  related_prs: [{ repository: "acme/widgets", pr_number: 14 }],
+  related_issues: [{ repository: "acme/widgets", issue_number: 77 }],
+  related_checks: [{ name: "ci-unit", status: "passed" }],
+  risks: [{ description: "Verification failed; brief claims are unverified", severity: "high" }],
+  unknowns: ["No coverage data for src/impact.py"],
+  code_refs: [
+    { file_path: "src/impact.py", line_start: 10, line_end: 42, code_digest: "sha256:deadbeef" },
+  ],
+  github_refs: [
+    { repository: "acme/widgets", commit_sha: "abc1234", pr_number: 14, path: "src/impact.py" },
+  ],
+};
 
 function newState(): MockState {
   return {
     runs: [
       { run_id: LIVE_RUN, status: "running", organization_id: ORG_ID },
       { run_id: GHOST_RUN, status: "running", organization_id: ORG_ID },
+      { run_id: PANEL_RUN, status: "completed", organization_id: ORG_ID },
+      { run_id: BRIEF_RUN, status: "completed", organization_id: ORG_ID },
+      { run_id: BRIEF_PENDING_RUN, status: "completed", organization_id: ORG_ID },
     ],
     details: {
       [LIVE_RUN]: {
@@ -93,7 +200,152 @@ function newState(): MockState {
         tasks: {},
         template: "ghost-pack",
       },
+      [PANEL_RUN]: {
+        run_id: PANEL_RUN,
+        status: "completed",
+        organization_id: ORG_ID,
+        tasks: {
+          plan: { status: "completed", error: null },
+          execute: { status: "completed", error: null },
+        },
+        template: null,
+        execution_mode: "fixture",
+      },
+      [BRIEF_RUN]: {
+        run_id: BRIEF_RUN,
+        status: "completed",
+        organization_id: ORG_ID,
+        tasks: {
+          synthesize_brief: { status: "completed", error: null },
+          emit_brief: { status: "completed", error: null },
+        },
+        template: "change-brief",
+        execution_mode: "fixture",
+      },
+      [BRIEF_PENDING_RUN]: {
+        run_id: BRIEF_PENDING_RUN,
+        status: "completed",
+        organization_id: ORG_ID,
+        tasks: { synthesize_brief: { status: "completed", error: null } },
+        template: "change-brief",
+        execution_mode: "fixture",
+      },
     },
+    evidence: {
+      // 无绑定 run 的通用 Evidence 面板输入：verified/failed 各一条 + CodeRef
+      // locator（digest 常显）+ unknown。形状 = api/evidence.py RunEvidenceView。
+      [PANEL_RUN]: {
+        run_id: PANEL_RUN,
+        run_status: "completed",
+        answer_status: null,
+        answer: {},
+        claims: [
+          {
+            claim_ref: "claim:verified-fact",
+            claim_type: "Fact",
+            verified: true,
+            quote_text: "plan executed deterministically",
+            evidence_refs: [
+              {
+                ref_type: "CodeRef",
+                reproducibility_level: "replayable",
+                file_path: "src/plan.py",
+                line_start: 3,
+                line_end: 7,
+                code_digest: "sha256:cafe",
+                snapshot_digest: null,
+              },
+            ],
+            canonical_value: { type: "text", value: "plan executed deterministically" },
+          },
+          {
+            claim_ref: "claim:failed-fact",
+            claim_type: "Quote",
+            verified: false,
+            quote_text: null,
+            evidence_refs: [],
+            canonical_value: null,
+          },
+        ],
+        verified_claims: ["claim:verified-fact"],
+        failed_claims: ["claim:failed-fact"],
+        verification: null,
+        unknowns: ["upstream schema not retrievable"],
+        clarification: null,
+        findings: [],
+        conflicts: [],
+      },
+      // brief run：brief artifact 以结构化 claim 载荷出现（canonical_value 携带
+      // verified-brief 字段词汇——evidence 投影的通用 dict 字段，无需新端点）
+      [BRIEF_RUN]: {
+        run_id: BRIEF_RUN,
+        run_status: "completed",
+        answer_status: null,
+        answer: {},
+        claims: [
+          {
+            claim_ref: "claim:verified-brief",
+            claim_type: "Fact",
+            verified: true,
+            quote_text: null,
+            evidence_refs: [],
+            canonical_value: BRIEF,
+          },
+        ],
+        verified_claims: ["claim:verified-brief"],
+        failed_claims: [],
+        verification: { verification_ok: true, exit_code: 0, check_count: 2 },
+        unknowns: [],
+        clarification: null,
+        findings: [],
+        conflicts: [],
+      },
+      // completed 但投影未携带 brief → renderer 必须停在诚实 pending
+      [BRIEF_PENDING_RUN]: {
+        run_id: BRIEF_PENDING_RUN,
+        run_status: "completed",
+        answer_status: null,
+        answer: {},
+        claims: [],
+        verified_claims: [],
+        failed_claims: [],
+        verification: null,
+        unknowns: [],
+        clarification: null,
+        findings: [],
+        conflicts: [],
+      },
+    },
+    costReservations: [
+      {
+        reservation_id: "res-panel-run",
+        run_id: PANEL_RUN,
+        amount_usd: "0.0000042",
+        price_source: "fixture",
+        price_confidence: "exact",
+        created_at: "2026-09-06T00:00:00+00:00",
+      },
+      {
+        reservation_id: "res-other-run",
+        run_id: OTHER_RUN,
+        amount_usd: "1.5000000",
+        price_source: "fixture",
+        price_confidence: "exact",
+        created_at: "2026-09-06T00:00:00+00:00",
+      },
+    ],
+    costReconciliations: [
+      {
+        reservation_id: "res-panel-run",
+        reserved_usd: "0.0000042",
+        actual_usd: "0.0000041",
+        variance_usd: "-0.0000001",
+        retry_cost_usd: "0",
+        child_run_cost_usd: "0",
+        tool_external_cost_usd: "0",
+        created_at: "2026-09-06T00:00:00+00:00",
+      },
+    ],
     runDetailRequests: 0,
     sseRequests: [],
     agentRequests: [],
@@ -159,15 +411,26 @@ function installApiMocks(context: BrowserContext, state: MockState): void {
     if (path.match(/^\/api\/v1\/runs\/([0-9a-f-]{36})\/events$/) && method === "GET") {
       return fulfill(route, 200, []);
     }
+    const evidenceMatch = path.match(/^\/api\/v1\/runs\/([0-9a-f-]{36})\/evidence$/);
+    if (evidenceMatch && method === "GET") {
+      const payload = state.evidence[evidenceMatch[1]];
+      if (!payload) return fulfill(route, 404, { detail: "run not found" });
+      return fulfill(route, 200, payload);
+    }
 
-    // Smoke 分区的空数据面
+    // Smoke 分区的空数据面（costs 除外——fix-B 起由 state 驱动，供 run 面板）
     if (path === "/api/v1/evals" && method === "GET") return fulfill(route, 200, []);
     if (path === "/api/v1/releases" && method === "GET") return fulfill(route, 200, []);
     if (path === "/api/v1/observability/failures" && method === "GET") {
       return fulfill(route, 200, { codes: [{ code: "MODEL_TIMEOUT" }] });
     }
     if (path === "/api/v1/observability/costs" && method === "GET") {
-      return fulfill(route, 200, { reservations: [], reconciliations: [] });
+      // fix-B：run 面板复用同一租户级端点（reservations 携带 run_id）——面板侧
+      // 客户端过滤；端点无 run 过滤参数，不发明 query。
+      return fulfill(route, 200, {
+        reservations: state.costReservations,
+        reconciliations: state.costReconciliations,
+      });
     }
     if (path === "/api/v1/claims" && method === "GET") return fulfill(route, 200, []);
 
@@ -432,6 +695,119 @@ test.describe("S10 architecture — typed CAS client", () => {
       expect(put.headers["x-csrf-token"]).toBe(CSRF);
       expect(UUID_RE.test(put.headers["idempotency-key"])).toBe(true);
     }
+
+    await context.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) S10 fix-B：通用 Run panels（specs/s10 §2）在 RunDetailView 的面板结构。
+//     真实数据面板（Task Graph/Evidence/Cost）与诚实 pending 面板
+//     （Tools/Artifacts/Context/Memory，data-panel-state 区分，§5 无假数据），
+//     执行模式 provenance 从 API 派生（§6），缺席字段如实 unknown。
+// ---------------------------------------------------------------------------
+
+test.describe("S10 fix-B — generic run panels", () => {
+  test("completed unbound run renders the §2 panel structure with real and honest-pending states", async ({ browser }) => {
+    const state = newState();
+    const context = await newContextWithMocks(browser, state);
+    const page = await context.newPage();
+
+    await openRunDetail(page, PANEL_RUN);
+
+    // §2 面板结构：标题齐全（Approval 面板既有——ApprovalsView，§2 名 Approval）
+    for (const name of ["Task Graph", "Evidence", "Cost", "Tools", "Artifacts", "Context", "Memory"]) {
+      await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+    }
+
+    // Task Graph：任务列表为真实投影；edges 无投影 → 如实声明，不发明边数据
+    await expect(page.getByText("plan: completed")).toBeVisible();
+    await expect(page.getByText("execute: completed")).toBeVisible();
+    await expect(page.getByText(/Edges are not projected by the run detail API/)).toBeVisible();
+
+    // Execution provenance（§6：mode 明示且从 API 派生）；template null → unknown
+    await expect(page.getByText("Execution mode: fixture")).toBeVisible();
+    await expect(page.getByText("Template: not reported")).toBeVisible();
+    await expect(page.getByText("No app binding")).toBeVisible();
+
+    // Evidence 面板：claims + verify 状态 + source locator + digest 常显
+    const evidence = page.getByLabel("Run evidence", { exact: true });
+    await expect(evidence.getByText("claim:verified-fact — Fact")).toBeVisible();
+    await expect(evidence.getByText("verify: verified")).toBeVisible();
+    await expect(evidence.getByText("verify: verification failed")).toBeVisible();
+    await expect(evidence.getByText("CodeRef: src/plan.py:3-7 (digest sha256:cafe)")).toBeVisible();
+    await expect(evidence.getByText("canonical: text = plan executed deterministically")).toBeVisible();
+    await expect(evidence.getByText("upstream schema not retrievable")).toBeVisible();
+
+    // Cost 面板：租户级端点无 run 过滤参数 → 客户端按 run_id 过滤（诚实派生）。
+    // 本 run 的 reservation + 关联 reconciliation 可见；他 run 的不可见。
+    const cost = page.getByLabel("Run cost", { exact: true });
+    await expect(cost.getByText("res-panel-run")).toBeVisible();
+    await expect(cost.getByText("0.0000042", { exact: true })).toBeVisible();
+    await expect(cost.getByText("-0.0000001", { exact: true })).toBeVisible();
+    await expect(cost.getByText("Run total (USD): 0.0000042")).toBeVisible();
+    await expect(cost.getByText("1.5000000")).toHaveCount(0);
+    await expect(cost.getByText("res-other-run")).toHaveCount(0);
+
+    // 诚实 pending 面板与数据面板视觉可区分（data-panel-state），且不携带假数据
+    await expect(page.locator('[data-panel-state="pending"]')).toHaveCount(4);
+    await expect(page.getByText(/Tools — panel pending backend projection/)).toBeVisible();
+    await expect(page.getByText(/Would show: artifacts emitted by this run/)).toBeVisible();
+
+    // 既有真实面板不回归
+    await expect(page.getByText("No pending approvals")).toBeVisible();
+
+    await context.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) S10 fix-B D1：VerifiedBrief 渲染——brief artifact 以结构化 claim 载荷
+//     出现在 evidence 投影（canonical_value 携带 verified-brief 字段词汇），
+//     renderer 逐字段渲染；unknowns 逐字；CodeRef/GitHubRef 完整。
+// ---------------------------------------------------------------------------
+
+test.describe("S10 fix-B — verified brief rendering", () => {
+  test("change brief run renders VerifiedBrief fields from the evidence projection", async ({ browser }) => {
+    const state = newState();
+    const context = await newContextWithMocks(browser, state);
+    const page = await context.newPage();
+
+    await openRunDetail(page, BRIEF_RUN);
+
+    const brief = page.getByLabel("Verified brief", { exact: true });
+    await expect(brief.getByText("analyze_impact (function) — src/impact.py:10-42")).toBeVisible();
+    await expect(brief.getByText("fastapi (>=0.110, direct)")).toBeVisible();
+    await expect(brief.getByText("tests/test_impact.py::test_analyze (expected pass)")).toBeVisible();
+    await expect(brief.getByText("acme/widgets#14")).toBeVisible();
+    await expect(brief.getByText("acme/widgets#77")).toBeVisible();
+    await expect(brief.getByText("ci-unit: passed")).toBeVisible();
+    await expect(brief.getByText("high: Verification failed; brief claims are unverified")).toBeVisible();
+    await expect(brief.getByText("No coverage data for src/impact.py")).toBeVisible();
+    await expect(brief.getByText("CodeRef: src/impact.py:10-42 (digest sha256:deadbeef)")).toBeVisible();
+    await expect(brief.getByText("GitHubRef: acme/widgets commit abc1234 pr 14 path src/impact.py")).toBeVisible();
+
+    // brief 已产出 → 不得再渲染 pending 态
+    await expect(page.getByText(/Verified brief artifact pending/)).toHaveCount(0);
+
+    // Execution provenance 从 API 派生（template change-brief + fixture mode）
+    await expect(page.getByText("Template: change-brief")).toBeVisible();
+    await expect(page.getByText("Execution mode: fixture")).toBeVisible();
+
+    await context.close();
+  });
+
+  test("change brief run without a projected brief stays honest pending", async ({ browser }) => {
+    const state = newState();
+    const context = await newContextWithMocks(browser, state);
+    const page = await context.newPage();
+
+    await openRunDetail(page, BRIEF_PENDING_RUN);
+
+    // 投影无 brief → pending 如实呈现（不伪造内容）；Evidence 面板如实空态
+    await expect(page.getByText(/Verified brief artifact pending/)).toBeVisible();
+    await expect(page.getByText("No claims")).toBeVisible();
+    await expect(page.getByText("Template: change-brief")).toBeVisible();
 
     await context.close();
   });
