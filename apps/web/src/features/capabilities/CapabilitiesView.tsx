@@ -3,8 +3,10 @@
 //
 // 契约（api/capabilities.py / api/connections.py 的真实投影）：
 // - 列表/检视只渲染 API 真实返回的字段（classification/risk_level/
-//   content_digest/source_url/metadata 逐字；缺席 → unknown）——不发明
-//   SBOM/vulnerability 检查项；
+//   content_digest/source_url/metadata 逐字；缺席 → unknown，含 test_digest
+//   的 domain 默认 ""）——不发明 SBOM/vulnerability 检查项；
+// - provider 详情呈现受影响能力版本（metadata.provider_version_id 链接，状态
+//   跟随 provider——suspend/revoke 的影响面在动作面直接可见）；
 // - bind/unbind（builder/非只读角色，published 版本 only——未发布绑定被
 //   server 409 拒，机器可读原因原样上浮）；
 // - admit/publish（capability_publisher 入口）、suspend/revoke（security_admin
@@ -410,6 +412,7 @@ function ProviderDetailView({
   onSessionExpired: () => Promise<void>;
 }) {
   const [provider, setProvider] = useState<ProviderRecord | null>(null);
+  const [affectedVersions, setAffectedVersions] = useState<CapabilityVersionRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -426,9 +429,24 @@ function ProviderDetailView({
     }
   }, [providerId, onSessionExpired]);
 
+  // 受影响能力版本：metadata.provider_version_id 链接到本 provider 的版本
+  // （GET /versions 是既有挂载端点；suspend/revoke 后状态跟随 provider）
+  const loadVersions = useCallback(async () => {
+    try {
+      const all = await api.get<CapabilityVersionRecord[]>("/api/v1/capabilities/versions");
+      setAffectedVersions(
+        all.filter((v) => String(v.metadata.provider_version_id) === providerId)
+      );
+    } catch (e) {
+      if (e instanceof SessionExpiredError) return onSessionExpired();
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [providerId, onSessionExpired]);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadVersions();
+  }, [load, loadVersions]);
 
   const act = async (action: string) => {
     setBusy(true);
@@ -439,6 +457,8 @@ function ProviderDetailView({
           action,
         })
       );
+      // 动作后重取受影响版本（状态跟随 provider 的投影即时可见）
+      await loadVersions();
     } catch (e) {
       if (e instanceof SessionExpiredError) return onSessionExpired();
       setError(e instanceof Error ? e.message : String(e));
@@ -466,6 +486,20 @@ function ProviderDetailView({
         <li>content digest: {provider.content_digest}</li>
         <li>source url: {provider.source_url ?? "unknown"}</li>
       </ul>
+      {/* 受影响版本：suspend/revoke 的影响面在动作面直接可见（S4 §6「UI 显示
+          受影响版本」）；版本状态由 server 跟随 provider 投影 */}
+      <h3>Affected versions</h3>
+      {affectedVersions.length === 0 ? (
+        <StateBanner tone="empty" text="No affected capability versions" />
+      ) : (
+        <ul aria-label="Affected versions">
+          {affectedVersions.map((v) => (
+            <li key={v.id}>
+              {v.id}: {v.status}
+            </li>
+          ))}
+        </ul>
+      )}
       {error && <StateBanner tone="error" text={error} />}
       <h3>Lifecycle actions</h3>
       {isPublisher && (
@@ -552,7 +586,7 @@ function VersionDetailView({
         <li>status: {version.status}</li>
         <li>risk level: {version.risk_level}</li>
         <li>content digest: {version.content_digest}</li>
-        <li>test digest: {version.test_digest ?? "unknown"}</li>
+        <li>test digest: {version.test_digest || "unknown"}</li>
         <li>parent: {version.parent_id ?? "unknown"}</li>
         <li>metadata: {JSON.stringify(version.metadata)}</li>
       </ul>

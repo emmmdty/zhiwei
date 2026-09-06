@@ -4,8 +4,10 @@
 // 契约（api/memory.py 投影）：
 // - 列表按 type/status/source 筛选（API 支持的 query 参数，server 过滤）；
 // - 状态词汇逐字渲染：candidate/confirmed/superseded/revoked/expired；
-// - confirm 是 steward-only 入口（api/memory.py _STEWARD_ROLE_NAMES 的镜像：
-//   memory_steward/steward/admin）——无该角色不渲染；server 403/409 仍兜底；
+// - confirm 入口镜像 api/memory.py confirm_record 的 scope 门禁：team 记录
+//   仅 Steward 可见（_STEWARD_ROLE_NAMES），非 team 记录本人即可确认
+//   （tests/contract/memory test_confirm_own_candidate 冻结该语义）；server
+//   403/409 仍兜底；
 // - revoke/correct/delete/export/resolve 全部映射真实端点；delete 返回 204，
 //   cascade/tombstone 边界以 refetch 后记录的 status=revoked + tombstone=true
 //   呈现（不发明 API 未返回的 cascade 细节）。
@@ -289,8 +291,10 @@ function RecordDetailView({
       </ul>
       {error && <StateBanner tone="error" text={error} />}
 
-      {/* confirm：steward-only 入口（无该角色不渲染）；server 仍兜底判定 */}
-      {isSteward && (
+      {/* confirm：team 记录 steward-only 入口，非 team 记录本人可确认
+          （api/memory.py confirm_record 仅对 team scope 做 _STEWARD_ROLE_NAMES
+          门禁）；server 仍兜底判定 */}
+      {(isSteward || record.scope !== "team") && (
         <button onClick={() => void act("confirm")} disabled={readOnly || busy}>
           Confirm
         </button>
