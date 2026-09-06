@@ -9,13 +9,13 @@ from __future__ import annotations
 from uuid import UUID
 
 import pytest
+
 from zhiwei.evals.campaigns import (
     CampaignPlan,
     CampaignStatus,
     derive_campaign_status,
     partition_units,
 )
-
 from zhiwei.evals.domain import RegisteredUnit
 from zhiwei.evals.runs import RunPhase
 

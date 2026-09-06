@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 
 import pytest
+
 from zhiwei.telemetry.traces import (
     GENAI_SEMCONV_REVISION,
     SPAN_DOMAINS,

@@ -17,6 +17,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 import pytest
+
+from zhiwei.agents.pack_files import load_pack_dir, validate_pack_bundle
 from zhiwei.evals.change_brief_suites import (
     CHANGE_BRIEF_V1,
     EXECUTOR_KIND,
@@ -25,8 +27,6 @@ from zhiwei.evals.change_brief_suites import (
     registered_change_brief_units,
     resolve_change_brief_suite,
 )
-
-from zhiwei.agents.pack_files import load_pack_dir, validate_pack_bundle
 from zhiwei.evals.domain import RegisteredUnit
 from zhiwei.runtime.reducer import RunState
 
@@ -156,9 +156,8 @@ class TestPackRuntimeWiring:
         assert any("compute_age" in u for u in impact["unknowns"])
 
     def test_registry_covers_pack_primitives(self) -> None:
-        from zhiwei.evals.executors.change_brief import build_change_brief_registry
-
         from zhiwei.agents.pack_files import load_pack_dir
+        from zhiwei.evals.executors.change_brief import build_change_brief_registry
 
         suite = _suite()
         bundle = load_pack_dir(suite.pack_dir)
@@ -169,7 +168,6 @@ class TestPackRuntimeWiring:
     def test_registry_fails_closed_on_unknown_primitive(self) -> None:
         """通用性负例：注册表对 pack 之外的 primitive 必须 fail closed。"""
         from zhiwei.evals.executors.change_brief import build_change_brief_registry
-
         from zhiwei.runtime.handlers.registry import TaskHandlerRegistryError
 
         registry = build_change_brief_registry(_suite())
@@ -177,9 +175,8 @@ class TestPackRuntimeWiring:
             registry.validate_completeness({"Teleport"})
 
     def test_unit_graphs_mirror_pack_topology_and_are_dags(self) -> None:
-        from zhiwei.evals.executors.change_brief import build_change_brief_graph
-
         from zhiwei.agents.pack_files import load_pack_dir
+        from zhiwei.evals.executors.change_brief import build_change_brief_graph
 
         suite = _suite()
         bundle = load_pack_dir(suite.pack_dir)
