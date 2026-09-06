@@ -25,6 +25,8 @@
 | [ADR-011](#adr-011) | Endpoint 分级信任、运行时注册与模型热切换 | S3 | accepted |
 | [ADR-012](#adr-012) | 契约测试层级、Gate 例外与读路径授权（S0–S2 复审修订） | S0–S3 | accepted |
 | [ADR-013](#adr-013) | Gate 命令对账与真实栈测试接线（S3–S8 全仓审计修订） | S1、S3–S8 | accepted |
+| [ADR-014](#adr-014) | S1 tenancy e2e 修复轮 —— bootstrap×journey 矛盾、group 矩阵与 authlib×httpx2 兼容 | S1 | accepted |
+| [ADR-015](#adr-015) | agent_draft.read 补 agent_builder（own workspace）——Builder 读稿缺口 | S1、S10 | accepted |
 
 ---
 
@@ -1072,3 +1074,34 @@ PG bring-up 后逐项收敛，暴露三类事实：
   e2e 前（pytest 全量会重建 schema，见 s1-tenancy-e2e-repair.md §5）。
 - 遗留（不阻塞）：前端对 group 列表的空态展示、AuditLog 仍为占位（S1 未交付
   audit-events 端点）；live attestation 与生产 egress 接线维持「计划实现」登记。
+
+---
+
+<a id="adr-015"></a>
+
+## ADR-015：agent_draft.read 补 agent_builder（own workspace）——Builder 读稿缺口
+
+日期：2026-09-06　状态：已接受（设计方本轮 pre-made 裁决，S10 fix-A 执行方实施）
+
+### 问题
+
+冻结矩阵（PERMISSIONS.md §3.1「Agent draft/sandbox/eval」行）给 Agent Builder 的 cell 是
+「创建/编辑/运行/提交发布」，却没有 `agent_draft.read`——编辑一个读不了的资源是矩阵落地
+缺口（R1 security D2）：Studio/Builder journey 的 draft 读取一律被 Rego 判 deny，前端只能
+渲染空态。Workspace Admin 已有 read cell；Auditor 只读 version/gate（无 draft read，
+本轮不扩权）；Member 为「—」。
+
+### 决策
+
+`agent_draft.read` 的 cell 从 `{workspace_admin}` 扩为 `{workspace_admin, agent_builder}`。
+agent_builder 是 workspace 作用域角色——Rego 的作用域绑定检查（绑定须匹配
+input.workspace_id）即「own-workspace scope」的全部语义，不引入新的 ABAC 门。同步
+authz_test.rego allowed_cells 与 PERMISSIONS.md §3.1（ADR-014 决策 3 同款三处对齐）。
+
+### 后果
+
+- Builder journey 的 draft 读路径转 allow；hard deny / SoD / ABAC 门全部不变（并集不翻转
+  deny）。
+- 冻结矩阵三处（Rego / authz_test.rego / PERMISSIONS.md）保持单一事实；契约测试
+  （真实 OPA slow，ADR-012 §5）钉死 builder=allow、workspace_admin=allow、
+  auditor=deny、member=deny。

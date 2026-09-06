@@ -54,7 +54,7 @@ effective permission = trigger principal permission
 | Knowledge Source/ACL | 无隐式正文读取；可委派 | 分类/egress/紧急 suspend | — | 创建/同步/授权/禁用 | 绑定到 draft、按 ACL 调试 | 按 ACL 读来源 | — | 仅经已发布 Agent/显式 ACL | 按 ACL 读 provenance |
 | CapabilityVersion | 无隐式准入 | 高/关键风险二审、suspend/revoke | 导入/检查/测试；低中风险准入/发布 | 绑定 workspace | 绑定已发布能力到 draft | — | — | 浏览可用目录 | 读 admission/audit |
 | Connection/secret | 不读明文 | revoke/安全元数据，不读明文 | 定义 credential requirement，不读明文 | 创建 workspace service Connection、rotate/revoke | 创建/撤销 own delegated Connection | — | — | 创建/撤销 own delegated Connection | 只读状态/指纹 |
-| Agent draft/sandbox/eval | — | 安全拒绝/挂起 | — | 读/委派 Builder | 创建/编辑/运行/提交发布 | — | — | — | 读版本与 Gate |
+| Agent draft/sandbox/eval | — | 安全拒绝/挂起 | — | 读/委派 Builder | 读（own workspace，ADR-015）；创建/编辑/运行/提交发布 | — | — | — | 读版本与 Gate |
 | Agent publish/canary/rollback | — | 对 hard security Gate 否决 | — | 复核并发布/回滚 | 只能 request；不能发布本人最后编辑版本 | — | — | — | 读 manifest |
 | Run/Case/Artifact | 不因角色自动读 | incident 时按 break-glass policy | — | 管理 workspace lifecycle，不自动读正文 | 运行 sandbox、按 ACL 读 | 按 ACL 读 Case memory | 只读待审批所需最小上下文 | 运行 published、管理可见 Case | 按 ACL 只读/导出 |
 | Team Memory | — | 安全 quarantine/revoke | — | 配置策略，不确认内容 | 提交 candidate | confirm/correct/conflict/revoke | — | own/case candidate、读获授权团队记忆 | 按 ACL 读 provenance |

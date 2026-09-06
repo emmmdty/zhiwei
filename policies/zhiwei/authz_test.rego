@@ -65,6 +65,9 @@ allowed_cells := [
     ["connection_secret", "revoke_own", "member"],
     ["connection_secret", "read_status_fingerprint", "auditor"],
     ["agent_draft", "reject_suspend_security", "security_admin"],
+    # S10 fix-A（ADR-015）：Builder 必须能读本 workspace 的 draft——
+    # 「创建/编辑/运行」而无 read 是冻结矩阵的落地缺口（security D2）
+    ["agent_draft", "read", "agent_builder"],
     ["agent_draft", "read", "workspace_admin"],
     ["agent_draft", "delegate_builder", "workspace_admin"],
     ["agent_draft", "create_edit_run", "agent_builder"],
