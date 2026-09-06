@@ -215,6 +215,33 @@
   跟踪项：/route suspended advisory、policy ResourceContext 结构性缺口、TaskFailed machine code
   生产方、bindings/human 生产消费者接线。
 
+## 2026-09-06：S10 Studio/Third App 全阶段执行与分角色多轮验收
+
+- **执行**（执行 subagent 分波）：T1 前端架构冻结（ViewManifest registry/ETag-CAS/SSE
+  resync/全视图迁移）∥ T5 ChangeBrief pack 定义 + 通用 conformance 机制 → T2 Studio
+  编辑（0016 + ETag/CAS + validate_studio_graph 冻结语义）∥ T6 pack 运行时 + change-brief-v1
+  suite（生产路径 6/6 密封）→ T3 发布流（S9 命令-only）→ T4 产品旅程四视图+路由挂载 +
+  T4b cases/evidence API（0017）+ Ask renderer → T4c discover API（0018）+ S8 旅程 ∥
+  T4d S4/S7 例外 spec → 修复轮 A/B（0019 runs.template + PackPlanSource 通用缝 + ADR-015 +
+  8 Run 面板 + ChangeBrief 实渲染 + a11y smoke）→ T7（registry creatable 发起 +
+  change-brief.spec.ts + Gate 证据）。A 档冻结契约 3 文件（架构边界/Studio 校验/CAS API）
+  设计方先行 RED。
+- **验收**：R1 三路分角色（测试工程师 ACCEPT-WITH-DEFECTS；产品工程师 REJECT——
+  ChangeBrief 不可见/面板缺失/README 超额，最小收口路径成为修复任务书；安全架构师
+  ACCEPT-WITH-DEFECTS 全 Low）；R2 红队 RED-TEAM-CLEAN（删除 ChangeBrief 实证：Core
+  存活、run 解析 422 fail-closed）+ 对照 CONFORMANT-WITH-REGISTERED-GAPS；修复轮全闭；
+  T7 执行中 E6（模板字面量 vs 冻结扫描）由设计方裁决为 registry creatable 数据面；
+  R3 增量复核 ACCEPT-WITH-DEFECTS（Gate 数字全部复现，2 个台账缺口收编）。
+- **终态 Gate（2026-09-06，已验证）**：pytest 3916 passed/0 failed；ruff/pyright 0；
+  evals 1205/32、determinism ✓；Gate 四命令全绿（arch+packs 209 / change_brief 6 /
+  e2e 13 / change-brief-v1 6/6 sealed sha256:3ef722bf…）；mock e2e 55 passed。
+  报告 `artifacts/gates/s10/report.md`（§15 E6 裁决复验 + §16 R3 补记）、交接单
+  `docs/handoffs/s10-studio-third-app.md`。
+- **登记**：继承四例外（S4/S6/S7/S8 e2e）解锁条件已满足、正式关闭待 operator 确认；
+  新登记 E2（tenancy 真实栈复执行，seed 为 operator 保留动作）/E3（discover-v1 无
+  fixture 语料）/E4（auditor draft-read deny）/E5（4 面板 pending）/E7（evidence 投影
+  brief 载荷）/A2（pack digest 口径）；S11 未开始。
+
 ## 待办
 
 - ~~S3–S8 未提交批次：先由 operator 决定整批验收/提交边界~~（2026-09-05 已关闭：批次

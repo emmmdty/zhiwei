@@ -275,10 +275,27 @@ $ make handoff-check HANDOFF_BASE=0c44091
   features→renderers 直接 import 禁令与 App 名称扫描未放宽，冻结测试零修改。
 - **权威复验**：`pytest tests/architecture tests/contract/solution_packs` → **209 passed**；
   全量 `pytest -q` → **3916 passed / 6 skipped / 24 deselected / 0 failed**；
-  `npm run build` ✓；e2e change-brief 5 + architecture 4 + full-product 8 → **20 passed**
+  `npm run build` ✓；e2e change-brief 5 + architecture 7 + full-product 8 → **20 passed**
   （change-brief 走 registry 数据路径，journey (a) 创建→template/mode 投影→renderer
-  解析全绿）。
+  解析全绿；明细 5+7+8。R3 复核注：seal 行复验受全量 pytest 清库顺序影响，以 §5/§7
+  原始 artifact 为准，gate 复执行轮重跑 4d/4f。）
 - **Gate 4 系列终值**：4a 209 passed；4b 6 passed；4c 13 passed（两 spec 均实际执行）；
   4d seal `sha256:3ef722bf81a2bf9aba92aff11543d9a60c5929095ad86c31ce14d64bbd081ef4`
   （6/6，§5 原记录仍有效）；4f verify 1/1（migrator DSN）。E6 关闭，S10 Gate 四命令
   全部可执行且绿。
+
+
+## 16. R3 增量复核补记（2026-09-06，台账缺口收编）
+
+- **registry.test.ts 偏差登记**（plan Task 1 列名文件，未创建）：仓库无 JS 单测
+  runner（仅 Playwright），新增 runner = 新依赖（纪律禁止）。registry 语义由
+  Python 架构测试 + e2e（unknown binding、SSE resync、creatable 路径）覆盖，
+  实质覆盖成立；S11 如引入 runner 需先补此文件。
+- **A2（pack conformance digest 口径）登记**：bundle 完整性锚 = pack.yaml 自身
+  content_digest；task_graph/schemas/skills/runtime/*.py 未入 digest 钉，且
+  solution-packs/ 不在 evals/CHECKSUMS.sha256 冻结清单内。当前篡改证据链 =
+  git 历史 + 评审；解锁：扩展 CHECKSUMS 清单至 solution-packs 或 pack bundle
+  全文件 digest（资产冻结流程）。
+- **E7 维持登记**：真实后端 evidence 投影暂不含 brief 载荷（claims=[] for pack
+  runs），renderer 契约面由 mock e2e 证明；解锁 = evidence 投影纳入 canonical
+  brief 载荷（通用投影扩展）。
