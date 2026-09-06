@@ -51,7 +51,8 @@ const LIVE_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e10";
 // template=ghost-pack → 绑定到未注册 appId（fail-closed honest unknown）
 const GHOST_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e11";
 // fix-B (e)：completed、无 template → 通用面板结构 + honest unknown 绑定。
-// execution_mode 显式供给（spec §6：mode provenance 从 API 派生并可断言）。
+// mode 显式供给（spec §6：执行模式 provenance 从 API 派生并可断言；字段名 =
+// FIX-A RunDetail.mode）。
 const PANEL_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e20";
 // fix-B (f)：completed + template change-brief → VerifiedBrief 渲染旅程
 const BRIEF_RUN = "c0d1e2f3-a4b5-4c6d-8e7f-0a1b2c3d4e21";
@@ -73,7 +74,7 @@ interface RunDetailMock {
   // FIX-A 后 RunDetail 下发 template（string | null）与执行模式 provenance；
   // null/缺席 = 前端如实渲染 unknown（spec §6：mode 从 API 派生）。
   template?: string | null;
-  execution_mode?: string | null;
+  mode?: string | null;
 }
 
 // api/evidence.py RunEvidenceView 的 1:1 mock 形状（extra=forbid 契约，逐字段）
@@ -209,7 +210,7 @@ function newState(): MockState {
           execute: { status: "completed", error: null },
         },
         template: null,
-        execution_mode: "fixture",
+        mode: "fixture",
       },
       [BRIEF_RUN]: {
         run_id: BRIEF_RUN,
@@ -220,7 +221,7 @@ function newState(): MockState {
           emit_brief: { status: "completed", error: null },
         },
         template: "change-brief",
-        execution_mode: "fixture",
+        mode: "fixture",
       },
       [BRIEF_PENDING_RUN]: {
         run_id: BRIEF_PENDING_RUN,
@@ -228,7 +229,7 @@ function newState(): MockState {
         organization_id: ORG_ID,
         tasks: { synthesize_brief: { status: "completed", error: null } },
         template: "change-brief",
-        execution_mode: "fixture",
+        mode: "fixture",
       },
     },
     evidence: {

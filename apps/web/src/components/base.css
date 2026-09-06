@@ -1,0 +1,15 @@
+/* specs/s10 §6 responsive/a11y 基线（S10 fix-B D7）。WHY：本项目无其他全局
+   样式、mock e2e journey 是唯一视觉契约——本文件不改变视觉方向，只补两件
+   smoke 契约要求的最小事实：
+   1. 宽表格内容在窄视口内于 main 容器内滚动，而不是把主壳（documentElement）
+      撑出横向溢出（accessibility.spec.ts 的 overflow 断言）；
+   2. 键盘焦点有非 UA 默认的可见轮廓（:focus-visible computed outline 断言）。 */
+
+main {
+  overflow-x: auto;
+}
+
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}

@@ -11,10 +11,11 @@
 //   edges 由 dependencies 派生（server 要求两者严格一致）；环等结构错误由
 //   server 构造期拒绝（422），UI 如实呈现且不伪装成功；
 // - 13 分区（specs/s10 §3）：Overview/Instructions/Task/Budget/Access 接真实
-//   draft 面；Knowledge/Memory/Tools/Triggers/Model/Evidence/Evals 是 S10-T4
-//   的 journey——无后端 action 的控件不出现，只留如实占位；Release 是 T3 的
-//   完整发布流（release/ReleasePanel）：readiness、版本 diff、S9 release
-//   commands（create/advance/rollback）与不可变 manifest 展示。
+//   draft 面；Knowledge/Memory/Tools/Triggers/Model/Evidence/Evals 的后端命令
+//   未接通——无后端 action 的控件不出现，只留如实占位（fix-B 起占位文案不再
+//   引用计划任务号，只声明「无后端命令故无控件」）；Release 是完整发布流
+//   （release/ReleasePanel）：readiness、版本 diff、S9 release commands
+//   （create/advance/rollback）与不可变 manifest 展示。
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import {
@@ -207,7 +208,12 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
-// 无后端 action 的分区如实占位（S10-T4 journey 落点；§5：不出现死控件）
+// 无后端 action 的分区如实占位（§5：不出现死控件）。文案声明「为什么没有
+// 控件」——fix-B（D5）起不再引用计划任务号：T4 已收口，占位的原因是分区
+// 的后端命令仍未接通，不是「等待某个任务」。
+const PLACEHOLDER_NOTE =
+  "S10 placeholder: no backend command is wired for this section yet, so no controls are provided.";
+
 function DeferredSection({ title, note }: { title: string; note: string }) {
   return (
     <Section title={title}>
@@ -215,8 +221,6 @@ function DeferredSection({ title, note }: { title: string; note: string }) {
     </Section>
   );
 }
-
-const T4_NOTE = "Binding journey arrives with S10-T4; no backend actions yet.";
 
 function serializeGraph(graph: StudioTaskGraph): StudioTaskGraph {
   // 下发前归一：edges 由 dependencies 派生；空 port 名不下发（校验器按未声明
@@ -547,9 +551,9 @@ function DraftEditor({
         />
       </Section>
 
-      <DeferredSection title="Knowledge" note={`Knowledge — ${T4_NOTE}`} />
-      <DeferredSection title="Memory" note={`Memory — ${T4_NOTE}`} />
-      <DeferredSection title="Tools" note={`Tools — ${T4_NOTE}`} />
+      <DeferredSection title="Knowledge" note={`Knowledge — ${PLACEHOLDER_NOTE}`} />
+      <DeferredSection title="Memory" note={`Memory — ${PLACEHOLDER_NOTE}`} />
+      <DeferredSection title="Tools" note={`Tools — ${PLACEHOLDER_NOTE}`} />
 
       <Section title="Task">
         {readOnly ? null : <button onClick={addNode}>Add node</button>}
@@ -683,8 +687,8 @@ function DraftEditor({
         ) : null}
       </Section>
 
-      <DeferredSection title="Triggers" note={`Triggers — ${T4_NOTE}`} />
-      <DeferredSection title="Model" note={`Model — ${T4_NOTE}`} />
+      <DeferredSection title="Triggers" note={`Triggers — ${PLACEHOLDER_NOTE}`} />
+      <DeferredSection title="Model" note={`Model — ${PLACEHOLDER_NOTE}`} />
 
       <Section title="Budget">
         {graphTasks.length === 0 ? (
@@ -716,8 +720,8 @@ function DraftEditor({
         <p>Per-task budget is edited in the Task section (3-key vocabulary).</p>
       </Section>
 
-      <DeferredSection title="Evidence" note={`Evidence — ${T4_NOTE}`} />
-      <DeferredSection title="Evals" note={`Evals — ${T4_NOTE}`} />
+      <DeferredSection title="Evidence" note={`Evidence — ${PLACEHOLDER_NOTE}`} />
+      <DeferredSection title="Evals" note={`Evals — ${PLACEHOLDER_NOTE}`} />
 
       <Section title="Access">
         <p>Declared capabilities (nodes may only reference these; the validator enforces):</p>

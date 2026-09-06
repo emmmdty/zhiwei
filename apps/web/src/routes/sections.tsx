@@ -4,6 +4,10 @@
 // 判 403（§4 最后一段）。默认分区 workbench（既有 tenancy/runtime journey
 // 落点不变）。
 
+// responsive/a11y 基线样式（specs/s10 §6）：本模块在所有已认证 journey 的
+// 静态加载链上，是基线的单点挂载位——不引入任何视觉方向变化，见 base.css。
+import "../components/base.css";
+
 import type { ReactNode } from "react";
 import { Workbench } from "../features/workbench/Workbench";
 import { EvalRunsView } from "../features/evals/EvalRunsView";

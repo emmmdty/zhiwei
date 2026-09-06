@@ -71,7 +71,7 @@ function installApiMocks(context: BrowserContext): void {
           execute: { status: "completed", error: null },
         },
         template: null,
-        execution_mode: "fixture",
+        mode: "fixture",
       });
     }
     if (path === `/api/v1/runs/${RUN_ID}/evidence` && method === "GET") {

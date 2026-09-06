@@ -2,14 +2,21 @@
 // S10-T1：opt-in live 订阅（默认关——默认 journey 行为不变）经 state/runLive
 // 合入 SSE 增量；App 归属经通用 AppRendererSlot 槽位渲染（本文件不含任何
 // App 名称条件，features 也不直接 import renderers/——架构契约）。
+// S10 fix-B：§2 通用面板结构（Task Graph/Evidence/Cost + Tools/Artifacts/
+// Context/Memory 诚实占位）与执行模式 provenance（§6，从 API 派生，缺席
+// 如实 unknown）。Evidence 面板只对无 App 绑定的 run 渲染——绑定 App 的
+// result renderer 从同一 evidence 投影渲染自己的视图，避免同页重复渲染。
 
 import { useCallback, useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
-import { AppRendererSlot } from "../../components/AppRendererSlot";
+import { AppRendererSlot, hasAppBinding } from "../../components/AppRendererSlot";
 import { StateBanner } from "../../components/StateBanner";
 import { useRunLive } from "../../state/runLive";
 import { RunEventTimeline } from "../observability/RunEventTimeline";
 import { ApprovalsView } from "../approvals/ApprovalsView";
+import { EvidencePanel } from "./EvidencePanel";
+import { RunCostPanel } from "./RunCostPanel";
+import { PendingPanel } from "./PendingPanel";
 
 interface TaskState {
   status: string;
@@ -21,10 +28,11 @@ interface RunDetail {
   status: string;
   organization_id: string;
   tasks: Record<string, TaskState>;
-  // 后端 RunDetail（extra=forbid）暂不投影 run 的规划意图（template/pack）；
-  // 字段到位前通用 App 槽位如实渲染 "No app binding"。机制先冻结（S10-T1），
-  // 数据由后续任务的 pack registry 供给；e2e mock 显式供给以证明解析路径。
-  template?: string;
+  // FIX-A 后端下发 template（string | null）与执行模式标注 mode（派生自
+  // template 列的 fixture 资格事实）；字段缺席/null → 面板如实渲染 unknown
+  //（spec §6：mode 从 API 派生，不猜）。
+  template?: string | null;
+  mode?: string | null;
 }
 
 interface RunDetailViewProps {
@@ -88,6 +96,13 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
   if (error) return <StateBanner tone="error" text={`Error: ${error}`} />;
   if (!run) return <div>Run not found</div>;
 
+  const runSummary = {
+    runId: run.run_id,
+    status: run.status,
+    template: run.template,
+    tasks: run.tasks,
+  };
+
   return (
     <section aria-label={`Run ${runId}`}>
       <button onClick={onBack}>Back</button>
@@ -111,28 +126,49 @@ export function RunDetailView({ runId, onBack, onSessionExpired }: RunDetailView
           </p>
         )}
       </div>
-      <h3>Tasks</h3>
-      <ul>
-        {Object.entries(run.tasks).map(([tid, state]) => (
-          <li key={tid}>
-            {tid}: {state.status}
-            {state.error ? ` — ${state.error}` : ""}
-          </li>
-        ))}
-      </ul>
+      {/* Execution provenance（§6）：值逐字来自 API（FIX-A RunDetail.mode），
+          缺席字段如实 unknown */}
+      <section aria-label="Run execution">
+        <h3>Execution</h3>
+        <p>Template: {run.template ?? "not reported"}</p>
+        <p>Execution mode: {run.mode ?? "unknown (not reported by API)"}</p>
+      </section>
+      {/* Task Graph 面板：run 详情投影只携带任务（无 edges 数据）——任务列表
+          如实展示，边投影缺席如实声明，不发明 edges API 也不伪造边 */}
+      <section aria-label="Task graph">
+        <h3>Task Graph</h3>
+        <p>
+          Edges are not projected by the run detail API — tasks are shown as a
+          flat list.
+        </p>
+        {Object.keys(run.tasks).length === 0 ? (
+          <StateBanner tone="empty" text="No tasks projected" />
+        ) : (
+          <ul>
+            {Object.entries(run.tasks).map(([tid, state]) => (
+              <li key={tid}>
+                {tid}: {state.status}
+                {state.error ? ` — ${state.error}` : ""}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+      {!hasAppBinding(runSummary) && (
+        <EvidencePanel runId={run.run_id} runStatus={run.status} onSessionExpired={onSessionExpired} />
+      )}
+      <RunCostPanel runId={run.run_id} onSessionExpired={onSessionExpired} />
+      {/* §2 面板结构的诚实占位：后端投影未落地，只声明将来会展示什么（§5） */}
+      <PendingPanel title="Tools" wouldShow="tool invocations and results for this run." />
+      <PendingPanel title="Artifacts" wouldShow="artifacts emitted by this run (id, kind, schema)." />
+      <PendingPanel title="Context" wouldShow="context inputs bound to this run." />
+      <PendingPanel title="Memory" wouldShow="memory reads and candidates for this run." />
+      <ApprovalsView runId={runId} onSessionExpired={onSessionExpired} />
       {run.status === "completed" && !createdCaseId && (
         <button onClick={createCase}>Create case</button>
       )}
       {createdCaseId && <p>Case created: {createdCaseId}</p>}
-      <AppRendererSlot
-        run={{
-          runId: run.run_id,
-          status: run.status,
-          template: run.template,
-          tasks: run.tasks,
-        }}
-      />
-      <ApprovalsView runId={runId} onSessionExpired={onSessionExpired} />
+      <AppRendererSlot run={runSummary} />
       {/* S9 R2-B trace journey（plan Task 7）：canonical event 时间线（元数据 only） */}
       <RunEventTimeline runId={runId} onSessionExpired={onSessionExpired} />
     </section>

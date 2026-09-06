@@ -10,12 +10,13 @@ import type { ComponentType } from "react";
 
 // 通用面板消费的 run 投影（api/runs.py RunDetail 的最小形状）。template 是
 // run 的规划意图标识（CreateRunRequest.template）；pack run 的取值约定为
-// pack_id（如 ask-v1）。后端投影暂未下发该字段——缺席时绑定解析返回
-// undefined，通用槽位如实渲染 "No app binding"。
+// pack_id（如 ask-v1）。FIX-A 起后端下发 template: string | null——null 与
+// 缺席同义（无绑定输入），解析一律返回 undefined，槽位如实渲染 "No app
+// binding"。
 export interface RunSummary {
   runId: string;
   status: string;
-  template?: string;
+  template?: string | null;
   tasks?: Record<string, { status: string; error: string | null }>;
 }
 
@@ -59,11 +60,12 @@ export function registerRunBinding(binding: AppRunBinding): void {
   bindings.set(binding.templateId, binding.appId);
 }
 
-// run（或其 template）→ appId；无 template 或未注册的 template → undefined
-//（调用方渲染 "No app binding"，不猜）。
+// run（或其 template）→ appId；template 缺席/null/未注册 → undefined
+//（调用方渲染 "No app binding"，不猜）。falsy 统一挡掉——后端 null 与前端
+// undefined 两条路径必须行为一致。
 export function resolveAppIdForRun(
   run: Pick<RunSummary, "template">
 ): string | undefined {
-  if (run.template === undefined) return undefined;
+  if (!run.template) return undefined;
   return bindings.get(run.template);
 }

@@ -9,6 +9,13 @@
 import { resolveAppIdForRun, resolveRenderer, type RunSummary } from "../renderers/registry";
 import { StateBanner } from "./StateBanner";
 
+// 绑定存在性探针（components 是 features 与 renderers/registry 之间的唯一合法
+// 桥——features 不得 import renderers/）。供通用面板做「绑定的 App 自有 evidence
+// 视图 vs 通用面板接管」的结构性分流：只看绑定数据，不含任何 App 名称条件。
+export function hasAppBinding(run: RunSummary): boolean {
+  return resolveAppIdForRun(run) !== undefined;
+}
+
 export function AppRendererSlot({ run }: { run: RunSummary }) {
   const appId = resolveAppIdForRun(run);
   const manifest = appId === undefined ? undefined : resolveRenderer(appId);
