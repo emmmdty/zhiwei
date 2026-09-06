@@ -226,7 +226,7 @@ interface MockState {
   runs: { run_id: string; status: string; organization_id: string }[];
   seq: { provider: number; capVersion: number; binding: number; connection: number; source: number; sourceVersion: number; run: number };
   sourcesGetCount: number;
-  abortNextSourcesGet: boolean;
+  offlineMode: boolean;
   lastBind: { body: Record<string, string> } | null;
   lastMutation: string | null;
 }
@@ -296,7 +296,7 @@ function newState(): MockState {
     runs: [{ run_id: RUN_ID, status: "completed", organization_id: ORG_ID }],
     seq: { provider: 0, capVersion: 0, binding: 0, connection: 0, source: 0, sourceVersion: 0, run: 0 },
     sourcesGetCount: 0,
-    abortNextSourcesGet: false,
+    offlineMode: false,
     lastBind: null,
     lastMutation: null,
   };
@@ -358,27 +358,36 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
       state.runs.push(run);
       return fulfill(route, 201, run);
     }
-    if (path === `/api/v1/runs/${RUN_ID}` && method === "GET") {
+    const runMatch = path.match(/^\/api\/v1\/runs\/([0-9a-f-]{36})$/);
+    if (runMatch && method === "GET") {
+      const run = state.runs.find((r) => r.run_id === runMatch[1]);
+      if (!run) return fulfill(route, 404, { detail: "run not found" });
       return fulfill(route, 200, {
-        run_id: RUN_ID,
-        status: "completed",
-        organization_id: ORG_ID,
-        tasks: { "task-a": { status: "completed", error: null } },
+        run_id: run.run_id,
+        status: run.status,
+        organization_id: run.organization_id,
+        tasks: {},
       });
     }
-    if (path === `/api/v1/runs/${RUN_ID}/events` && method === "GET") {
+    const runEvents = path.match(/^\/api\/v1\/runs\/([0-9a-f-]{36})\/events$/);
+    if (runEvents && method === "GET") {
       return fulfill(route, 200, []);
     }
-    if (path === `/api/v1/runs/${RUN_ID}/approvals` && method === "GET") {
-      return fulfill(route, 200, [
-        {
-          request_id: APPROVAL_ID,
-          run_id: RUN_ID,
-          task_id: "task-a",
-          status: "pending",
-          requester: BUILDER_ID,
-        },
-      ]);
+    const runApprovals = path.match(/^\/api\/v1\/runs\/([0-9a-f-]{36})\/approvals$/);
+    if (runApprovals && method === "GET") {
+      // 仅种子 run 携带 pending approval（approver journey 的 read 面）
+      if (runApprovals[1] === RUN_ID) {
+        return fulfill(route, 200, [
+          {
+            request_id: APPROVAL_ID,
+            run_id: RUN_ID,
+            task_id: "task-a",
+            status: "pending",
+            requester: BUILDER_ID,
+          },
+        ]);
+      }
+      return fulfill(route, 200, []);
     }
 
     // ------------------------------------------------------------------
@@ -591,8 +600,8 @@ function installApiMocks(context: BrowserContext, state: MockState, actor: Actor
     // ------------------------------------------------------------------
     if (path === "/api/v1/knowledge/sources" && method === "GET") {
       state.sourcesGetCount += 1;
-      if (state.abortNextSourcesGet) {
-        state.abortNextSourcesGet = false;
+      if (state.offlineMode) {
+        // offline 模拟：连接层失败（abort ≠ HTTP 错误，fetch 直接抛错）
         return route.abort();
       }
       if (actor === "member") {
@@ -941,19 +950,23 @@ test.describe("Admin governance home", () => {
 
     await openSection(page, "Admin");
 
-    // members + policy surface（MembersPanel：org 角色绑定即 policy 面）
-    await expect(page.getByRole("heading", { name: "Members" })).toBeVisible();
-    await expect(page.getByText(PUBLISHER_ID)).toBeVisible();
-    await expect(page.getByText(BUILDER_ID)).toBeVisible();
+    // members + policy surface（MembersPanel：org 角色绑定即 policy 面）。
+    // OrganizationsPanel 常驻渲染同型面板——断言锚定 Admin region 内的实例。
+    const adminRegion = page.getByRole("region", { name: "Admin" });
+    await expect(
+      adminRegion.getByRole("heading", { name: "Members", exact: true })
+    ).toBeVisible();
+    await expect(adminRegion.getByText(PUBLISHER_ID)).toBeVisible();
+    await expect(adminRegion.getByText(BUILDER_ID)).toBeVisible();
 
     // audit log（无端点 → 如实空态，不造假事件）
-    await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();
-    await expect(page.getByText("No audit events")).toBeVisible();
+    await expect(adminRegion.getByRole("heading", { name: "Audit log" })).toBeVisible();
+    await expect(adminRegion.getByText("No audit events")).toBeVisible();
 
     // cost health（CostsView 复用，非复制）
-    await expect(page.getByRole("heading", { name: "Costs" })).toBeVisible();
-    await expect(page.getByText("price-card-2026-09")).toBeVisible();
-    await expect(page.getByText("exact")).toBeVisible();
+    await expect(adminRegion.getByRole("heading", { name: "Costs" })).toBeVisible();
+    await expect(adminRegion.getByText("price-card-2026-09")).toBeVisible();
+    await expect(adminRegion.getByText("exact")).toBeVisible();
 
     await context.close();
   });
@@ -1094,12 +1107,13 @@ test.describe("Builder journey", () => {
     const sourceRow = page.getByRole("table", { name: "Sources" }).getByRole("row", { name: new RegExp(sourceId) });
     await expect(sourceRow).toContainText("active");
 
-    // connect（幂等置 active）+ sync（真实 SyncResultRecord 投影）
+    // connect（幂等置 active）+ sync（真实 SyncResultRecord 投影；locator
+    // connector=source_type，uri=source://{id}，对齐 api/knowledge.py）
     await sourceRow.getByRole("button", { name: "Connect" }).click();
     await sourceRow.getByRole("button", { name: "Sync" }).click();
     await expect(page.getByText("sync: completed")).toBeVisible();
     await expect(page.getByText("versions created: 1")).toBeVisible();
-    await expect(sourceRow).toContainText("web-crawler");
+    await expect(sourceRow).toContainText(`source://${sourceId}`);
 
     // status：真实 SourceStatusRecord 投影（freshness/acl/score verbatim）
     await sourceRow.getByRole("button", { name: "Status" }).click();
@@ -1133,11 +1147,8 @@ test.describe("Builder journey", () => {
     await sourceRow.getByRole("button", { name: "Confirm disable" }).click();
     await expect(sourceRow).toContainText("disabled");
 
-    // builder 绑定 published 能力；无 lifecycle/suspend 控件（角色显隐）
-    await openSection(page, "Capabilities");
-    await expect(page.getByRole("button", { name: "Import provider" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Suspend" })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Revoke" })).toHaveCount(0);
+    // builder 绑定 published 能力；无 lifecycle/suspend 控件（角色显隐）。
+    // 版本种子必须先于分区挂载——CapabilitiesView 挂载时拉取版本列表。
     const capVersionA = newSeqId(11, 1);
     state.capVersions.push({
       id: capVersionA,
@@ -1151,6 +1162,10 @@ test.describe("Builder journey", () => {
       parent_id: null,
       metadata: { provider_version_id: newSeqId(1, 1) },
     });
+    await openSection(page, "Capabilities");
+    await expect(page.getByRole("button", { name: "Import provider" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Suspend" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Revoke" })).toHaveCount(0);
     await page.getByRole("button", { name: "Bind capability" }).click();
     await page.getByLabel("Capability version id").fill(capVersionA);
     await page.getByLabel("Agent definition id").fill(newSeqId(9, 1));
@@ -1163,16 +1178,20 @@ test.describe("Builder journey", () => {
     await context.close();
   });
 
-  test("offline reconnect: aborted load surfaces error, Retry recovers to data", async ({ browser }) => {
+  test("offline reconnect: aborted load surfaces error, Retry recovers after reconnect", async ({ browser }) => {
     const state = newState();
-    state.abortNextSourcesGet = true;
+    // offline 起始：全部 sources GET 走连接层失败（focus refetch 也失败——
+    // offline 期间不误报恢复）
+    state.offlineMode = true;
     const context = await newContextWithMocks(browser, state, "builder");
     const page = await context.newPage();
 
     await page.goto("/");
     await page.getByRole("button", { name: "Knowledge", exact: true }).click();
-    await expect(page.getByRole("alert")).toContainText(/403|Error|failed/i);
+    await expect(page.getByRole("alert")).toContainText(/failed|fetch/i);
 
+    // reconnect：恢复连接后 Retry 重放同一 GET（offline 恢复路径）
+    state.offlineMode = false;
     await page.getByRole("button", { name: "Retry" }).click();
     await expect(page.getByText("No sources")).toBeVisible();
 
@@ -1190,11 +1209,14 @@ test.describe("Member journey", () => {
     const context = await newContextWithMocks(browser, state, "member");
     const page = await context.newPage();
 
-    // workbench run（Member 的 build/use 面只读消费）
+    // workbench run（Member 的 build/use 面只读消费）。创建后 Workbench 自动
+    // 下钻 run 详情——断言详情后返回列表。
     await page.goto("/");
     await page.getByLabel("Template").selectOption("approval-chain");
-    await page.getByRole("button", { name: "Create run" }).click();
-    await expect(page.getByRole("table", { name: "Runs" }).getByRole("row", { name: /queued/ }).first()).toBeVisible();
+    await page.getByRole("button", { name: "New run" }).click();
+    await expect(page.getByText(/Status: queued/)).toBeVisible();
+    await page.getByRole("button", { name: "Back" }).click();
+    await expect(page.getByRole("row", { name: /queued/ })).toBeVisible();
 
     // ask/discover 的 renderer journey 归 T4b spec——这里只断言分区入口存在
     await expect(page.getByRole("button", { name: "Knowledge", exact: true })).toBeVisible();
@@ -1237,7 +1259,6 @@ test.describe("Approver and auditor journey", () => {
     const approverPage = await approverContext.newPage();
     await approverPage.goto("/");
     await approverPage
-      .getByRole("table", { name: "Runs" })
       .getByRole("row", { name: new RegExp(RUN_ID) })
       .getByRole("button", { name: "Open" })
       .click();
@@ -1266,7 +1287,10 @@ test.describe("Approver and auditor journey", () => {
     await expect(page.getByRole("button", { name: "Confirm", exact: true })).toHaveCount(0);
 
     await openSection(page, "Admin");
-    await expect(page.getByText("No audit events")).toBeVisible();
+    const adminRegion = page.getByRole("region", { name: "Admin" });
+    // AuditLogPanel 在 WorkspacesPanel（auditor 可见）与 Admin 分区各有一处——
+    // 断言锚定 Admin region 内的实例
+    await expect(adminRegion.getByText("No audit events")).toBeVisible();
 
     // 零 mutation 请求（auditor 会话不发写路径）
     expect(state.lastMutation).toBeNull();

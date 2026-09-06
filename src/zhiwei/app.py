@@ -26,10 +26,14 @@ from zhiwei.api.auth import (
     create_auth_router,
     create_session_actor_dependency,
 )
+from zhiwei.api.capabilities import create_capabilities_router
 from zhiwei.api.claims import create_claims_router
+from zhiwei.api.connections import create_connections_router
 from zhiwei.api.evals import create_evals_router
 from zhiwei.api.events import create_events_router
+from zhiwei.api.knowledge import create_knowledge_router
 from zhiwei.api.memberships import create_memberships_router
+from zhiwei.api.memory import create_memory_router
 from zhiwei.api.observability import create_observability_router
 from zhiwei.api.organizations import create_organizations_router
 from zhiwei.api.releases import create_releases_router
@@ -225,6 +229,17 @@ def create_app(
             issuer=oidc_issuer,
         )
     )
+
+    # S10-T4：产品壳 journey 收口——挂载既有未挂载 router（S4 Capability Hub /
+    # S5 Knowledge / S7 Memory Center）。四个工厂都只依赖 actor（租户上下文由
+    # actor 推导，router 内自校验 org/ws 缺失即 403，fail closed），无需额外
+    # sessions/object_store 接线；读路径 PEP 在 router 内前置的组合纪律不变。
+    app.include_router(
+        create_capabilities_router(actor_dependency=session_actor)
+    )
+    app.include_router(create_connections_router(actor_dependency=session_actor))
+    app.include_router(create_knowledge_router(actor_dependency=session_actor))
+    app.include_router(create_memory_router(actor_dependency=session_actor))
 
     # S9-T6：observability 读面（cost summary / failure taxonomy）。读路径 PEP
     # 在 router 内前置（org.read_audit），组合期只接线、不做授权决策。

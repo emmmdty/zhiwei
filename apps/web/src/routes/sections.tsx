@@ -11,6 +11,10 @@ import { ReleasesView } from "../features/releases/ReleasesView";
 import { ObservabilityView } from "../features/observability/ObservabilityView";
 import { CostsView } from "../features/costs/CostsView";
 import { StudioView } from "../features/studio/StudioView";
+import { KnowledgeView } from "../features/knowledge/KnowledgeView";
+import { CapabilitiesView } from "../features/capabilities/CapabilitiesView";
+import { MemoryView } from "../features/memory/MemoryView";
+import { AdminView } from "../features/admin/AdminView";
 import { hasRole, type SessionUser } from "../lib/session";
 
 export interface SectionContext {
@@ -71,6 +75,55 @@ export const SECTIONS: readonly SectionDescriptor[] = [
     label: "Agent Studio",
     render: (ctx) => (
       <StudioView readOnly={ctx.readOnly} onSessionExpired={ctx.onSessionExpired} />
+    ),
+  },
+  // S10-T4 产品壳 journey 收口：knowledge/capabilities/memory/admin。分区入口
+  // 对所有已认证用户可见（与 shell 既有纪律一致——读路径权限由 server PEP 强制，
+  // 403 由 API 实际返回驱动）；mutation 控件在视图内部按角色显隐/禁用：
+  // capabilities 的 lifecycle 动作要求 capability_publisher / security_admin、
+  // knowledge 的变更动作要求非只读（builder 等变更角色）、memory 的 confirm
+  // 仅 steward 可见（server _STEWARD_ROLE_NAMES 镜像）、auditor 全局只读。
+  {
+    key: "knowledge",
+    label: "Knowledge",
+    render: (ctx) => (
+      <KnowledgeView
+        readOnly={ctx.readOnly}
+        onSessionExpired={ctx.onSessionExpired}
+      />
+    ),
+  },
+  {
+    key: "capabilities",
+    label: "Capabilities",
+    render: (ctx) => (
+      <CapabilitiesView
+        user={ctx.user}
+        readOnly={ctx.readOnly}
+        onSessionExpired={ctx.onSessionExpired}
+      />
+    ),
+  },
+  {
+    key: "memory",
+    label: "Memory",
+    render: (ctx) => (
+      <MemoryView
+        user={ctx.user}
+        readOnly={ctx.readOnly}
+        onSessionExpired={ctx.onSessionExpired}
+      />
+    ),
+  },
+  {
+    key: "admin",
+    label: "Admin",
+    render: (ctx) => (
+      <AdminView
+        user={ctx.user}
+        readOnly={ctx.readOnly}
+        onSessionExpired={ctx.onSessionExpired}
+      />
     ),
   },
 ];
