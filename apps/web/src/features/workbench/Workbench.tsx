@@ -17,7 +17,11 @@ interface WorkbenchProps {
   onSessionExpired: () => Promise<void>;
 }
 
-const TEMPLATES = ["single-fixture", "approval-chain"] as const;
+// 模板集 = 可执行的 run 模板：S2 fixture 模板 + S10 pack 模板（id 逐字对齐
+// src/zhiwei/evals/pack_templates.py PACK_TEMPLATE_BINDINGS 的可执行绑定
+// ask-v1 / change-brief）。discover-v1 注册但无 fixture 绑定（创建期 422），
+// 不进选择器——无后端行为的控件不得出现（spec §5；S10 gate 例外 E3）。
+const TEMPLATES = ["single-fixture", "approval-chain", "ask-v1", "change-brief"] as const;
 
 export function Workbench({ workspaceId, onSessionExpired }: WorkbenchProps) {
   const [runs, setRuns] = useState<RunRecord[]>([]);
