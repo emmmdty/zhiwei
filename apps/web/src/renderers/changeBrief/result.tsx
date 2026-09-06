@@ -286,7 +286,8 @@ export function ChangeBriefResultRenderer({ run }: ViewManifestProps) {
 
 // pack run 的 templateId 取 pack_id（与 ask-v1 绑定约定一致）；schema id 指向
 // pack 声明的 verified-brief。
-registerRunBinding({ templateId: "change-brief", appId: "change-brief" });
+// creatable: 后端 pack 模板已可执行（T6 fixture 绑定），可从通用创建面发起。
+registerRunBinding({ templateId: "change-brief", appId: "change-brief", creatable: true });
 registerRenderer({
   appId: "change-brief",
   inputSchemaId: "verified-brief",

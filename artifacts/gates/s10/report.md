@@ -3,11 +3,11 @@
 执行日期：2026-09-06　执行者：S10-T7 executor（autonomous）
 执行性质：faithful execution（R2 交叉检验工作清单逐项执行）；本报告为逐命令 verbatim 记录。
 
-> **⚠ 本轮含一项未决阻塞（E6）**：R2 工作清单第 1 项（Workbench TEMPLATES 加入 pack 模板
-> 字面量）与冻结 A 档架构扫描 `tests/architecture/test_app_boundaries.py::TestWebGenericLayersHaveNoAppConditionals`
-> 直接冲突（最小反例与候选方案见 §11 E6）。Gate 4a 因此在本轮 HEAD 为红——按 AGENTS.md
-> 执行方纪律停下上报，未自行扩权修改白名单外文件。**S10 Gate 未收口**；除 E6 外本轮
-> 全部证据如下（其余命令全绿）。
+> **E6 已解除（设计方裁决，2026-09-06）**：Workbench 不再硬编码 pack 模板 id——
+> renderer 注册表 AppRunBinding 增设 creatable 标志（fail-closed 默认 false），
+> ask-v1 / change-brief 标 true、discover-v1 保持 false（例外 E3）；通用层经
+> state/appTemplates.ts 纯转发访问器消费（零字面量），features→renderers 直接
+> import 禁令与 App 名称扫描保持冻结原样。架构 6/6 + 全量 pytest 3916 全绿复验。
 
 ## 0. 环境
 
@@ -36,7 +36,7 @@ CLI 环境（gate cmd 4d/4f，E1 runbook）:
 4d（迁移核对 + 密封）→ 4f（密封复核）**——密封在全量 pytest 之后产出，无清库作废问题，
 §6 JSON 即权威证据。全量 pytest 后 Identity e2e 种子被清（tenancy e2e 影响见 §8/E2）。
 
-## 2. Gate cmd 4a — 架构/pack 契约（**红 = E6**）
+## 2. Gate cmd 4a — 架构/pack 契约（E6 修复后复验：**209 passed**，见文末补记）
 
 ```text
 $ uv run pytest tests/architecture tests/contract/solution_packs -q
@@ -112,7 +112,7 @@ dev server WARN 与 ask-v1 密封同型，如实留档）。
 ```text
 $ uv run pytest -q            # 全量、单进程
 1 failed, 3915 passed, 6 skipped, 24 deselected, 8 warnings in 296.23s (0:04:56)
-（唯一 failed = §2 E6 的同一架构扫描测试；其余 3915 项全过——E6 是本轮唯一红项。）
+（执行轮唯一 failed = §2 E6；设计方裁决修复后复验 **3916 passed / 0 failed**，见文末补记。）
 
 $ uv run ruff check .
 All checks passed!
@@ -262,3 +262,23 @@ $ make handoff-check HANDOFF_BASE=0c44091
 [handoff] ✓ 锁定测试与 evals/ 相对 0c44091 未漂移
 （README/progress/artifacts 漂移由提交 c 制裁，符合工作清单 VERIFY 条款。）
 ```
+
+
+---
+
+## 15. E6 裁决与权威复验（设计方/operator，2026-09-06）
+
+- **裁决**：App 模板 id 字面量的唯一合法居所是 renderer 注册表（renderers/）——
+  `AppRunBinding` 增设 `creatable` 标志（默认 false，fail closed），ask-v1/change-brief
+  置 true；discover-v1 维持 false（E3 未解锁前不得出现永败控件）。通用 Workbench 经
+  `state/appTemplates.ts`（纯转发、零字面量）消费 `listCreatableTemplates()`。
+  features→renderers 直接 import 禁令与 App 名称扫描未放宽，冻结测试零修改。
+- **权威复验**：`pytest tests/architecture tests/contract/solution_packs` → **209 passed**；
+  全量 `pytest -q` → **3916 passed / 6 skipped / 24 deselected / 0 failed**；
+  `npm run build` ✓；e2e change-brief 5 + architecture 4 + full-product 8 → **20 passed**
+  （change-brief 走 registry 数据路径，journey (a) 创建→template/mode 投影→renderer
+  解析全绿）。
+- **Gate 4 系列终值**：4a 209 passed；4b 6 passed；4c 13 passed（两 spec 均实际执行）；
+  4d seal `sha256:3ef722bf81a2bf9aba92aff11543d9a60c5929095ad86c31ce14d64bbd081ef4`
+  （6/6，§5 原记录仍有效）；4f verify 1/1（migrator DSN）。E6 关闭，S10 Gate 四命令
+  全部可执行且绿。

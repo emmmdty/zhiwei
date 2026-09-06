@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { api, SessionExpiredError } from "../../lib/api";
 import { StateBanner } from "../../components/StateBanner";
+import { listCreatableTemplates } from "../../state/appTemplates";
 import { RunDetailView } from "../runs/RunDetailView";
 
 interface RunRecord {
@@ -17,11 +18,13 @@ interface WorkbenchProps {
   onSessionExpired: () => Promise<void>;
 }
 
-// 模板集 = 可执行的 run 模板：S2 fixture 模板 + S10 pack 模板（id 逐字对齐
-// src/zhiwei/evals/pack_templates.py PACK_TEMPLATE_BINDINGS 的可执行绑定
-// ask-v1 / change-brief）。discover-v1 注册但无 fixture 绑定（创建期 422），
-// 不进选择器——无后端行为的控件不得出现（spec §5；S10 gate 例外 E3）。
-const TEMPLATES = ["single-fixture", "approval-chain", "ask-v1", "change-brief"] as const;
+// 模板集 = S2 通用 fixture 模板（运行时语义，非 App 名称）+ 可创建的 App
+// pack 模板。App 模板 id 字面量只住在 renderer 注册表（creatable 标志，与后端
+// pack_templates.py 同构的注册数据面）；通用层经 state 桥接访问器消费。注册但
+// 未标 creatable 的模板（创建期会 422）不进选择器——无后端行为的控件不得
+// 出现（spec §5；S10 gate 例外 E3）。
+const GENERIC_TEMPLATES = ["single-fixture", "approval-chain"] as const;
+const PACK_TEMPLATES = listCreatableTemplates();
 
 export function Workbench({ workspaceId, onSessionExpired }: WorkbenchProps) {
   const [runs, setRuns] = useState<RunRecord[]>([]);
@@ -87,7 +90,7 @@ export function Workbench({ workspaceId, onSessionExpired }: WorkbenchProps) {
           value={template}
           onChange={(e) => setTemplate(e.target.value)}
         >
-          {TEMPLATES.map((t) => (
+          {[...GENERIC_TEMPLATES, ...PACK_TEMPLATES].map((t) => (
             <option key={t} value={t}>
               {t}
             </option>

@@ -7,7 +7,8 @@ import { registerRenderer, registerRunBinding } from "../registry";
 import { AskInputRenderer } from "./input";
 import { AskResultRenderer } from "./result";
 
-registerRunBinding({ templateId: "ask-v1", appId: "ask" });
+// creatable: 后端 pack 模板已可执行（fixture 绑定齐备），可从通用创建面发起。
+registerRunBinding({ templateId: "ask-v1", appId: "ask", creatable: true });
 registerRenderer({
   appId: "ask",
   InputRenderer: AskInputRenderer,
