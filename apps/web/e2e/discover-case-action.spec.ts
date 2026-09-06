@@ -248,6 +248,10 @@ function installApiMocks(context: BrowserContext, state: MockState): void {
     if (path === `/api/v1/organizations/${ORG_ID}/workspaces` && method === "GET") {
       return fulfill(route, 200, [{ id: WS_ID, name: "Engineering" }]);
     }
+    // 常驻 WorkspacesPanel 的 group 列表（architecture.spec.ts 同款 smoke 面）
+    if (path === `/api/v1/workspaces/${WS_ID}/groups` && method === "GET") {
+      return fulfill(route, 200, []);
+    }
 
     // runtime 面（api/runs.py 契约；template 为前端扩展字段，architecture.spec.ts 同款）
     if (path === "/api/v1/runs" && method === "GET") {
@@ -436,30 +440,32 @@ test.describe("S8 discover case action —解锁旅程", () => {
     await expect(page.getByText(/probab/i)).toHaveCount(0);
 
     // triage：ready_for_triage → in_triage（claim 写 owner=principal）
-    await feed.getByRole("button", { name: "Claim triage" }).click();
+    const h1Row = feed.getByRole("listitem").filter({ hasText: "Vendor X spend anomaly" });
+    await h1Row.getByRole("button", { name: "Claim triage" }).click();
     await expect(feed.getByText("status: in_triage").first()).toBeVisible();
     expect(state.lastTriage).not.toBeNull();
     expect(state.lastTriage!.body).toMatchObject({ status: "in_triage", owner: BUILDER_ID });
     await expect(feed.getByText(`owner: ${BUILDER_ID}`).first()).toBeVisible();
 
     // 创建 Case（S8 DiscoverCase 聚合）→ feed 刷新出现 Open case
-    await feed.getByRole("button", { name: "Create case" }).click();
+    await h1Row.getByRole("button", { name: "Create case" }).click();
     expect(state.lastCreateCase).not.toBeNull();
     // mutation PEP 契约：CSRF + Idempotency-Key（api client 统一注入）
     expect(state.lastCreateCase!.headers["x-csrf-token"]).toBe(CSRF);
     expect(UUID_RE.test(state.lastCreateCase!.headers["idempotency-key"])).toBe(true);
-    await expect(feed.getByRole("button", { name: "Open case" })).toBeVisible();
+    await expect(h1Row.getByRole("button", { name: "Open case" })).toBeVisible();
 
-    await feed.getByRole("button", { name: "Open case" }).click();
+    await h1Row.getByRole("button", { name: "Open case" }).click();
     const caseView = page.getByRole("region", { name: "Discover case" });
     await expect(caseView.getByText("Status: open")).toBeVisible();
 
     // 高风险 action 提交：server-driven 门禁 409 → 拒绝文本逐字渲染
     await caseView.getByLabel("Action type").selectOption("modify");
     await caseView.getByLabel("Tool name").fill("vendor-payment-adjust");
-    await caseView.getByLabel("Rationale").fill("Adjust vendor X payment terms");
+    await caseView.getByLabel("Rationale", { exact: true }).fill("Adjust vendor X payment terms");
     await caseView.getByRole("button", { name: "Submit action" }).click();
-    await expect(page.getByRole("alert")).toHaveText(APPROVAL_REFUSAL);
+    // 拒绝文本逐字呈现（scope 到 case region，避免 shell 全局错误 banner 干扰）
+    await expect(caseView.getByRole("alert")).toHaveText(APPROVAL_REFUSAL);
     expect(state.lastSubmitAction).not.toBeNull();
     expect(state.lastSubmitAction!.headers["x-csrf-token"]).toBe(CSRF);
     expect(UUID_RE.test(state.lastSubmitAction!.headers["idempotency-key"])).toBe(true);
@@ -483,14 +489,18 @@ test.describe("S8 discover case action —解锁旅程", () => {
       rationale: "Confirmed with vendor ledger",
     });
 
-    // 刷新恢复：feed/case 从 server projection 重取（请求计数自证）
+    // 刷新恢复：shell 无 URL 路由（分区/run 状态不跨 reload 保留）——经
+    // Workbench 重开 discover run，feed/case 从 server projection 重取（计数自证）
     await page.reload();
-    await expect(page.getByRole("heading", { name: "Workbench" })).toBeVisible();
+    await openDiscoverRun(page, DISCOVER_RUN);
     const feedAfter = page.getByRole("region", { name: "Discover feed" });
     await expect(feedAfter.getByText("Vendor X spend anomaly")).toBeVisible();
     const feedFetches = state.feedFetches;
     expect(feedFetches).toBeGreaterThanOrEqual(2);
-    await feedAfter.getByRole("button", { name: "Open case" }).click();
+    const h1RowAfter = feedAfter
+      .getByRole("listitem")
+      .filter({ hasText: "Vendor X spend anomaly" });
+    await h1RowAfter.getByRole("button", { name: "Open case" }).click();
     const caseAfter = page.getByRole("region", { name: "Discover case" });
     await expect(caseAfter.getByText("Status: resolved")).toBeVisible();
     await expect(caseAfter.getByText(/— approved/)).toBeVisible();

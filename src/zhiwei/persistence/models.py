@@ -1587,3 +1587,354 @@ class CaseEventRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class DiscoverHypothesisRow(Base):
+    """S8 RiskHypothesis workbench 投影（0018）：Discover feed/triage 的持久层。
+
+    一 chain 一行；status/owner 原地状态机迁移（列级 UPDATE），detector output
+    （evidence_tags/score/probes/watermarks 等内容列）不可变——迁移守护触发器
+    之外本表无对应 UPDATE 授权。转移轨迹落 DiscoverHypothesisEventRow 台账，
+    不改写原 detector output（S8 §4）。
+    """
+
+    __tablename__ = "discover_hypotheses"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('proposed', 'falsification_in_progress', 'ready_for_triage',"
+            " 'rejected', 'in_triage', 'accepted', 'dismissed', 'superseded')",
+            name="hypothesis_status",
+        ),
+        CheckConstraint("kind IN ('supporting', 'contradicting', 'missing')", name="hypothesis_kind"),
+        CheckConstraint(
+            "severity IN ('info', 'warning', 'high', 'critical')", name="hypothesis_severity"
+        ),
+        CheckConstraint("score IS NULL OR (score >= 0 AND score <= 1)", name="hypothesis_score"),
+        CheckConstraint("detector_pack_version > 0", name="hypothesis_detector_pack_version"),
+        CheckConstraint("length(title) >= 1", name="hypothesis_title"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_discover_hypotheses_workspace",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_discover_hypotheses_scope_id"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    signal_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    program_version_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    detector_pack_id: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    detector_pack_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    owner: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''"))
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    score: Mapped[float | None] = mapped_column(Float)
+    affected_entities: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    evidence_tags: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    suggested_validation_actions: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    source_watermarks: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    proposed_probes: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    falsification_results: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    dedup_key: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''"))
+    created_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DiscoverHypothesisEventRow(Base):
+    """S8 triage 转移台账（0018）：追加式持久层，(hypothesis_id, action,
+    payload_digest) 唯一键让重放幂等。只有 SELECT/INSERT 授权（台账只追加）。"""
+
+    __tablename__ = "discover_hypothesis_events"
+    __table_args__ = (
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_discover_hypothesis_events_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "hypothesis_id"],
+            [
+                "discover_hypotheses.organization_id",
+                "discover_hypotheses.workspace_id",
+                "discover_hypotheses.id",
+            ],
+            name="fk_discover_hypothesis_events_hypothesis",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id",
+            "workspace_id",
+            "hypothesis_id",
+            "action",
+            "payload_digest",
+            name="uq_discover_hypothesis_events_transition",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    hypothesis_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    from_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    to_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON_VALUE, nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DiscoverCaseRow(Base):
+    """S8 DiscoverCase workbench 投影（0018）：链接 hypothesis/action/resolution
+    的 id 引用（JSONB id 列表，0017 cases 同款，不复制正文）。同租户同 hypothesis
+    至多一条（partial unique 由迁移数据面强制）——刷新/重试不复制 case。"""
+
+    __tablename__ = "discover_cases"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('open', 'in_progress', 'resolved', 'dismissed', 'archived')",
+            name="discover_case_status",
+        ),
+        CheckConstraint(
+            "severity IN ('info', 'warning', 'high', 'critical')", name="discover_case_severity"
+        ),
+        CheckConstraint("length(title) >= 1", name="discover_case_title"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_discover_cases_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "hypothesis_id"],
+            [
+                "discover_hypotheses.organization_id",
+                "discover_hypotheses.workspace_id",
+                "discover_hypotheses.id",
+            ],
+            name="fk_discover_cases_hypothesis",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_discover_cases_scope_id"
+        ),
+        Index(
+            "uq_discover_cases_hypothesis",
+            "organization_id",
+            "workspace_id",
+            "hypothesis_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    hypothesis_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''"))
+    dedup_key: Mapped[str] = mapped_column(String(255), nullable=False, server_default=text("''"))
+    hypothesis_ids: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    action_request_ids: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    resolution_ids: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    created_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DiscoverActionRow(Base):
+    """S8 ActionRequest workbench 投影（0018）：提交即 pending_approval（服务端
+    门禁，无默认执行路径），status/s2_decision_id/approved_by/approval_timestamp
+    列级 UPDATE，action 内容列不可变。SoD 与决策配对 CHECK 镜像 0011 纪律；
+    input_digest（S2 审批输入内容寻址）唯一键让重复提交 fail closed。"""
+
+    __tablename__ = "discover_actions"
+    __table_args__ = (
+        CheckConstraint(
+            "action_type IN ('query', 'create', 'modify', 'delete', 'notify', 'export')",
+            name="discover_action_type",
+        ),
+        CheckConstraint(
+            "status IN ('proposed', 'pending_approval', 'approved', 'rejected')",
+            name="discover_action_status",
+        ),
+        CheckConstraint(
+            "(status = 'approved') = "
+            "(approved_by IS NOT NULL AND approval_timestamp IS NOT NULL)",
+            name="discover_action_decision_fields",
+        ),
+        CheckConstraint(
+            "approved_by IS NULL OR approved_by <> requested_by",
+            name="discover_action_sod_requester",
+        ),
+        CheckConstraint(
+            "(status IN ('pending_approval', 'approved')) = (s2_decision_id IS NOT NULL)",
+            name="discover_action_s2_binding",
+        ),
+        CheckConstraint("length(tool_name) >= 1", name="discover_action_tool_name"),
+        CheckConstraint("length(rationale) >= 1", name="discover_action_rationale"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_discover_actions_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "hypothesis_id"],
+            [
+                "discover_hypotheses.organization_id",
+                "discover_hypotheses.workspace_id",
+                "discover_hypotheses.id",
+            ],
+            name="fk_discover_actions_hypothesis",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "case_id"],
+            [
+                "discover_cases.organization_id",
+                "discover_cases.workspace_id",
+                "discover_cases.id",
+            ],
+            name="fk_discover_actions_case",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_discover_actions_scope_id"
+        ),
+        Index(
+            "uq_discover_actions_input_digest",
+            "organization_id",
+            "workspace_id",
+            "case_id",
+            "input_digest",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    hypothesis_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    case_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    action_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    tool_name: Mapped[str] = mapped_column(Text, nullable=False)
+    parameters: Mapped[dict[str, Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    s2_decision_id: Mapped[UUID | None] = mapped_column(Uuid)
+    approved_by: Mapped[UUID | None] = mapped_column(Uuid)
+    approval_timestamp: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    input_digest: Mapped[str] = mapped_column(String(71), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class DiscoverResolutionRow(Base):
+    """S8 HumanResolution 记录（0018）：追加式持久层（SELECT/INSERT，不可变）。
+    Resolution 不改写原 detector output；case 终态由应用层状态机保证。"""
+
+    __tablename__ = "discover_resolutions"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('accepted', 'dismissed', 'false_positive', 'mitigated',"
+            " 'reopened', 'superseded')",
+            name="discover_resolution_kind",
+        ),
+        CheckConstraint("length(rationale) >= 1", name="discover_resolution_rationale"),
+        CheckConstraint("schema_version > 0", name="schema_version"),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id"],
+            ["workspaces.organization_id", "workspaces.id"],
+            name="fk_discover_resolutions_workspace",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["organization_id", "workspace_id", "case_id"],
+            [
+                "discover_cases.organization_id",
+                "discover_cases.workspace_id",
+                "discover_cases.id",
+            ],
+            name="fk_discover_resolutions_case",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "organization_id", "workspace_id", "id", name="uq_discover_resolutions_scope_id"
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True)
+    organization_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    case_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    hypothesis_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    rationale: Mapped[str] = mapped_column(Text, nullable=False)
+    resolved_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    approved_by: Mapped[UUID] = mapped_column(Uuid, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("''"))
+    evidence_refs: Mapped[list[Any]] = mapped_column(
+        JSON_VALUE, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    approval_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

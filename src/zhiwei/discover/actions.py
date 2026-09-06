@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from zhiwei.contracts.canonical import canonical_json, digest_bytes
 from zhiwei.contracts.identifiers import new_id
 from zhiwei.contracts.time import ensure_utc
-from zhiwei.runtime.approvals import ApprovalRequestManager
+from zhiwei.runtime.approvals import ApprovalRequest, ApprovalRequestManager
 
 
 class _FrozenModel(BaseModel):
@@ -168,6 +168,11 @@ class ActionManager:
     @property
     def receipts(self) -> tuple[ActionReceipt, ...]:
         return tuple(self._receipts.values())
+
+    def s2_decision(self, request_id: UUID) -> ApprovalRequest:
+        """S2 审批决定查询（discover API 投影消费：decision id / input digest
+        的单一事实源——API 层不复制 digest 计算或访问 manager 内部状态）。"""
+        return self._approvals.get(self._decision_ids[request_id])
 
     def create_request(
         self,

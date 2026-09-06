@@ -30,6 +30,7 @@ from zhiwei.api.capabilities import create_capabilities_router
 from zhiwei.api.cases import create_cases_router
 from zhiwei.api.claims import create_claims_router
 from zhiwei.api.connections import create_connections_router
+from zhiwei.api.discover import create_discover_router
 from zhiwei.api.evals import create_evals_router
 from zhiwei.api.events import create_events_router
 from zhiwei.api.evidence import create_evidence_router
@@ -258,6 +259,18 @@ def create_app(
     # 根目录——按需挂载（同 temporal 的纪律：缺配置不提供半途而废的端点）。
     app.include_router(
         create_releases_router(
+            actor_dependency=session_actor,
+            sessions=app_sessions,
+            policy_enforcer=policy_enforcer,
+        )
+    )
+
+    # S10-T4c：Discover workbench 面（S8 收口补齐——feed/triage/case/gated
+    # action/resolution）。不依赖 run 终态或 object store，无条件挂载；mutation
+    # 走生产 policy 纵切（RUN_CASE_ARTIFACT × manage_visible_cases），组合期
+    # 只接线、不做授权决策（纪律同上）。
+    app.include_router(
+        create_discover_router(
             actor_dependency=session_actor,
             sessions=app_sessions,
             policy_enforcer=policy_enforcer,

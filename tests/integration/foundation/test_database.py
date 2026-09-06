@@ -83,6 +83,13 @@ REQUIRED_TABLES = {
     # REQUIRED_TABLES 契约随新表扩展（0011 同款登记协议）。
     "cases",
     "case_events",
+    # S10-T4c（0018）：Discover workbench 持久层（S8 收口补齐；FORCE RLS、org+ws
+    # 作用域）——hypotheses/cases/actions/resolutions + triage 台账（0011 同款登记）
+    "discover_hypotheses",
+    "discover_hypothesis_events",
+    "discover_cases",
+    "discover_actions",
+    "discover_resolutions",
 }
 WORKSPACE_TABLES = {
     "agent_definitions",
@@ -113,6 +120,12 @@ WORKSPACE_TABLES = {
     # S10-T4b（0017）：case 行与生命周期台账均为 workspace 作用域租户数据
     "cases",
     "case_events",
+    # S10-T4c（0018）：discover 五表均为 workspace 作用域租户数据
+    "discover_hypotheses",
+    "discover_hypothesis_events",
+    "discover_cases",
+    "discover_actions",
+    "discover_resolutions",
 }
 OPTIONAL_WORKSPACE_TABLES = {"audit_events", "idempotency_records", "outbox"}
 # 总设计 §3.1：Group 位于 Workspace 之下；只有 Membership 是 organization 级
@@ -185,6 +198,24 @@ MUTABLE_COLUMNS = {
     # （cohort 不重写）；claim 只有状态机/证据/绑定值列可变，statement/scope 冻结
     "agent_releases": {"rollout_policy", "state", "updated_at"},
     "claim_registry": {"bound_value", "evidence", "status", "updated_at"},
+    # S10-T4c（0018）：discover 状态机迁移列（列级 UPDATE，无表级授权）——
+    # hypothesis 的 detector output 内容列、action 内容列不可变（迁移守护
+    # 触发器 + 缺失授权双重保障）；台账与 resolution 只追加（无 UPDATE）
+    "discover_hypotheses": {"owner", "status", "updated_at"},
+    "discover_cases": {
+        "action_request_ids",
+        "owner",
+        "resolution_ids",
+        "status",
+        "updated_at",
+    },
+    "discover_actions": {
+        "approval_timestamp",
+        "approved_by",
+        "s2_decision_id",
+        "status",
+        "updated_at",
+    },
     "organizations": {"policy_ref", "retention_policy", "status"},
     "outbox": {
         "attempts",

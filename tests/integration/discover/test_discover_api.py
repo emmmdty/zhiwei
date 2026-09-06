@@ -111,11 +111,12 @@ async def tenant(sessions) -> Any:
     from zhiwei.persistence.repositories import TenantRepository
     from zhiwei.persistence.tenant import TenantContext, tenant_session
 
-    context = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
+    organization_id, workspace_id = uuid4(), uuid4()
+    context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
     async with tenant_session(sessions, context) as session:
         repository = TenantRepository(session, context)
-        await repository.create_organization(context.organization_id, status="active")
-        await repository.create_workspace(context.workspace_id, name="discover-api")
+        await repository.create_organization(organization_id, status="active")
+        await repository.create_workspace(workspace_id, name="discover-api")
     return context
 
 
@@ -177,9 +178,8 @@ async def _seed_hypothesis(
     """
     from datetime import UTC, datetime
 
-    from zhiwei.discover.pg_repository import PgDiscoverRepository
-
     from zhiwei.discover.hypotheses import HypothesisStatus
+    from zhiwei.discover.pg_repository import PgDiscoverRepository
     from zhiwei.persistence.tenant import tenant_session
     now = datetime.now(UTC)
     evidence = (
@@ -225,6 +225,7 @@ async def _seed_hypothesis(
         await repository.ingest_hypothesis(
             hypothesis,
             severity=SignalSeverity.HIGH,
+            created_by=uuid4(),
             dedup_key="fingerprint:vendor-x-spend:v1",
         )
     return hypothesis.id
@@ -294,11 +295,12 @@ class TestDiscoverFeed:
         from zhiwei.persistence.repositories import TenantRepository
         from zhiwei.persistence.tenant import TenantContext, tenant_session
 
-        other = TenantContext(organization_id=uuid4(), workspace_id=uuid4())
+        other_org, other_ws = uuid4(), uuid4()
+        other = TenantContext(organization_id=other_org, workspace_id=other_ws)
         async with tenant_session(sessions, other) as session:
             repository = TenantRepository(session, other)
-            await repository.create_organization(other.organization_id, status="active")
-            await repository.create_workspace(other.workspace_id, name="discover-other")
+            await repository.create_organization(other_org, status="active")
+            await repository.create_workspace(other_ws, name="discover-other")
         await _seed_hypothesis(sessions, other)
 
         actor_holder = {"value": _actor(tenant)}
@@ -475,8 +477,12 @@ class TestCaseCreation:
                 headers={"Idempotency-Key": str(uuid4())},
             )
             assert response.status_code == 403, response.text
-            feed = await client.get("/api/v1/discover/feed")
-            assert feed.json()[0]["case_id"] is None
+        # 零写入：deny 后业务面无 case 行（直查 PG，不经被 deny 的读路径）
+        from zhiwei.persistence.tenant import tenant_session
+
+        async with tenant_session(sessions, tenant) as session:
+            count = await session.execute(text("SELECT count(*) FROM discover_cases"))
+            assert count.scalar_one() == 0
         await client_opa.aclose()
 
 
