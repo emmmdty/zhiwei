@@ -86,7 +86,7 @@ class TestPackTemplateRegistry:
         # pack 声明在库（task_graph.yaml）但仓库内没有可执行的 fixture 绑定资产：
         # 注册即声明缺口——解析以 machine reason 拒绝（fail closed），
         # 不是 unknown template，也不是 worker 侧崩溃。
-        with pytest.raises(PlannerError, match="discover-v1.*fixture"):
+        with pytest.raises(PlannerError, match=r"discover-v1.*fixture"):
             source.resolve_pack_plan("discover-v1")
 
     def test_pack_queue_names_are_namespaced_per_template(self) -> None:

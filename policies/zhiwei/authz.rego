@@ -78,7 +78,10 @@ matrix := {
     },
     "agent_draft": {
         "reject_suspend_security": {"security_admin"},
-        "read": {"workspace_admin"},
+        # S10 fix-A（ADR-015）：Builder 必须能读本 workspace 的 draft——
+        # 「创建/编辑/运行」而无 read 是冻结矩阵的落地缺口（security D2）。
+        # agent_builder 是 workspace 作用域角色，作用域绑定检查即 own-workspace 语义。
+        "read": {"agent_builder", "workspace_admin"},
         "delegate_builder": {"workspace_admin"},
         "create_edit_run": {"agent_builder"},
         "read_version_gate": {"auditor"},

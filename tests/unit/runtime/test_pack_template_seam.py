@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from zhiwei.agents.task_graph import TaskGraph, TaskGraphNode
-from zhiwei.runtime.planner import FixturePlanner, PlanIntent, PlannerError, PlannedRun
+from zhiwei.runtime.planner import FixturePlanner, PlanIntent, PlannedRun, PlannerError
 
 
 def _single_node_graph(task_id: str, task_type: str) -> TaskGraph:

@@ -20,7 +20,7 @@ from typing import Annotated, Any
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from zhiwei.identity.domain import ActorContext
@@ -52,6 +52,9 @@ class RunRecord(BaseModel):
     run_id: UUID
     status: str
     organization_id: UUID
+    # S10 fix-A（D2）：caller-declared planner 意图（创建期持久化，0019）。
+    # 无意图（eval 直连/存量行）→ None——web 绑定解析如实渲染 "No app binding"。
+    template: str | None = None
 
 
 class RunDetail(BaseModel):
@@ -63,6 +66,13 @@ class RunDetail(BaseModel):
     status: str
     organization_id: UUID
     tasks: dict[str, dict[str, Any]] = {}
+    template: str | None = None
+    # 执行模式标注（fixture 资格诚实性，R1 D4）：template 非空 → 该 run 的
+    # 图由 fixture planner / pack 计划源产出——今天的 POST /runs 一切
+    # origination 都是 fixture 绑定执行（无 live source），template 列即这一
+    # 事实的持久化标记；template 缺失 → None（不猜）。S9 模型驱动 planner
+    # 落地时必须改为 planner 声明的执行模式，不得沿用本推导。
+    mode: str | None = None
 
 
 class CreateRunRequest(BaseModel):
@@ -70,7 +80,8 @@ class CreateRunRequest(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    template: str = "single-fixture"
+    # max_length 与 0019 的 runs.template 列对齐：越界在边界拒绝，不是 DB 报错
+    template: Annotated[str, Field(max_length=64)] = "single-fixture"
     workspace_id: UUID
 
 
@@ -118,6 +129,18 @@ def _tenant(actor: ActorContext, workspace_id: UUID | None = None) -> TenantCont
             detail="workspace context required",
         )
     return TenantContext(organization_id=actor.organization_id, workspace_id=ws)
+
+
+def _fixture_mode(template: str | None) -> str | None:
+    """执行模式标注（fixture 资格诚实性，R1 D4）。
+
+    今天的 POST /runs 一切 origination——fixture 模板与 pack 模板计划源——产出的
+    都是 fixture 绑定执行（零 live source）；template 列是「经此两条 origination
+    创建」的持久化标记，据此派生 mode=fixture，不发明事件之外的事实。template
+    缺失（eval 直连/存量行）→ None。S9 模型驱动 planner 落地时本推导必须换为
+    planner 声明的执行模式（登记的跟踪项，不得沿用）。
+    """
+    return "fixture" if template is not None else None
 
 
 def create_runs_router(
@@ -215,6 +238,7 @@ def create_runs_router(
                         run_id=row.id,
                         status=state.status,
                         organization_id=context.organization_id,
+                        template=row.template,
                     )
                 )
         return records
@@ -233,6 +257,23 @@ def create_runs_router(
                 raise HTTPException(
                     status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
                 )
+            # template 只住在 Run 行（创建期持久化，0019）——canonical events
+            # 不携带 planner 意图；跨租户/不存在的 run 统一 404（防枚举）。
+            from sqlalchemy import select
+
+            from zhiwei.persistence.models import Run
+
+            run_row = await session.scalar(
+                select(Run).where(
+                    Run.id == run_id,
+                    Run.organization_id == context.organization_id,
+                    Run.workspace_id == context.workspace_id,
+                )
+            )
+            if run_row is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, detail="run not found"
+                )
             tasks = {
                 tid: {"status": t.status, "error": t.error}
                 for tid, t in state.tasks.items()
@@ -242,6 +283,8 @@ def create_runs_router(
             status=state.status,
             organization_id=context.organization_id,
             tasks=tasks,
+            template=run_row.template,
+            mode=_fixture_mode(run_row.template),
         )
 
     @router.get("/{run_id}/events")
@@ -318,7 +361,7 @@ def create_runs_router(
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
             ) from exc
-        run_id = await _submit_run(sessions, context, planned, actor)
+        run_id = await _submit_run(sessions, context, planned, actor, request.template)
         await _dispatch(sessions, context)
         return {
             "run_id": str(run_id),
@@ -442,6 +485,7 @@ def create_runs_router(
         context: TenantContext,
         planned: Any,
         actor: ActorContext,
+        template: str | None,
     ) -> UUID:
         from uuid import uuid4
 
@@ -452,11 +496,15 @@ def create_runs_router(
                 await service.submit_start_run(
                     run_id=run_id,
                     graph=planned.graph.model_dump(mode="json"),
-                    task_queue=task_queue,
+                    # pack 计划源可 pin 执行队列（pack fixture 绑定的执行面）；
+                    # None → router 默认队列（S2 fixture 模板语义不变）
+                    task_queue=planned.task_queue or task_queue,
                     max_task_attempts=planned.max_task_attempts,
                     continue_as_new_after=planned.continue_as_new_after,
                     # SoD 事实源：审批 requester 从 API actor 穿透（ADR-012 反例 1）
                     requested_by=str(actor.principal_id),
+                    # 创建期 caller-declared 绑定持久化（S10 fix-A，0019）
+                    template=template,
                 )
             except RunCommandError as exc:
                 raise HTTPException(

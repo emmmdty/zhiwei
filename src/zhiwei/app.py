@@ -305,6 +305,8 @@ def create_app(
     if settings.temporal_target is not None:
         temporal_target = settings.temporal_target
 
+        from zhiwei.evals.pack_templates import PACK_TEMPLATE_PLAN_SOURCE
+        from zhiwei.runtime.planner import FixturePlanner
         from zhiwei.telemetry.redis_streams import RedisEventStream
 
         # REDIS_URL 缺失 → SSE 走 PG 轮询（增量通道是可选加速，丢失零影响）。
@@ -338,6 +340,11 @@ def create_app(
                 actor_dependency=session_actor,
                 sessions_factory=_runs_sessions,
                 temporal_target=temporal_target,
+                # S10 fix-A：pack 模板计划源经组合根注入 Planner port（generic
+                # 类型；App 名映射是资产层数据，本文件不含任何 App 名字面量）。
+                # pack fixture 绑定 pin 独立执行队列——worker 组合须按
+                # pack_template_queue 装配对应 pack handler 注册表。
+                planner=FixturePlanner(pack_plans=PACK_TEMPLATE_PLAN_SOURCE),
                 workspace_authorizer=_runs_workspace_authorizer,
                 event_sink=redis_stream,
             )

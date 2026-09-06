@@ -164,6 +164,7 @@ def _runs_app(stack: dict, actor: ActorContext) -> FastAPI:
         return sessions
 
     async def authorize(actor_: ActorContext, workspace_id: UUID) -> None:
+        assert actor_.organization_id is not None
         context = TenantContext(
             organization_id=actor_.organization_id, workspace_id=workspace_id
         )

@@ -509,6 +509,10 @@ class Run(Base):
     workspace_id: Mapped[UUID] = mapped_column(Uuid, nullable=False, index=True)
     agent_version_id: Mapped[UUID | None] = mapped_column(Uuid)
     status: Mapped[str] = mapped_column(String(32), nullable=False)
+    # S10 fix-A（0019）：caller-declared 的 planner 意图标识，创建期持久化——
+    # web ViewManifest 按 template 解析 App 绑定；无 planner 意图的 run（eval
+    # executor 直连命令路径）保持 NULL，不猜默认值。创建后不可变（无 UPDATE 授权）。
+    template: Mapped[str | None] = mapped_column(String(64))
     schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

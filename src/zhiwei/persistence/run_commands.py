@@ -56,12 +56,17 @@ class RunCommandService:
         activity_timeout_seconds: int = 60,
         requested_by: str = "system",
         delegation_chain: tuple[str, ...] = (),
+        template: str | None = None,
     ) -> None:
         """Create the Run row and the start_run command in one transaction.
 
         delegation_chain 是 ADR-008 第②层的纵深防御：发布期环检测之外的
         运行时硬上界——超链在 Run 行写入前拒绝（fail closed），防发布校验
         被绕过或图在发布后被篡改。
+
+        template 是创建期的 caller-declared planner 意图标识（S10 fix-A，
+        0019 持久化）：API 层传入，eval/CLI 直连路径缺省 None——缺席是诚实
+        语义，不猜默认值。
         """
         from sqlalchemy import select
 
@@ -101,6 +106,7 @@ class RunCommandService:
                     workspace_id=self._context.workspace_id,
                     agent_version_id=None,
                     status="created",
+                    template=template,
                     schema_version=_RUN_SCHEMA_VERSION,
                 )
             )

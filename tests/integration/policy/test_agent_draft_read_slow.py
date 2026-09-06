@@ -16,7 +16,12 @@ Builder 必须能读自己 workspace 的 draft——「创建/编辑/运行 draf
 
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -38,10 +43,60 @@ from zhiwei.policy.roles import (
     RoleScope,
 )
 
+REPO_ROOT = Path(__file__).resolve().parents[3]
+COMPOSE_FILE = REPO_ROOT / "deploy" / "compose" / "compose.test.yaml"
 OPA_URL = "http://127.0.0.1:8181"
 ORG_ID = uuid4()
 WS_ID = uuid4()
 DRAFT_ID = uuid4()
+
+_COMPOSE_CMD = ["docker", "compose", "-f", str(COMPOSE_FILE), "--profile", "identity"]
+
+
+def _run_compose(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        [*_COMPOSE_CMD, *args], capture_output=True, text=True, timeout=300, env=os.environ
+    )
+
+
+def _wait_healthy(deadline: float = 120.0) -> None:
+    import time
+
+    from httpx2 import HTTPError, get
+
+    start = time.monotonic()
+    while time.monotonic() - start < deadline:
+        try:
+            if get(f"{OPA_URL}/health?bundles", timeout=2.0).status_code == 200:
+                return
+        except HTTPError:
+            pass
+        time.sleep(1)
+    raise RuntimeError("opa 服务未在期限内通过 /health?bundles")
+
+
+@pytest.fixture(scope="class")
+def opa_bundle_current() -> Iterator[None]:
+    """bundle 在容器启动期从仓库 policies 构建——regox 改动后必须重建再判定。
+
+    与 test_opa_sidecar_slow.py 同款纪律：只还原 opa 服务，不动 postgres；
+    无 docker 时跳过（slow 显式运行，ADR-012 §5）。
+    """
+    if shutil.which("docker") is None:
+        pytest.skip("环境守卫：无 docker 无法执行真实 OPA 纵切（slow 显式运行）")
+    rebuild = subprocess.run(
+        [*_COMPOSE_CMD, "up", "-d", "--force-recreate", "--wait", "opa"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=os.environ,
+    )
+    assert rebuild.returncode == 0, f"opa 重建失败:\n{rebuild.stdout}\n{rebuild.stderr}"
+    _wait_healthy()
+    yield
+    restore = _run_compose("up", "-d", "--wait", "opa")
+    assert restore.returncode == 0, f"opa 还原失败:\n{restore.stdout}\n{restore.stderr}"
+    _wait_healthy()
 
 
 def _draft_read_input(role: Role) -> PolicyInput:
@@ -73,6 +128,7 @@ def _draft_read_input(role: Role) -> PolicyInput:
 
 @pytest.mark.slow
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("opa_bundle_current")
 class TestAgentDraftReadMatrix:
     async def _decide(self, role: Role) -> bool:
         client = OPAClient(OPA_URL)
