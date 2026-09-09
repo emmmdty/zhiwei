@@ -1,0 +1,171 @@
+/* specs/s10 §6 responsive/a11y 基线（S10 fix-B D7）。WHY：本项目无其他全局
+   样式、mock e2e journey 是唯一视觉契约——本文件不改变视觉方向，只补两件
+   smoke 契约要求的最小事实：
+   1. 宽表格内容在窄视口内于 main 容器内滚动，而不是把主壳（documentElement）
+      撑出横向溢出（accessibility.spec.ts 的 overflow 断言）；
+   2. 键盘焦点有非 UA 默认的可见轮廓（:focus-visible computed outline 断言）。
+
+   classless 基线（S11 followup-4）：评审指出演示面停留在浏览器默认样式
+   （Times 标题、原生控件）。此处补一层零依赖的排版/控件基线——不动布局骨架
+   （无 width/float/position），宽表格滚动与 focus 轮廓两条契约保持原语义；
+   不引第三方 CSS（仓库依赖纪律），不建第二挂载位（CDN <link> 破坏 e2e
+   确定性与离线部署）。 */
+
+main {
+  overflow-x: auto;
+}
+
+:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+body {
+  margin: 0;
+  padding: 0 1.2rem 2rem;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  line-height: 1.5;
+  color: #1f2430;
+  background: #f6f7f9;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  line-height: 1.25;
+  margin: 0.7em 0 0.4em;
+}
+
+h1 {
+  font-size: 1.4rem;
+}
+
+h2 {
+  font-size: 1.18rem;
+}
+
+h3 {
+  font-size: 1.02rem;
+}
+
+p {
+  margin: 0.4em 0;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5em 0;
+  background: #fff;
+}
+
+th,
+td {
+  border: 1px solid #d9dee7;
+  padding: 0.4em 0.7em;
+  text-align: left;
+  vertical-align: top;
+}
+
+th {
+  background: #eef1f6;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+tbody tr:nth-child(even) {
+  background: #fafbfd;
+}
+
+button,
+select,
+input,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  background: #fff;
+  color: inherit;
+  border: 1px solid #c6cdd9;
+  border-radius: 6px;
+  padding: 0.28em 0.8em;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: #eef1f6;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* 主壳导航：无 class 可依——nav[aria-label] + aria-current 是既有的语义锚点。
+   导航项做成轻量 tab（透明底 + 当前页高亮），避免一排主色按钮压过内容。 */
+nav[aria-label="Primary"] {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25em;
+  border-bottom: 1px solid #d9dee7;
+  padding-bottom: 0.45em;
+  margin-bottom: 0.7em;
+}
+
+nav[aria-label="Primary"] button {
+  background: transparent;
+  border-color: transparent;
+}
+
+nav[aria-label="Primary"] button:hover:not(:disabled) {
+  background: #e9edf3;
+}
+
+nav[aria-label="Primary"] button[aria-current="page"] {
+  background: #2456c8;
+  border-color: #1d47a6;
+  color: #fff;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1em;
+  padding: 0.45em 0;
+  border-bottom: 1px solid #d9dee7;
+  margin-bottom: 0.7em;
+}
+
+select,
+input,
+textarea {
+  background: #fff;
+  border: 1px solid #c6cdd9;
+  border-radius: 6px;
+  padding: 0.28em 0.5em;
+}
+
+code,
+pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+
+code {
+  background: #eef1f6;
+  border-radius: 4px;
+  padding: 0.08em 0.35em;
+}
+
+pre {
+  background: #f2f4f8;
+  border: 1px solid #d9dee7;
+  border-radius: 6px;
+  padding: 0.6em 0.8em;
+  overflow-x: auto;
+}

@@ -1,0 +1,43 @@
+{
+  "seal_version": 1,
+  "scenario_id": "temporal_restart",
+  "dependency": "temporal",
+  "fault_class": "restart",
+  "terminal": "recover",
+  "backend": "compose",
+  "passed": true,
+  "failure_reason": null,
+  "raw_events": [
+    {
+      "service": "temporal",
+      "action": "stop+up --wait"
+    }
+  ],
+  "recovery_time_ms": 8219,
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "sealed_at": "2026-09-08T02:02:16.924515+00:00"
+  },
+  "image_digests": {
+    "image_0": "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.128.0@sha256:1ab0baba0ee3695d823c46653d8a6e8894896e668ce8bd7ebe002e948d827bc7",
+    "image_1": "zhiwei/app:local-product",
+    "image_2": "zhiwei/app:local-product",
+    "image_3": "zhiwei/web:local-product",
+    "image_4": "zhiwei/app:local-product",
+    "image_5": "quay.io/keycloak/keycloak:26.1@sha256:be6a86215213145bfb4fb3e2b3ab982a806d00262655abdcf3ffa6a38d241c7c",
+    "image_6": "postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94",
+    "image_7": "zhiwei/app:local-product",
+    "image_8": "zhiwei/app:local-product",
+    "image_9": "temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
+    "image_10": "zhiwei/app:local-product",
+    "image_11": "redis:7.2-alpine@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8",
+    "image_12": "zhiwei/app:local-product",
+    "image_13": "nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+    "image_14": "opensearchproject/opensearch:2.19.2@sha256:69588c664014fa3d3260ed5dd337f8538fec94790dad00bfbe92301eaaaac240",
+    "image_15": "dxflrs/garage:v1.1.0@sha256:fdb8272fcbe643eef830ee17874d5d4ed623a86501f1acbac8012583113b1c26",
+    "image_16": "openpolicyagent/opa:1.19.0-debug@sha256:ec3c7a29a21ce96d71231cb4befa2561205fe84e5a2dc3cc46ac7bc8bd21b3a4",
+    "image_17": "zhiwei/app:local-product"
+  },
+  "seal_digest": "70d52a5f404bf4d70cc8eea9c81ac85d82a26ccf98204aa9bfba85011464b44a"
+}

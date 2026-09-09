@@ -1,0 +1,23 @@
+=== alembic downgrade base (clean slate) ===
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0007_audit_metadata_nonempty -> 0006_audit_contract, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+INFO  [alembic.runtime.migration] Running downgrade 0006_audit_contract -> 0005_audit_structured, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running downgrade 0005_audit_structured -> 0004_refresh_fencing, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running downgrade 0004_refresh_fencing -> 0003_auth_sessions, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running downgrade 0003_auth_sessions -> 0002_identity, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running downgrade 0002_identity -> 0001_foundation, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running downgrade 0001_foundation -> , Create the S0 PostgreSQL foundation.
+exit=0
+=== alembic upgrade head (full chain) ===
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_foundation, Create the S0 PostgreSQL foundation.
+INFO  [alembic.runtime.migration] Running upgrade 0001_foundation -> 0002_identity, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running upgrade 0002_identity -> 0003_auth_sessions, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running upgrade 0003_auth_sessions -> 0004_refresh_fencing, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running upgrade 0004_refresh_fencing -> 0005_audit_structured, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running upgrade 0005_audit_structured -> 0006_audit_contract, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running upgrade 0006_audit_contract -> 0007_audit_metadata_nonempty, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+INFO  [alembic.runtime.migration] Running upgrade 0007_audit_metadata_nonempty -> 0008_bootstrap_claims, S1-T4 四轮修复：Organization bootstrap 持久 claim（identity-global 最终围栏）。
+exit=0

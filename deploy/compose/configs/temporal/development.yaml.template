@@ -1,0 +1,164 @@
+# temporalio/server:1.31.2 静态服务端配置（E-R1 方案 b 迁移，2026-09-08）。
+# server 镜像无 dockerize/config 模板渲染（auto-setup 时代由 dockerize 从
+# config_template.yaml 渲染），本文件是渲染后的静态形态，来源为 auto-setup:1.28.1
+# 容器内实际生成的 /etc/temporal/config/docker.yaml（提取于 2026-09-08），两处改动：
+#   1. 口令改占位符 __ZHIWEI_PG_PASSWORD__，由启动命令 sed 注入（保留 operator 以
+#      ZHIWEI_PG_PASSWORD 覆盖的路径；口令含 sed 特殊字符时需转义——本地占位口令不受影响）；
+#   2. membership.broadcastAddress 取 127.0.0.1：单进程承载全部四个服务，成员环不出
+#      容器；前端由应用直连 temporal:7233，不依赖成员广播。
+# dynamicConfigClient 指向挂载的空 dynamicconfig（与 auto-setup 生成的一致）。
+log:
+    stdout: true
+    level: info
+
+persistence:
+    numHistoryShards: 4
+    defaultStore: default
+    visibilityStore: visibility
+    datastores:
+        default:
+            sql:
+                pluginName: "postgres12"
+                databaseName: "zhiwei_local_temporal"
+                connectAddr: "postgres:5432"
+                connectProtocol: "tcp"
+                user: "zhiwei_temporal"
+                password: "__ZHIWEI_PG_PASSWORD__"
+                maxConns: 20
+                maxIdleConns: 20
+                maxConnLifetime: 1h
+                tls:
+                    enabled: false
+                    caFile:
+                    certFile:
+                    keyFile:
+                    enableHostVerification: false
+                    serverName:
+        visibility:
+            sql:
+                pluginName: "postgres12"
+                databaseName: "temporal_visibility"
+                connectAddr: "postgres:5432"
+                connectProtocol: "tcp"
+                user: "zhiwei_temporal"
+                password: "__ZHIWEI_PG_PASSWORD__"
+                maxConns: 10
+                maxIdleConns: 10
+                maxConnLifetime: 1h
+                tls:
+                    enabled: false
+                    caFile:
+                    certFile:
+                    keyFile:
+                    enableHostVerification: false
+                    serverName:
+
+global:
+    membership:
+        maxJoinDuration: 30s
+        broadcastAddress: "127.0.0.1"
+    pprof:
+        port: 0
+    tls:
+        refreshInterval: 0s
+        expirationChecks:
+            warningWindow: 0s
+            errorWindow: 0s
+            checkInterval: 0s
+        internode:
+            server:
+                requireClientAuth: false
+                certFile:
+                keyFile:
+                certData:
+                keyData:
+            client:
+                serverName:
+                disableHostVerification: false
+        frontend:
+            server:
+                requireClientAuth: false
+                certFile:
+                keyFile:
+                certData:
+                keyData:
+            client:
+                serverName:
+                disableHostVerification: false
+    authorization:
+        jwtKeyProvider:
+            keySourceURIs:
+            refreshInterval: 1m
+        permissionsClaimName: permissions
+        authorizer:
+        claimMapper:
+services:
+    frontend:
+        rpc:
+            grpcPort: 7233
+            membershipPort: 6933
+            bindOnIP: "0.0.0.0"
+            httpPort: 7243
+
+    matching:
+        rpc:
+            grpcPort: 7235
+            membershipPort: 6935
+            bindOnIP: "0.0.0.0"
+
+    history:
+        rpc:
+            grpcPort: 7234
+            membershipPort: 6934
+            bindOnIP: "0.0.0.0"
+
+    worker:
+        rpc:
+            grpcPort: 7239
+            membershipPort: 6939
+            bindOnIP: "0.0.0.0"
+
+clusterMetadata:
+    enableGlobalNamespace: false
+    failoverVersionIncrement: 10
+    masterClusterName: "active"
+    currentClusterName: "active"
+    clusterInformation:
+        active:
+            enabled: true
+            initialFailoverVersion: 1
+            rpcName: "frontend"
+            rpcAddress: 127.0.0.1:7233
+            httpAddress: 127.0.0.1:7243
+
+dcRedirectionPolicy:
+    policy: "noop"
+
+archival:
+  history:
+    state: "enabled"
+    enableRead: true
+    provider:
+      filestore:
+        fileMode: "0666"
+        dirMode: "0766"
+  visibility:
+    state: "enabled"
+    enableRead: true
+    provider:
+      filestore:
+        fileMode: "0666"
+        dirMode: "0766"
+
+namespaceDefaults:
+  archival:
+    history:
+      state: "disabled"
+      URI: "file:///tmp/temporal_archival/development"
+    visibility:
+      state: "disabled"
+      URI: "file:///tmp/temporal_vis_archival/development"
+
+dynamicConfigClient:
+    filepath: "/etc/temporal/config/dynamicconfig.yaml"
+    pollInterval: "60s"

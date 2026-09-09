@@ -1,0 +1,84 @@
+schema_version: 1
+graph_id: discover-task-graph-v1
+name: Discover Task Graph
+description: >-
+  Task graph for DiscoveryProgram runs. Detects patterns with deterministic
+  detector packs, runs the independent falsification stage (probe generation and
+  evaluation are separate task nodes; evaluation is deterministic only),
+  dedupes with typed RiskFingerprint, and emits the triage feed. Resolution and
+  human triage happen outside this graph and never rewrite detector output.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- tasks
+tasks:
+  - id: intake
+    type: Intake
+    description: Resolve program version, trigger context, watermark, and source scope
+    inputs:
+      program_version_id: "{{program_version_id}}"
+      trigger_type: "{{trigger_type}}"
+      watermark: "{{watermark | default({})}}"
+      source_scope: "{{source_scope | default({})}}"
+    outputs:
+      - resolved_scope
+      - watermark_state
+      - data_quality_plan
+
+  - id: detect
+    type: Analyze
+    description: >-
+      Run detector packs over the snapshot. Deterministic known-pattern
+      detectors only; data quality gates must pass before findings are
+      proposed. Model never invents findings here.
+    depends_on: [intake]
+    inputs:
+      resolved_scope: "{{intake.resolved_scope}}"
+      watermark_state: "{{intake.watermark_state}}"
+    outputs:
+      - findings
+      - data_quality_results
+
+  - id: falsify
+    type: Verify
+    description: >-
+      Independent falsification node: generate typed NegativeProbes without the
+      detector's fit context, then evaluate each probe deterministically against
+      the snapshot. Each probe result becomes an independent evidence ref.
+      Hypotheses need at least N unrefuted probes (program falsification
+      standard) to reach triage; refuted ones stop with a preserved trail.
+    depends_on: [detect]
+    inputs:
+      findings: "{{detect.findings}}"
+      falsification_standard: "{{program.falsification_standard}}"
+    outputs:
+      - hypotheses
+      - falsification_summary
+
+  - id: dedupe
+    type: Analyze
+    description: >-
+      Typed RiskFingerprint dedupe: identical fingerprints are duplicates and
+      never become new hypotheses; semantic similarity only proposes merge
+      candidates for human decision.
+    depends_on: [falsify]
+    inputs:
+      hypotheses: "{{falsify.hypotheses}}"
+    outputs:
+      - dedupe_decisions
+      - merge_candidates
+
+  - id: emit_triage_feed
+    type: EmitArtifact
+    description: >-
+      Emit the triage feed (status/owner/severity/supporting/contradicting/
+      freshness/dedupe). No action executes without the approval path, and no
+      resolution ever rewrites detector output.
+    depends_on: [dedupe]
+    inputs:
+      hypotheses: "{{falsify.hypotheses}}"
+      dedupe_decisions: "{{dedupe.dedupe_decisions}}"
+      merge_candidates: "{{dedupe.merge_candidates}}"
+    outputs:
+      - triage_feed_id
+      - feed_entries

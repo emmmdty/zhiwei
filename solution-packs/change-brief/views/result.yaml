@@ -1,0 +1,6 @@
+view_id: change-brief-result
+kind: result
+app_id: change-brief
+schema_ref: verified-brief
+# renderer_ref 由 WEB 侧 ViewManifest registry 解析；Core 只携带声明。
+renderer_ref: changeBrief/result

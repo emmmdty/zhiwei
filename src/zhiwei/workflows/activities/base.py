@@ -1,0 +1,218 @@
+"""S2 runtime: Activity contracts — IO models and idempotency key builders。
+
+事实源：specs/s2-agent-runtime.md §3/§4、S2-T3 plan。
+
+Activities 是唯一副作用边界。IO 用 dataclass（temporalio 默认 converter 原生支持）；
+幂等键由 workflow 按逻辑身份派生（run/task/attempt/transition），同一逻辑事件跨
+activity 重试只落一次账（先查 has_event 再 append，冲突由 UoW fail-closed 拒绝）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+_DEFAULT_ACTOR_REF = "agent-runtime:worker"
+
+
+@dataclass
+class StartRunActivityInput:
+    """Input for the start_run activity."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    graph: dict[str, Any]
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class ExecuteTaskInput:
+    """Input for the execute_task activity.
+
+    attempt_id 由 workflow 以 workflow.uuid4() 派生（replay 确定）；attempt_no 是
+    workflow 侧的逻辑尝试序号，两者共同构成 TaskStarted 的幂等键。
+    conflict_fields：节点声明的 conflict_preserving 输出字段。
+    merge_strategies：节点声明的全部输出合并策略（field → 策略值）——完成事务
+    据此判定冲突落账面：声明 CP 的字段与未声明策略的字段（ADR-005 增补 3 降级
+    面）都追加 ConflictDetected canonical event（spec §3 增补，ADR-005 增补 4）。
+    生产调用方（agent_run._start_task）必须显式传入；缺省 {} 等价「全字段未声
+    明」，会把声明 APPEND/LWW 的字段误划入冲突落账面——仅供既有直接构造的
+    测试兼容，新增调用方不得依赖缺省。
+    """
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    task_type: str
+    handler_version: int
+    attempt_id: str
+    attempt_no: int
+    input_values: dict[str, Any] = field(default_factory=dict)
+    actor_ref: str = _DEFAULT_ACTOR_REF
+    conflict_fields: tuple[str, ...] = ()
+    merge_strategies: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class CheckApprovalInput:
+    """Input for the check_approval activity（expired 路径的权威行回查）。"""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RecordRunTerminalInput:
+    """Input for recording a run-level lifecycle event."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    outcome: str  # completed | failed | cancelled | paused | resumed
+    error: str | None = None
+    reason: str | None = None
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RecordTaskSkippedInput:
+    """Input for recording a TaskSkipped event (unreachable after dep failure)."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    reason: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class CreateApprovalInput:
+    """Input for the create_approval activity (RequestApproval tasks)."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    requested_by: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+    # 审批 expiry（秒）：pending 请求的等待上界（spec §4 2026-09-03 增补——
+    # 无 expiry 的审批使 run 可永久挂起，ADR-012 反例）
+    approval_expiry_seconds: int = 3600
+    # 审批节点的声明内容（digest 输入）：绑定节点契约而非 run/task 身份常量
+    # ——身份派生使 swap 检测结构上不可触发（spec §4 增补）
+    node_content: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class RecordApprovalOutcomeInput:
+    """Input for recording an approval task's terminal event after a decision."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    attempt_no: int
+    decision: str  # approved | rejected
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RecordTaskFailedInput:
+    """Input for recording a TaskFailed event after activity retries exhausted."""
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    task_id: str
+    attempt_no: int
+    error: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class TaskExecutionResult:
+    """Terminal outcome of one task attempt."""
+
+    task_id: str
+    status: str  # completed | failed
+    attempt_no: int
+    output_values: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
+
+
+@dataclass
+class RunIntentRecheckInput:
+    """Input for the CAN-boundary PG intent recheck（S11-T5，崩溃窗口 #11）。
+
+    cancel/pause 信号在 CAN 过渡间隙会被 Temporal server 丢弃（RPC 已成功但
+    新 history 不含信号）——PG 意图回查是兜底真相源：outbox 里的 pending
+    cancel_run/pause_run 命令代表已落账但可能永远到不了 workflow 的意图。
+    """
+
+    run_id: str
+    organization_id: str
+    workspace_id: str
+    actor_ref: str = _DEFAULT_ACTOR_REF
+
+
+@dataclass
+class RunIntentRecheckResult:
+    """CAN 边界回查结果：任一意图为真则 workflow 不得 continue_as_new。"""
+
+    cancel_pending: bool
+    pause_pending: bool
+    cancel_reason: str | None = None
+
+
+@dataclass
+class ActivityEventAck:
+    """Acknowledgement that logical events are durably committed."""
+
+    run_id: str
+    created_events: int
+
+
+def scheduled_key(run_id: str, task_id: str) -> str:
+    return f"task:{run_id}:{task_id}:scheduled"
+
+
+def started_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:started:{attempt_no}"
+
+
+def attempt_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:attempt:{attempt_no}"
+
+
+def terminal_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:terminal:{attempt_no}"
+
+
+def attempt_terminal_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:attempt-terminal:{attempt_no}"
+
+
+def run_created_key(run_id: str) -> str:
+    return f"run:{run_id}:created"
+
+
+def run_started_key(run_id: str) -> str:
+    return f"run:{run_id}:started"
+
+
+def run_terminal_key(run_id: str, outcome: str) -> str:
+    return f"run:{run_id}:terminal:{outcome}"
+
+
+def task_skipped_key(run_id: str, task_id: str) -> str:
+    return f"task:{run_id}:{task_id}:skipped"
+
+
+def approval_outcome_key(run_id: str, task_id: str, attempt_no: int) -> str:
+    return f"task:{run_id}:{task_id}:approval:{attempt_no}"

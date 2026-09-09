@@ -1,0 +1,24 @@
+# S11 Garage 单节点参考配置（local product；真实部署 operator 覆盖）。
+# replication_factor = 1：单机参考形态，不代表 HA（specs/s11 §8 边界）。
+metadata_dir = "/var/lib/garage/meta"
+data_dir = "/var/lib/garage/data"
+db_engine = "sqlite"
+
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+rpc_public_addr = "127.0.0.1:3901"
+rpc_secret = "31debefe0f57b00b0268e16a4d6d95e65c7c5511a85ea19f8d606465c20ca626"
+
+[s3_api]
+s3_region = "zhiwei-local"
+api_bind_addr = "[::]:3900"
+
+[s3_web]
+bind_addr = "[::]:3902"
+root_domain = ".web.zhiwei-local.internal"
+index = "index.html"
+
+[admin]
+api_bind_addr = "[::]:3903"
+admin_token = "dev-only-local-product-token"

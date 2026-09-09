@@ -1,0 +1,177 @@
+FFFFFFFF                                                                 [100%]
+=================================== FAILURES ===================================
+________________ test_composition_requires_mandatory_injections ________________
+
+    def test_composition_requires_mandatory_injections() -> None:
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:118: ModuleNotFoundError
+______________ test_unsupported_operations_return_501_scim_error _______________
+
+    @pytest.mark.asyncio
+    async def test_unsupported_operations_return_501_scim_error() -> None:
+>       async with AsyncClient(transport=ASGITransport(app=_make_app()), base_url="http://test") as client:
+                                                           ^^^^^^^^^^^
+
+tests/contract/identity/test_scim.py:141: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _org_actor at 0x734b369f00e0>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+______________ test_user_create_validation_errors_are_scim_shaped ______________
+
+    @pytest.mark.asyncio
+    async def test_user_create_validation_errors_are_scim_shaped() -> None:
+>       async with AsyncClient(transport=ASGITransport(app=_make_app()), base_url="http://test") as client:
+                                                           ^^^^^^^^^^^
+
+tests/contract/identity/test_scim.py:166: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _org_actor at 0x734b369f00e0>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+___________ test_patch_user_subset_rejects_unsupported_ops_and_paths ___________
+
+    @pytest.mark.asyncio
+    async def test_patch_user_subset_rejects_unsupported_ops_and_paths() -> None:
+>       async with AsyncClient(transport=ASGITransport(app=_make_app()), base_url="http://test") as client:
+                                                           ^^^^^^^^^^^
+
+tests/contract/identity/test_scim.py:193: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _org_actor at 0x734b369f00e0>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+_____________________ test_group_validation_and_rejections _____________________
+
+    @pytest.mark.asyncio
+    async def test_group_validation_and_rejections() -> None:
+        async with AsyncClient(
+>           transport=ASGITransport(app=_make_app(actor=_ws_actor)), base_url="http://test"
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ) as client:
+
+tests/contract/identity/test_scim.py:229: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _ws_actor at 0x734b3735db20>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+__________ test_if_match_header_rejected_when_versioning_unsupported ___________
+
+    @pytest.mark.asyncio
+    async def test_if_match_header_rejected_when_versioning_unsupported() -> None:
+>       async with AsyncClient(transport=ASGITransport(app=_make_app()), base_url="http://test") as client:
+                                                           ^^^^^^^^^^^
+
+tests/contract/identity/test_scim.py:251: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _org_actor at 0x734b369f00e0>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+________________ test_invalid_uuid_path_returns_400_scim_error _________________
+
+    @pytest.mark.asyncio
+    async def test_invalid_uuid_path_returns_400_scim_error() -> None:
+>       async with AsyncClient(transport=ASGITransport(app=_make_app()), base_url="http://test") as client:
+                                                           ^^^^^^^^^^^
+
+tests/contract/identity/test_scim.py:265: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _org_actor at 0x734b369f00e0>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+____________ test_mutations_and_reads_require_organization_context _____________
+
+    @pytest.mark.asyncio
+    async def test_mutations_and_reads_require_organization_context() -> None:
+        async with AsyncClient(
+>           transport=ASGITransport(app=_make_app(actor=_no_org_actor)), base_url="http://test"
+                                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+        ) as client:
+
+tests/contract/identity/test_scim.py:287: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+actor = <function _no_org_actor at 0x734b3735ea20>, enforcer = None
+
+    def _make_app(
+        *,
+        actor: object = _org_actor,
+        enforcer: FakePolicyEnforcer | None = None,
+    ) -> FastAPI:
+        """手工组装 SCIM router；session factories 无 bind（本文件不触达 DB）。"""
+>       from zhiwei.api.scim import create_scim_router
+E       ModuleNotFoundError: No module named 'zhiwei.api.scim'
+
+tests/contract/identity/test_scim.py:62: ModuleNotFoundError
+=========================== short test summary info ============================
+FAILED tests/contract/identity/test_scim.py::test_composition_requires_mandatory_injections
+FAILED tests/contract/identity/test_scim.py::test_unsupported_operations_return_501_scim_error
+FAILED tests/contract/identity/test_scim.py::test_user_create_validation_errors_are_scim_shaped
+FAILED tests/contract/identity/test_scim.py::test_patch_user_subset_rejects_unsupported_ops_and_paths
+FAILED tests/contract/identity/test_scim.py::test_group_validation_and_rejections
+FAILED tests/contract/identity/test_scim.py::test_if_match_header_rejected_when_versioning_unsupported
+FAILED tests/contract/identity/test_scim.py::test_invalid_uuid_path_returns_400_scim_error
+FAILED tests/contract/identity/test_scim.py::test_mutations_and_reads_require_organization_context
+8 failed in 0.56s

@@ -1,0 +1,90 @@
+schema_version: 1
+graph_id: change-brief-task-graph-v1
+name: Change Brief Task Graph
+description: >-
+  GitHub commit/PR trigger feeds code/GitHub knowledge retrieval, impact
+  analysis, verification, brief synthesis, and artifact emission. Uses only
+  Core task primitives.
+version: 1
+frozen_at: 2026-09-06
+
+# ---------------------------------------------------------------- triggers
+triggers:
+  - id: github-change-trigger
+    source: github
+    events: [commit, pull_request]
+
+# ---------------------------------------------------------------- tasks
+tasks:
+  - id: retrieve_code_knowledge
+    type: Retrieve
+    description: Retrieve code/GitHub knowledge for the changed repository and ref
+    inputs:
+      repository: "{{input.repository}}"
+      commit_or_pr: "{{input.commit_or_pr}}"
+      source_type: code
+    outputs:
+      - candidates
+
+  - id: analyze_impact
+    type: Analyze
+    description: >-
+      Analyze change impact over retrieved knowledge via the impact-analysis
+      skill (skills/impact-analysis.yaml).
+    depends_on: [retrieve_code_knowledge]
+    inputs:
+      repository: "{{input.repository}}"
+      commit_or_pr: "{{input.commit_or_pr}}"
+      candidates: "{{retrieve_code_knowledge.candidates}}"
+    outputs:
+      - impact
+
+  - id: verify_brief
+    type: Verify
+    description: Verify impact claims against evidence before synthesis
+    depends_on: [analyze_impact]
+    inputs:
+      impact: "{{analyze_impact.impact}}"
+    outputs:
+      - verification_result
+      - verified_impact
+
+  - id: synthesize_brief
+    type: Synthesize
+    description: Compose the verified brief (VerifiedBrief schema)
+    depends_on: [verify_brief]
+    inputs:
+      verified_impact: "{{verify_brief.verified_impact}}"
+      verification_result: "{{verify_brief.verification_result}}"
+    outputs:
+      - brief
+
+  - id: emit_brief
+    type: EmitArtifact
+    description: Emit the verified change brief artifact
+    depends_on: [synthesize_brief]
+    inputs:
+      brief: "{{synthesize_brief.brief}}"
+    outputs:
+      - artifact_id
+
+  - id: finish
+    type: Finish
+    description: Complete the run with final status
+    depends_on: [emit_brief]
+    inputs:
+      status: completed
+      artifact_id: "{{emit_brief.artifact_id}}"
+
+# ---------------------------------------------------------------- edges
+edges:
+  - from: retrieve_code_knowledge
+    to: analyze_impact
+  - from: analyze_impact
+    to: verify_brief
+  - from: verify_brief
+    to: synthesize_brief
+  - from: synthesize_brief
+    to: emit_brief
+  - from: emit_brief
+    to: finish

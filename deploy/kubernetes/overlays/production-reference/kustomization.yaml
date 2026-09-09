@@ -1,0 +1,28 @@
+# production-reference overlay：外部托管依赖 + registry 限定应用镜像（specs/s11 §3）。
+# 不包含任何 StatefulSet/PVC——数据库/IdP/KMS/搜索全部由 operator 提供的外部服务承载；
+# 应用镜像 digest 在 release seal（T8）写入 provenance 后由发布工具更新此 overlay。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: zhiwei-prod
+resources:
+  - ../../base
+  - ingress.yaml
+images:
+  # digest pin 由 release seal 写入（docs/operations/upgrade.md §镜像替换流程）
+  - name: zhiwei/app
+    newName: registry.example.com/zhiwei/app
+    newTag: "0.1.0"
+  - name: zhiwei/web
+    newName: registry.example.com/zhiwei/web
+    newTag: "0.1.0"
+patches:
+  - target: {kind: Deployment, name: api}
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 3
+  - target: {kind: Deployment, name: web}
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2

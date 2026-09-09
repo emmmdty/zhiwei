@@ -1,0 +1,331 @@
+........FFFFF                                                            [100%]
+=================================== FAILURES ===================================
+______ test_real_opa_concurrent_bootstrap_different_targets_only_one_201 _______
+
+migrated_database = None, opa_service = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7f1f10a0e650>, <httpx.AsyncClient object at 0x7f1f109c7990>, <test_opa_bootstrap_slow.FakeIdP object at 0x7f1f10b80f90>)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_real_opa_concurrent_bootstrap_different_targets_only_one_201(
+        migrated_database: None,
+        opa_service: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    ) -> None:
+        """同一无组织 principal 并发 bootstrap 两个不同 target：只能一个 201、一个 403。
+    
+        两个请求都先经 OPA 放行（active org 集合为空 → 首次 bootstrap 候选），随后在
+        create_organization 事务内由持久 claim（principal 级 advisory lock 串行化）分胜负：
+        winner 写入 claim 后继续 owner membership / idempotency / allowed audit / outbox；
+        loser 的 claim=false 使整个事务回滚并映射 403 bootstrap claim already used for
+        another organization。终态必须只有一套 claim/org/owner membership/allowed audit/
+        outbox/idempotency 行；loser target 零残留（含 audit/outbox——loser org 不存在，
+        无合法 FK scope，pre-tenant 例外）。
+        """
+        _, client, idp = app_and_client
+        principal = await _reset_alice()
+        await _perform_login(client, idp)
+        csrf_token = await _csrf_token(client)
+        org_a = uuid4()
+        org_b = uuid4()
+    
+        first = client.post(
+            "/api/v1/organizations",
+            json={"organization_id": str(org_a)},
+            headers={
+                "X-CSRF-Token": csrf_token,
+                "Origin": "https://test",
+                "Idempotency-Key": "slow-bootstrap-concurrent-a",
+            },
+        )
+        second = client.post(
+            "/api/v1/organizations",
+            json={"organization_id": str(org_b)},
+            headers={
+                "X-CSRF-Token": csrf_token,
+                "Origin": "https://test",
+                "Idempotency-Key": "slow-bootstrap-concurrent-b",
+            },
+        )
+        response_a, response_b = await asyncio.gather(first, second)
+        statuses = sorted([response_a.status_code, response_b.status_code])
+>       assert statuses == [201, 403], (
+            f"并发不同 target 的 bootstrap 必须恰好一个 201 一个 403，实际 {statuses}"
+        )
+E       AssertionError: 并发不同 target 的 bootstrap 必须恰好一个 201 一个 403，实际 [201, 201]
+E       assert [201, 201] == [201, 403]
+E         
+E         At index 1 diff: 201 != 403
+E         Use -v to get more diff
+
+tests/integration/policy/test_opa_bootstrap_slow.py:1188: AssertionError
+________ test_real_opa_self_removed_owner_cannot_bootstrap_another_org _________
+
+migrated_database = None, opa_service = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7f1f108bf010>, <httpx.AsyncClient object at 0x7f1f108e2b50>, <test_opa_bootstrap_slow.FakeIdP object at 0x7f1f108e1990>)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_real_opa_self_removed_owner_cannot_bootstrap_another_org(
+        migrated_database: None,
+        opa_service: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    ) -> None:
+        """生命周期：owner 自移除后不能 bootstrap 新 org；原 target 精确重放仍 200。
+    
+        create A（201）→ alice 以 owner 身份自移除（membership 删除，资格不得被重置）→
+        create B 必须 403 bootstrap claim already used for another organization 且
+        业务/audit/outbox/idempotency 零写入；随后用 A 的原 key/body 精确重放仍为 200 且
+        零新增——claim 围栏不干扰既有 owner-bound 重放路径。
+        """
+        _, client, idp = app_and_client
+        principal = await _reset_alice()
+        await _perform_login(client, idp)
+        csrf_token = await _csrf_token(client)
+        org_a = uuid4()
+        key_a = "slow-bootstrap-lifecycle-a"
+    
+        first = await _bootstrap_post(client, csrf_token, org_a, key_a)
+        assert first.status_code == 201
+    
+        removed = await client.delete(
+            f"/api/v1/organizations/{org_a}/members/{principal}",
+            headers={
+                "X-CSRF-Token": csrf_token,
+                "Origin": "https://test",
+                "Idempotency-Key": "slow-bootstrap-lifecycle-remove",
+                "X-ZhiWei-Organization": str(org_a),
+            },
+        )
+        assert removed.status_code == 204
+    
+        org_b = uuid4()
+        denied = await _bootstrap_post(client, csrf_token, org_b, "slow-bootstrap-lifecycle-b")
+>       assert denied.status_code == 403
+E       assert 201 == 403
+E        +  where 201 = <Response [201 Created]>.status_code
+
+tests/integration/policy/test_opa_bootstrap_slow.py:1318: AssertionError
+___ test_real_opa_invited_member_never_bootstrapped_can_still_claim_own_org ____
+
+migrated_database = None, opa_service = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7f1f10ea4650>, <httpx.AsyncClient object at 0x7f1f10c1bf50>, <test_opa_bootstrap_slow.FakeIdP object at 0x7f1f10dfd290>)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_real_opa_invited_member_never_bootstrapped_can_still_claim_own_org(
+        migrated_database: None,
+        opa_service: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    ) -> None:
+        """普通受邀成员（从未 bootstrap）被移出所有组织后，仍可首次 claim 自己的 org。
+    
+        「曾经是 member」不等于「曾经 bootstrap」：bob 被邀请进 org_x（member）、随后被
+        移除，从未 bootstrap 过 → POST 自己的 org_z 必须 201 且恰好一条 claim 指向 org_z。
+        """
+        _, client, idp = app_and_client
+        bob_pid = await _seed_principal("bob-oidc")
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
+            await connection.execute(
+                "DELETE FROM workspace_memberships WHERE principal_id = $1", bob_pid
+            )
+        finally:
+            await connection.close()
+        await _delete_bootstrap_claims_if_exists(bob_pid)
+        org_x = await _seed_org()
+        await _seed_membership(bob_pid, org_x, ["member"])
+        await _perform_login_as(client, idp, "bob-oidc")
+        csrf_token = await _csrf_token(client)
+    
+        # 模拟管理员移除（受邀 member 无 org/manage 自移除权）：直接清 membership
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            await connection.execute("DELETE FROM memberships WHERE principal_id = $1", bob_pid)
+        finally:
+            await connection.close()
+    
+        org_z = uuid4()
+        created = await _bootstrap_post(client, csrf_token, org_z, "slow-bootstrap-invitee-1")
+        assert created.status_code == 201
+    
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+>           claim_org = await connection.fetchval(
+                "SELECT organization_id FROM organization_bootstrap_claims WHERE principal_id = $1",
+                bob_pid,
+            )
+
+tests/integration/policy/test_opa_bootstrap_slow.py:1427: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+_ test_real_opa_bootstrap_audit_failure_rolls_back_claim_and_retry_different_target _
+
+migrated_database = None, opa_service = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7f1f10844690>, <httpx.AsyncClient object at 0x7f1f10fe8a10>, <test_opa_bootstrap_slow.FakeIdP object at 0x7f1f1093db10>)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_real_opa_bootstrap_audit_failure_rolls_back_claim_and_retry_different_target(
+        migrated_database: None,
+        opa_service: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    ) -> None:
+        """原子回滚：allowed 审计写失败 → claim 随事务整体回滚，失败不消耗 claim 资格。
+    
+        注入 audit_events BEFORE INSERT 失败触发器后 bootstrap A → 500；
+        org/membership/audit/outbox/idempotency/claim 全部零残留。随后用不同 target B
+        重试 → 201——证明 claim 与业务/审计/幂等处于同一 PostgreSQL 事务。
+        """
+        _, client, idp = app_and_client
+        principal = await _reset_alice()
+        await _perform_login(client, idp)
+        csrf_token = await _csrf_token(client)
+        org_a = uuid4()
+    
+        await _install_audit_fail_trigger()
+        try:
+            failed = await _bootstrap_post(client, csrf_token, org_a, "slow-bootstrap-rollback-a")
+            assert failed.status_code == 500
+        finally:
+            await _drop_audit_fail_trigger()
+    
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            assert (
+                await connection.fetchval("SELECT count(*) FROM organizations WHERE id = $1", org_a)
+                == 0
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM memberships WHERE organization_id = $1", org_a
+                )
+                == 0
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM audit_events WHERE organization_id = $1", org_a
+                )
+                == 0
+            )
+            assert (
+                await connection.fetchval("SELECT count(*) FROM outbox WHERE organization_id = $1", org_a)
+                == 0
+            )
+            assert (
+                await connection.fetchval(
+                    "SELECT count(*) FROM idempotency_records WHERE organization_id = $1", org_a
+                )
+                == 0
+            )
+            assert (
+>               await connection.fetchval(
+                    "SELECT count(*) FROM organization_bootstrap_claims WHERE principal_id = $1",
+                    principal,
+                )
+                == 0
+            ), "失败事务必须连同 claim 一起回滚（失败不得消耗 claim 资格）"
+
+tests/integration/policy/test_opa_bootstrap_slow.py:1495: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+_________________ test_real_opa_deny_writes_no_bootstrap_claim _________________
+
+migrated_database = None, opa_service = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7f1f106d9e10>, <httpx.AsyncClient object at 0x7f1f10af2250>, <test_opa_bootstrap_slow.FakeIdP object at 0x7f1f10c1c890>)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_real_opa_deny_writes_no_bootstrap_claim(
+        migrated_database: None,
+        opa_service: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP],
+    ) -> None:
+        """OPA 先于任何 claim/mutation：policy deny 时不得写 claim。
+    
+        alice 已有 active org（org_x）→ POST 不同 target org_y 在策略层即 403 policy
+        denied（bootstrap 被拒审计例外，零审计）；业务事务不开始，
+        organization_bootstrap_claims 必须零行。
+        """
+        _, client, idp = app_and_client
+        principal = await _reset_alice()
+        org_x = await _seed_org()
+        await _seed_membership(principal, org_x, ["owner"])
+        await _perform_login(client, idp)
+        csrf_token = await _csrf_token(client)
+        org_y = uuid4()
+    
+        denied = await _bootstrap_post(client, csrf_token, org_y, "slow-bootstrap-deny-claim")
+        assert denied.status_code == 403
+        assert denied.json()["detail"] == "policy denied"
+    
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            assert (
+>               await connection.fetchval(
+                    "SELECT count(*) FROM organization_bootstrap_claims WHERE principal_id = $1",
+                    principal,
+                )
+                == 0
+            ), "OPA deny 的 bootstrap 不得写 claim"
+
+tests/integration/policy/test_opa_bootstrap_slow.py:1551: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+=========================== short test summary info ============================
+FAILED tests/integration/policy/test_opa_bootstrap_slow.py::test_real_opa_concurrent_bootstrap_different_targets_only_one_201
+FAILED tests/integration/policy/test_opa_bootstrap_slow.py::test_real_opa_self_removed_owner_cannot_bootstrap_another_org
+FAILED tests/integration/policy/test_opa_bootstrap_slow.py::test_real_opa_invited_member_never_bootstrapped_can_still_claim_own_org
+FAILED tests/integration/policy/test_opa_bootstrap_slow.py::test_real_opa_bootstrap_audit_failure_rolls_back_claim_and_retry_different_target
+FAILED tests/integration/policy/test_opa_bootstrap_slow.py::test_real_opa_deny_writes_no_bootstrap_claim
+5 failed, 8 passed in 80.89s (0:01:20)
+EXIT=1

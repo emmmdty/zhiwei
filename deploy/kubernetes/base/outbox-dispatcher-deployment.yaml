@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-dispatcher
+  namespace: zhiwei
+  labels: {app: outbox-dispatcher, "app.kubernetes.io/name": zhiwei}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: outbox-dispatcher}}
+  template:
+    metadata:
+      labels: {app: outbox-dispatcher, "app.kubernetes.io/name": zhiwei}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: outbox-dispatcher
+          image: zhiwei/app:local-product
+          imagePullPolicy: IfNotPresent
+          # worker 按 queue/trust/workload 扩展：本 deployment 承载 agent 队列，
+          # 其余队列由独立 deployment/overlay 承载（specs/s11 §3）
+          command: ["python", "-m", "zhiwei.workers.main", "dispatcher"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          envFrom:
+            - configMapRef: {name: zhiwei-endpoints}
+          env:
+            # 双角色：载荷面走 app-url（FORCE RLS 生效）；发现面走 dispatcher-url
+            # （BYPASSRLS 角色，仅租户对发现 SQL，不读载荷——见 workers/main.py）
+            - name: ZHIWEI_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: app-url}}
+            - name: ZHIWEI_DISPATCHER_DISCOVERY_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: dispatcher-url}}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - {name: tmp, emptyDir: {medium: Memory}}

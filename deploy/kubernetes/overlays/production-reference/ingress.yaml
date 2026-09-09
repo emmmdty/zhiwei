@@ -1,0 +1,25 @@
+# production-reference ingress/TLS 假设（specs/s11 §3）：TLS 终结在 ingress 层，
+# 证书由 cert-manager/外部 KMS 签发（部署假设，不在本仓库制造）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: zhiwei
+  namespace: zhiwei-prod
+  annotations:
+    # WAF/速率限制由部署方 ingress controller 提供；此处只声明 TLS 假设
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["zhiwei.external"]
+      secretName: zhiwei-tls
+  rules:
+    - host: zhiwei.external
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend: {service: {name: api, port: {number: 8000}}}
+          - path: /
+            pathType: Prefix
+            backend: {service: {name: web, port: {number: 8080}}}

@@ -1,0 +1,62 @@
+# ChangeBrief 冻结语料 · no-impact：改动完全落在知识快照之外 → 全部 affected 为空，
+# brief 必须如实披露 unknowns（改动文件不在快照内），不得编造受影响面。
+unit_id: no-impact
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: commit
+    ref: "beefcafe"
+files_changed:
+  - path: docs/adr/014-observability.md
+    symbols_before: []
+    symbols_after: []
+snapshot:
+  symbols:
+    - name: KnowledgePlanner
+      kind: class
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 40
+      line_end: 180
+      code_digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      callers: []
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_retrieval"]
+    - name: UnrelatedSymbol
+      kind: function
+      file_path: src/zhiwei/knowledge/unrelated.py
+      line_start: 1
+      line_end: 10
+      code_digest: sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      callers: []
+      tests: []
+  dependencies:
+    - name: pydantic
+      version_constraint: ">=2.7.0,<3"
+      consumers: [KnowledgePlanner]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 201
+      touches: [src/zhiwei/knowledge/other.py]
+  issues:
+    - repository: zhiwei-core
+      issue_number: 55
+      mentions: [UnrelatedSymbol]
+  checks:
+    - name: ci/unit-tests
+      status: passed
+      on_refs: ["deadbeef"]
+expected:
+  affected_symbols: []
+  affected_dependencies: []
+  affected_tests: []
+  failed_tests: []
+  related_prs: []
+  related_issues: []
+  related_checks: []
+  risks_severities: [medium]
+  unknowns_empty: false
+  unknowns_contain:
+    - "docs/adr/014-observability.md"
+    - "not present in knowledge snapshot"
+  min_code_refs: 0
+  min_github_refs: 1
+  no_fabricated_symbols: [KnowledgePlanner, UnrelatedSymbol]

@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: zhiwei
+  labels: {app: api, "app.kubernetes.io/name": zhiwei}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: api}}
+  template:
+    metadata:
+      labels: {app: api, "app.kubernetes.io/name": zhiwei}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: api
+          image: zhiwei/app:local-product
+          imagePullPolicy: IfNotPresent
+          ports: [{containerPort: 8000}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          envFrom:
+            - configMapRef: {name: zhiwei-endpoints}
+          env:
+            - name: ZHIWEI_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: app-url}}
+            - name: ZHIWEI_IDENTITY_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: identity-url}}
+            - name: ZHIWEI_OIDC_CLIENT_SECRET
+              valueFrom: {secretKeyRef: {name: zhiwei-oidc, key: client-secret}}
+            - name: ZHIWEI_IDENTITY_MASTER_KEY_FILE
+              value: /run/secrets/zhiwei_identity_master_key
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: objects, mountPath: /var/lib/zhiwei/objects}
+            - {name: master-key, mountPath: /run/secrets, readOnly: true}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /healthz, port: 8000}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - {name: tmp, emptyDir: {medium: Memory}}
+        - {name: objects, emptyDir: {}}
+        - {name: master-key, secret: {secretName: zhiwei-identity-master-key}}

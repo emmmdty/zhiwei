@@ -1,0 +1,86 @@
+# ChangeBrief 冻结语料 · github-commit：commit 触发 → 命中快照符号 + 传递调用方。
+# expected 块由 impact 分析的确定性规则推导（specs/s10 §4）：
+# affected = 触达文件/符号的快照命中 ∪ callers 闭包；removed=∅；deps=消费者命中；
+# tests=受影响符号的测试（定义文件被触达 → fail）；PR 按 touches 文件、issue 按
+# mentions 符号、check 按 ref 关联；unknowns=∅（planner.py 与全部改动符号都在快照内）。
+unit_id: github-commit
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: commit
+    ref: "9f2c1ab4d"
+files_changed:
+  - path: src/zhiwei/knowledge/planner.py
+    symbols_before: [KnowledgePlanner, plan_retrieval]
+    symbols_after: [KnowledgePlanner, plan_retrieval]
+snapshot:
+  symbols:
+    - name: KnowledgePlanner
+      kind: class
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 40
+      line_end: 180
+      code_digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+      callers: [KnowledgeQuery]
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_retrieval"]
+    - name: plan_retrieval
+      kind: function
+      file_path: src/zhiwei/knowledge/planner.py
+      line_start: 182
+      line_end: 214
+      code_digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+      callers: []
+      tests: ["tests/unit/knowledge/test_planner.py::test_plan_dedupes_candidates"]
+    - name: KnowledgeQuery
+      kind: class
+      file_path: src/zhiwei/knowledge/query.py
+      line_start: 12
+      line_end: 96
+      code_digest: sha256:3333333333333333333333333333333333333333333333333333333333333333
+      callers: []
+      tests: ["tests/unit/knowledge/test_query.py::test_query_sources"]
+    - name: UnrelatedSymbol
+      kind: function
+      file_path: src/zhiwei/knowledge/unrelated.py
+      line_start: 1
+      line_end: 10
+      code_digest: sha256:4444444444444444444444444444444444444444444444444444444444444444
+      callers: []
+      tests: []
+  dependencies:
+    - name: pydantic
+      version_constraint: ">=2.7.0,<3"
+      consumers: [KnowledgePlanner]
+    - name: httpx2
+      version_constraint: ">=2.5.0"
+      consumers: [UnrelatedSymbol]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 128
+      touches: [src/zhiwei/knowledge/planner.py]
+  issues:
+    - repository: zhiwei-core
+      issue_number: 91
+      mentions: [KnowledgePlanner]
+  checks:
+    - name: ci/unit-tests
+      status: passed
+      on_refs: ["9f2c1ab4d"]
+expected:
+  affected_symbols: [KnowledgePlanner, KnowledgeQuery, plan_retrieval]
+  affected_dependencies: [pydantic]
+  affected_tests:
+    - "tests/unit/knowledge/test_planner.py::test_plan_dedupes_candidates"
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+    - "tests/unit/knowledge/test_query.py::test_query_sources"
+  failed_tests:
+    - "tests/unit/knowledge/test_planner.py::test_plan_dedupes_candidates"
+    - "tests/unit/knowledge/test_planner.py::test_plan_retrieval"
+  related_prs: [128]
+  related_issues: [91]
+  related_checks: [ci/unit-tests]
+  risks_severities: [medium]
+  unknowns_empty: true
+  min_code_refs: 3
+  min_github_refs: 1
+  no_fabricated_symbols: [UnrelatedSymbol]

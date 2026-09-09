@@ -1,0 +1,27 @@
+# S11 批 2（首集成）：OpenSearch 单节点（CPU-only local product 形态）。
+# 真实集群接入使 restore verify 的 search rebuild 列可自动化（F-R8-05 解锁路径）；
+# security plugins 关闭仅为本地开发面，生产 reference 指向外部托管搜索。
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.19.2@sha256:69588c664014fa3d3260ed5dd337f8538fec94790dad00bfbe92301eaaaac240
+    environment:
+      discovery.type: single-node
+      DISABLE_SECURITY_PLUGIN: "true"
+      OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+      bootstrap.memory_lock: "true"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    ports:
+      # 管理面 loopback 发布：ops CLI（host）经此做 rebuild/alias switch
+      - "127.0.0.1:9201:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:9200/_cluster/health | grep -q status"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }

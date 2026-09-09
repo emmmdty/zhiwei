@@ -1,0 +1,4 @@
+=== full slow pytest ===
+..................                                                       [100%]
+18 passed, 804 deselected in 145.53s (0:02:25)
+exit=0

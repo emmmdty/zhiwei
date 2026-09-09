@@ -1,0 +1,43 @@
+{
+  "demo_version": 2,
+  "name": "zhiwei-local-product-3journeys",
+  "boundary": {
+    "release_mode": "fixture_only",
+    "live_model_calls": false,
+    "runtime": "local-product compose（specs/s11 §2 全组件栈）+ 测试栈（postgres 55432 / OPA 8181）"
+  },
+  "journeys": [
+    {
+      "id": "contract-tests",
+      "title": "契约测试（identity / RLS）",
+      "command": "bash demo/run-demo.sh 1",
+      "anchor": "tests/security/identity（81 条：test_rls_resolver.py FORCE RLS / bypass resolver 契约 + test_identity_roles.py 角色词汇契约）",
+      "invariant": "resolver 角色 NOLOGIN BYPASSRLS 且授权面恰为函数读——FORCE RLS 不可旁路；会话密封/角色归一契约锁定",
+      "evidence": "pytest 全绿退出码 + 81 passed 计数",
+      "measured": "2026-09-09：81 passed in 24.5s（≤2min 达标）"
+    },
+    {
+      "id": "fault-injection",
+      "title": "故障注入（单场景子集）",
+      "command": "bash demo/run-demo.sh 2",
+      "anchor": "zhiwei ops fault-run --profile local-product --scenario temporal_restart|opa_down_fail_closed --sealed --seal-dir …（compose 后端真实栈）",
+      "invariant": "区别性终态：temporal 重启 → recover（服务恢复 healthy）；OPA 不可用 → fail_closed（拒绝而非降级放行）",
+      "evidence": "seal 产物落盘（raw events / environment / recovery_time_ms）+ sha256sum 逐文件锚点",
+      "measured": "2026-09-09：temporal_restart 11.1s（recover 9207ms）+ opa_down_fail_closed 8.8s（fail_closed 7336ms）≈ 20s（≤2min 达标）"
+    },
+    {
+      "id": "write-governance",
+      "title": "写动作治理（审批门禁最小闭环）",
+      "command": "bash demo/run-demo.sh 3",
+      "anchor": "tests/integration/discover/test_discover_api.py::TestGatedActionSubmission + tests/unit/discover/test_actions.py::TestActionManager::test_full_lifecycle",
+      "invariant": "未审批写：request 落账 pending_approval 且执行被逐字拒绝（重放不复制）；SoD：自批 409 / 他人批准 / 重复批准 409；完整生命周期 receipt 不可变",
+      "evidence": "pytest 全绿退出码 + 4 passed 计数（拒绝文案逐字断言在案）",
+      "measured": "2026-09-09：4 passed in 1.2s（≤2min 达标）"
+    }
+  ],
+  "verification": {
+    "command": "bash demo/run-demo.sh <1|2|3>",
+    "precondition": "docs/operations/install.md 安装序列完成；产品栈 healthy；测试栈 postgres 55432 + OPA 8181 运行中",
+    "acceptance": "三条旅程各自独立全绿，各 ≤2 分钟（实测计时见 journeys[].measured）；未发出任何 live 模型请求"
+  }
+}

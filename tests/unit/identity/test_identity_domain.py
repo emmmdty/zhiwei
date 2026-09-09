@@ -1,0 +1,1397 @@
+"""S1-T1 CONTRACT REPAIR RED：identity domain / commands 契约。
+
+上位契约（设计/验收方裁决）：
+- 冻结总设计 §3.1：Organization → Workspace → Group/Membership，Group 是 Workspace scope；
+- docs/API.md §1：所有 mutation 要求非空 Idempotency-Key；重复 key + 相同 payload 返回原结果，
+  不同 payload 冲突（接入 S0 idempotency 基础，不另造机制）；
+- docs/API.md §2 + T1 plan：Organization/Workspace 必须是 identity domain frozen models，
+  commands 层提供 Organization/Workspace application commands；
+- ActorContext：principal_id 必填、organization_id 可空（首登无组织）、workspace_id 非空时
+  organization_id 必须非空；
+- bootstrap 命令原子创建 Organization + 创建者 Owner Membership（OIDC 身份来源留 T2）。
+
+本文件只测 domain + command 契约，用内存 fake repository 隔离数据库。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID, uuid4
+
+import pytest
+from pydantic import ValidationError
+
+from zhiwei.contracts.time import utc_now
+from zhiwei.identity.commands import (
+    BootstrapClaimConflict,
+    CommandOutcome,
+    ExternalIdentityConflictError,
+    IdempotencyRequest,
+    IdempotencyResult,
+    NameConflictError,
+    OrganizationExistsError,
+    PrincipalDisabledError,
+    PrincipalNotFoundError,
+    ResourceConflictError,
+    add_group_member,
+    add_org_membership,
+    add_workspace_membership,
+    canonical_request_digest,
+    create_group,
+    create_organization,
+    create_user,
+    create_workspace,
+    disable_principal,
+    remove_org_membership,
+)
+from zhiwei.identity.domain import (
+    ActorContext,
+    ExternalIdentity,
+    Group,
+    GroupMember,
+    Membership,
+    Organization,
+    Principal,
+    PrincipalKind,
+    PrincipalStatus,
+    Workspace,
+    WorkspaceMembership,
+)
+from zhiwei.persistence.repositories import IdempotencyConflict, IdempotencyLookup
+
+
+class FakeIdentityRepository:
+    """IdentityRepository 的内存替身；命令契约不绑定 SQLAlchemy。"""
+
+    def __init__(self) -> None:
+        self.principals: dict[UUID, Principal] = {}
+        self.external_identities: dict[tuple[str, str], ExternalIdentity] = {}
+        self.organizations: dict[UUID, Organization] = {}
+        self.workspaces: dict[UUID, Workspace] = {}
+        self.memberships: dict[tuple[UUID, UUID], Membership] = {}
+        self.workspace_memberships: dict[tuple[UUID, UUID], WorkspaceMembership] = {}
+        self.groups: dict[UUID, Group] = {}
+        self.group_members: dict[tuple[UUID, UUID], GroupMember] = {}
+        self.idempotency: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        self.bootstrap_claims: dict[UUID, UUID] = {}
+
+    async def claim_organization_bootstrap(
+        self, principal_id: UUID, organization_id: UUID
+    ) -> bool:
+        """镜像 zhiwei_claim_organization_bootstrap 语义：principal 级唯一 claim。
+
+        四轮 RED 机制修订登记：命令契约新增 bootstrap claim 围栏（0008 窄函数），
+        内存替身必须镜像同语义——claim 已存在且 target 相同 → True；不同 → False；
+        首次 → 记录并返回 True（不更新既有 claim）。
+        """
+        existing = self.bootstrap_claims.get(principal_id)
+        if existing is not None:
+            return existing == organization_id
+        self.bootstrap_claims[principal_id] = organization_id
+        return True
+
+    async def create_principal(
+        self,
+        principal_id: UUID,
+        *,
+        kind: PrincipalKind,
+        status: PrincipalStatus = PrincipalStatus.ACTIVE,
+    ) -> Principal:
+        principal = Principal(id=principal_id, kind=kind, status=status, created_at=utc_now())
+        self.principals[principal_id] = principal
+        return principal
+
+    async def get_principal(self, principal_id: UUID) -> Principal | None:
+        return self.principals.get(principal_id)
+
+    async def disable_principal(self, principal_id: UUID) -> Principal | None:
+        principal = self.principals.get(principal_id)
+        if principal is None:
+            return None
+        disabled = principal.disable()
+        self.principals[principal_id] = disabled
+        return disabled
+
+    async def bind_external_identity(
+        self, *, issuer: str, subject: str, principal_id: UUID
+    ) -> ExternalIdentity:
+        key = (issuer, subject)
+        if key in self.external_identities:
+            raise ExternalIdentityConflictError("external identity already bound to another principal")
+        identity = ExternalIdentity(issuer=issuer, subject=subject, principal_id=principal_id)
+        self.external_identities[key] = identity
+        return identity
+
+    async def get_external_identity(
+        self, *, issuer: str, subject: str
+    ) -> ExternalIdentity | None:
+        return self.external_identities.get((issuer, subject))
+
+    async def claim_idempotency(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request_digest: str,
+        response: dict[str, Any],
+    ) -> IdempotencyResult:
+        record = self.idempotency.get((scope, key))
+        if record is not None:
+            stored_digest, stored_response = record
+            if stored_digest != request_digest:
+                raise IdempotencyConflict("idempotency key was already used for another request")
+            return IdempotencyResult(created=False, response=stored_response)
+        self.idempotency[(scope, key)] = (request_digest, response)
+        return IdempotencyResult(created=True, response=response)
+
+    async def lookup_idempotency(
+        self, *, scope: str, key: str
+    ) -> IdempotencyLookup | None:
+        record = self.idempotency.get((scope, key))
+        if record is None:
+            return None
+        request_digest, response = record
+        return IdempotencyLookup(request_digest=request_digest, response=response)
+
+    async def create_organization(
+        self, organization_id: UUID, *, status: str
+    ) -> tuple[bool, Organization]:
+        existing = self.organizations.get(organization_id)
+        if existing is not None:
+            return False, existing
+        organization = Organization(id=organization_id, status=status, created_at=utc_now())
+        self.organizations[organization_id] = organization
+        return True, organization
+
+    async def get_organization(self, organization_id: UUID) -> Organization | None:
+        return self.organizations.get(organization_id)
+
+    async def create_workspace(
+        self, workspace_id: UUID, *, organization_id: UUID, name: str
+    ) -> tuple[bool, Workspace]:
+        existing = self.workspaces.get(workspace_id)
+        if existing is not None:
+            return False, existing
+        if any(
+            workspace.organization_id == organization_id and workspace.name == name
+            for workspace in self.workspaces.values()
+        ):
+            raise NameConflictError("workspace name is already taken in this organization")
+        workspace = Workspace(
+            id=workspace_id, organization_id=organization_id, name=name, created_at=utc_now()
+        )
+        self.workspaces[workspace_id] = workspace
+        return True, workspace
+
+    async def list_workspaces(self, *, organization_id: UUID) -> list[Workspace]:
+        return [
+            workspace
+            for workspace in self.workspaces.values()
+            if workspace.organization_id == organization_id
+        ]
+
+    async def add_membership(
+        self,
+        *,
+        principal_id: UUID,
+        organization_id: UUID,
+        role_bindings: frozenset[str],
+    ) -> tuple[bool, Membership]:
+        key = (principal_id, organization_id)
+        existing = self.memberships.get(key)
+        if existing is not None:
+            return False, existing
+        membership = Membership(
+            principal_id=principal_id,
+            organization_id=organization_id,
+            role_bindings=role_bindings,
+        )
+        self.memberships[key] = membership
+        return True, membership
+
+    async def get_membership(
+        self, *, principal_id: UUID, organization_id: UUID
+    ) -> Membership | None:
+        return self.memberships.get((principal_id, organization_id))
+
+    async def remove_membership(self, *, principal_id: UUID, organization_id: UUID) -> bool:
+        return self.memberships.pop((principal_id, organization_id), None) is not None
+
+    async def add_workspace_membership(
+        self,
+        *,
+        principal_id: UUID,
+        organization_id: UUID,
+        workspace_id: UUID,
+        role_bindings: frozenset[str],
+    ) -> WorkspaceMembership:
+        membership = WorkspaceMembership(
+            principal_id=principal_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            role_bindings=role_bindings,
+        )
+        self.workspace_memberships[(principal_id, workspace_id)] = membership
+        return membership
+
+    async def get_workspace_membership(
+        self, *, principal_id: UUID, workspace_id: UUID
+    ) -> WorkspaceMembership | None:
+        return self.workspace_memberships.get((principal_id, workspace_id))
+
+    async def create_group(
+        self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID, name: str
+    ) -> tuple[bool, Group]:
+        existing = self.groups.get(group_id)
+        if existing is not None:
+            return False, existing
+        if any(
+            group.organization_id == organization_id
+            and group.workspace_id == workspace_id
+            and group.name == name
+            for group in self.groups.values()
+        ):
+            raise NameConflictError("group name is already taken in this workspace")
+        group = Group(
+            id=group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name=name,
+            schema_version=1,
+            created_at=utc_now(),
+        )
+        self.groups[group_id] = group
+        return True, group
+
+    async def get_group(
+        self, group_id: UUID, *, organization_id: UUID, workspace_id: UUID
+    ) -> Group | None:
+        group = self.groups.get(group_id)
+        if group is None or group.organization_id != organization_id or group.workspace_id != workspace_id:
+            return None
+        return group
+
+    async def list_groups(
+        self, *, organization_id: UUID, workspace_id: UUID
+    ) -> list[Group]:
+        return [
+            group
+            for group in self.groups.values()
+            if group.organization_id == organization_id and group.workspace_id == workspace_id
+        ]
+
+    async def add_group_member(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
+    ) -> GroupMember:
+        key = (group_id, principal_id)
+        existing = self.group_members.get(key)
+        if existing is not None:
+            return existing
+        member = GroupMember(
+            group_id=group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            principal_id=principal_id,
+            created_at=utc_now(),
+        )
+        self.group_members[key] = member
+        return member
+
+    async def remove_group_member(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
+    ) -> bool:
+        return self.group_members.pop((group_id, principal_id), None) is not None
+
+    async def set_principal_status(
+        self, principal_id: UUID, status: PrincipalStatus
+    ) -> Principal | None:
+        principal = self.principals.get(principal_id)
+        if principal is None:
+            return None
+        updated = principal.model_copy(update={"status": status})
+        self.principals[principal_id] = updated
+        return updated
+
+    async def get_group_member(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID, principal_id: UUID
+    ) -> GroupMember | None:
+        member = self.group_members.get((group_id, principal_id))
+        if member is None or member.organization_id != organization_id or member.workspace_id != workspace_id:
+            return None
+        return member
+
+    async def list_group_members(
+        self, *, group_id: UUID, organization_id: UUID, workspace_id: UUID
+    ) -> list[GroupMember]:
+        return [
+            member
+            for (owner_group_id, _), member in self.group_members.items()
+            if owner_group_id == group_id
+            and member.organization_id == organization_id
+            and member.workspace_id == workspace_id
+        ]
+
+
+def _idempotency(key: str = "request-key", digest_digit: str = "1") -> IdempotencyRequest:
+    return IdempotencyRequest(key=key, request_digest="sha256:" + digest_digit * 64)
+
+
+# --------------------------------------------------------------------------- Principal
+
+
+def test_principal_accepts_three_legal_kinds() -> None:
+    for kind in (
+        PrincipalKind.USER,
+        PrincipalKind.SERVICE_ACCOUNT,
+        PrincipalKind.AGENT_IDENTITY,
+    ):
+        principal = Principal(id=uuid4(), kind=kind, created_at=utc_now())
+        assert principal.kind is kind
+
+
+def test_principal_rejects_unknown_kind() -> None:
+    with pytest.raises(ValidationError):
+        Principal(id=uuid4(), kind="root", created_at=utc_now())  # type: ignore[arg-type]
+
+
+def test_principal_rejects_unknown_status() -> None:
+    with pytest.raises(ValidationError):
+        Principal(
+            id=uuid4(),
+            kind=PrincipalKind.USER,
+            status="deleted",  # type: ignore[arg-type]
+            created_at=utc_now(),
+        )
+
+
+def test_principal_rejects_naive_created_at() -> None:
+    with pytest.raises(ValidationError):
+        Principal(
+            id=uuid4(),
+            kind=PrincipalKind.USER,
+            created_at=datetime(2026, 1, 1, 12, 0, 0),
+        )
+
+
+def test_agent_identity_cannot_login_interactively() -> None:
+    agent = Principal(
+        id=uuid4(), kind=PrincipalKind.AGENT_IDENTITY, created_at=utc_now()
+    )
+    assert agent.supports_interactive_login is False
+
+
+def test_user_supports_interactive_login() -> None:
+    user = Principal(id=uuid4(), kind=PrincipalKind.USER, created_at=utc_now())
+    assert user.supports_interactive_login is True
+
+
+def test_service_account_does_not_support_interactive_login() -> None:
+    service_account = Principal(
+        id=uuid4(), kind=PrincipalKind.SERVICE_ACCOUNT, created_at=utc_now()
+    )
+    assert service_account.supports_interactive_login is False
+
+
+def test_disable_returns_a_new_instance_and_keeps_the_original() -> None:
+    principal = Principal(id=uuid4(), kind=PrincipalKind.USER, created_at=utc_now())
+    disabled = principal.disable()
+    assert disabled is not principal
+    assert disabled.id == principal.id
+    assert disabled.kind is principal.kind
+    assert disabled.status is PrincipalStatus.DISABLED
+    assert principal.status is PrincipalStatus.ACTIVE
+
+
+def test_disable_is_idempotent() -> None:
+    principal = Principal(id=uuid4(), kind=PrincipalKind.USER, created_at=utc_now())
+    assert principal.disable().disable().status is PrincipalStatus.DISABLED
+
+
+def test_principal_domain_model_is_frozen() -> None:
+    principal = Principal(id=uuid4(), kind=PrincipalKind.USER, created_at=utc_now())
+    with pytest.raises(ValidationError):
+        principal.status = PrincipalStatus.DISABLED  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- Organization / Workspace
+
+
+def test_organization_is_frozen_domain_model() -> None:
+    organization = Organization(id=uuid4(), status="active", created_at=utc_now())
+    assert organization.id is not None
+    assert organization.status == "active"
+    with pytest.raises(ValidationError):
+        organization.status = "disabled"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        Organization(id=uuid4(), created_at=utc_now(), tenant_id=uuid4())  # type: ignore[call-arg]
+
+
+def test_workspace_is_frozen_domain_model() -> None:
+    workspace = Workspace(
+        id=uuid4(), organization_id=uuid4(), name="Sales", created_at=utc_now()
+    )
+    assert workspace.organization_id is not None
+    with pytest.raises(ValidationError):
+        workspace.name = "Eng"  # type: ignore[misc]
+    with pytest.raises(ValidationError):
+        Workspace(id=uuid4(), name="Sales", created_at=utc_now())  # type: ignore[call-arg]
+
+
+# --------------------------------------------------------------------------- ExternalIdentity
+
+
+def test_external_identity_stable_key_is_issuer_and_subject() -> None:
+    identity = ExternalIdentity(
+        issuer="https://idp.example.com", subject="a1b2c3", principal_id=uuid4()
+    )
+    assert identity.stable_key == ("https://idp.example.com", "a1b2c3")
+
+
+def test_external_identity_does_not_use_email_as_key() -> None:
+    assert "email" not in ExternalIdentity.model_fields
+    with pytest.raises(ValidationError):
+        ExternalIdentity(
+            issuer="https://idp.example.com",
+            subject="a1b2c3",
+            principal_id=uuid4(),
+            email="alice@example.com",  # type: ignore[call-arg]
+        )
+
+
+def test_external_identity_requires_nonempty_issuer_and_subject() -> None:
+    with pytest.raises(ValidationError):
+        ExternalIdentity(issuer="", subject="a1b2c3", principal_id=uuid4())
+    with pytest.raises(ValidationError):
+        ExternalIdentity(issuer="https://idp.example.com", subject="", principal_id=uuid4())
+
+
+def test_external_identity_domain_model_is_frozen() -> None:
+    identity = ExternalIdentity(
+        issuer="https://idp.example.com", subject="a1b2c3", principal_id=uuid4()
+    )
+    with pytest.raises(ValidationError):
+        identity.subject = "other"  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- Membership
+
+
+def test_membership_is_organization_scoped_only() -> None:
+    membership = Membership(
+        principal_id=uuid4(),
+        organization_id=uuid4(),
+        role_bindings=frozenset({"member", "approver"}),
+    )
+    assert membership.organization_id is not None
+    assert "workspace_id" not in Membership.model_fields
+
+
+def test_workspace_membership_requires_organization_and_workspace_scope() -> None:
+    membership = WorkspaceMembership(
+        principal_id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        role_bindings=frozenset({"builder"}),
+    )
+    assert membership.organization_id is not None
+    assert membership.workspace_id is not None
+    with pytest.raises(ValidationError):
+        WorkspaceMembership(  # type: ignore[call-arg]
+            principal_id=uuid4(), workspace_id=uuid4()
+        )
+    with pytest.raises(ValidationError):
+        WorkspaceMembership(  # type: ignore[call-arg]
+            principal_id=uuid4(), organization_id=uuid4()
+        )
+
+
+def test_principal_can_belong_to_multiple_organizations() -> None:
+    principal_id, org_a, org_b = uuid4(), uuid4(), uuid4()
+    membership_a = Membership(
+        principal_id=principal_id, organization_id=org_a, role_bindings=frozenset({"member"})
+    )
+    membership_b = Membership(
+        principal_id=principal_id, organization_id=org_b, role_bindings=frozenset({"owner"})
+    )
+    assert (membership_a.principal_id, membership_a.organization_id) == (principal_id, org_a)
+    assert (membership_b.principal_id, membership_b.organization_id) == (principal_id, org_b)
+
+
+# --------------------------------------------------------------------------- Group（Workspace scope）
+
+
+def test_group_requires_organization_and_workspace_scope() -> None:
+    group = Group(
+        id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        name="Finance",
+        schema_version=1,
+        created_at=utc_now(),
+    )
+    assert group.organization_id is not None
+    assert group.workspace_id is not None
+    with pytest.raises(ValidationError):
+        Group(  # type: ignore[call-arg]
+            id=uuid4(),
+            organization_id=uuid4(),
+            name="Finance",
+            schema_version=1,
+            created_at=utc_now(),
+        )
+    with pytest.raises(ValidationError):
+        Group(  # type: ignore[call-arg]
+            id=uuid4(), workspace_id=uuid4(), name="Finance", created_at=utc_now()
+        )
+
+
+def test_group_member_requires_organization_workspace_and_group_scope() -> None:
+    member = GroupMember(
+        group_id=uuid4(),
+        organization_id=uuid4(),
+        workspace_id=uuid4(),
+        principal_id=uuid4(),
+        created_at=utc_now(),
+    )
+    assert member.organization_id is not None
+    assert member.workspace_id is not None
+    with pytest.raises(ValidationError):
+        GroupMember(  # type: ignore[call-arg]
+            group_id=uuid4(),
+            organization_id=uuid4(),
+            principal_id=uuid4(),
+            created_at=utc_now(),
+        )
+
+
+def test_same_name_groups_in_different_workspaces_of_same_org_are_distinct() -> None:
+    organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
+    first = Group(
+        id=uuid4(),
+        organization_id=organization_id,
+        workspace_id=first_workspace,
+        name="Finance",
+        created_at=utc_now(),
+    )
+    second = Group(
+        id=uuid4(),
+        organization_id=organization_id,
+        workspace_id=second_workspace,
+        name="Finance",
+        created_at=utc_now(),
+    )
+    assert first.name == second.name
+    assert (first.organization_id, first.workspace_id) != (second.organization_id, second.workspace_id)
+
+
+# --------------------------------------------------------------------------- ActorContext
+
+
+def test_actor_context_requires_principal_id() -> None:
+    with pytest.raises(ValidationError):
+        ActorContext(organization_id=uuid4())  # type: ignore[call-arg]
+
+
+def test_actor_context_allows_principal_without_organization() -> None:
+    actor = ActorContext(principal_id=uuid4())
+    assert actor.organization_id is None
+    assert actor.workspace_id is None
+
+
+def test_actor_context_workspace_requires_organization() -> None:
+    with pytest.raises(ValidationError):
+        ActorContext(principal_id=uuid4(), workspace_id=uuid4())
+    actor = ActorContext(
+        principal_id=uuid4(), organization_id=uuid4(), workspace_id=uuid4()
+    )
+    assert actor.organization_id is not None
+
+
+# --------------------------------------------------------------------------- Commands
+
+
+@pytest.mark.asyncio
+async def test_create_user_creates_user_principal_and_binds_identity() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    assert principal.kind is PrincipalKind.USER
+    assert principal.status is PrincipalStatus.ACTIVE
+    bound = await repository.get_external_identity(
+        issuer="https://idp.example.com", subject="alice"
+    )
+    assert bound == ExternalIdentity(
+        issuer="https://idp.example.com", subject="alice", principal_id=principal.id
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_user_rejects_reused_external_identity() -> None:
+    repository = FakeIdentityRepository()
+    await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    with pytest.raises(ExternalIdentityConflictError):
+        await create_user(repository, issuer="https://idp.example.com", subject="alice")
+
+
+@pytest.mark.asyncio
+async def test_disable_principal_command_lifecycle() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    disabled = await disable_principal(repository, principal.id)
+    assert disabled.status is PrincipalStatus.DISABLED
+    assert (await repository.get_principal(principal.id)) == disabled
+    with pytest.raises(PrincipalNotFoundError):
+        await disable_principal(repository, uuid4())
+
+
+@pytest.mark.asyncio
+async def test_create_organization_bootstraps_org_and_owner_membership() -> None:
+    repository = FakeIdentityRepository()
+    owner = await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    organization_id = uuid4()
+    outcome = await create_organization(
+        repository, organization_id=organization_id, owner_principal_id=owner.id
+    )
+    assert outcome.created is True
+    assert outcome.response == {"id": str(organization_id), "status": "active"}
+    organization = await repository.get_organization(organization_id)
+    assert organization is not None
+    membership = await repository.get_membership(
+        principal_id=owner.id, organization_id=organization_id
+    )
+    assert membership is not None
+    assert membership.role_bindings == frozenset({"owner"})
+
+
+@pytest.mark.asyncio
+async def test_create_organization_bootstrap_claim_blocks_second_target() -> None:
+    """持久 claim 围栏：同一 principal bootstrap 第二个 org 必须 BootstrapClaimConflict。
+
+    四轮 RED 契约：claim 与 org 创建同事务（首个 org 已创建、claim 已记录）；第二个
+    target 的 claim=false 抛明确异常，由 API 层映射 403 并整体回滚（org 行回滚属
+    数据库事务语义，由 DB 契约/集成测试覆盖——内存 fake 无回滚，这里只冻结命令层
+    行为）。membership 被删除不得重置该资格——fake 的 bootstrap_claims 独立于
+    memberships 存活。
+    """
+    repository = FakeIdentityRepository()
+    owner = await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    org_a = uuid4()
+    first = await create_organization(
+        repository, organization_id=org_a, owner_principal_id=owner.id
+    )
+    assert first.created is True
+    assert repository.bootstrap_claims == {owner.id: org_a}
+
+    org_b = uuid4()
+    with pytest.raises(BootstrapClaimConflict):
+        await create_organization(
+            repository, organization_id=org_b, owner_principal_id=owner.id
+        )
+    assert repository.bootstrap_claims == {owner.id: org_a}, "claim 不得迁移到新 target"
+    assert (owner.id, org_b) not in repository.memberships, (
+        "claim 拒绝发生在 owner membership 写入之前"
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_organization_is_idempotent_on_replay() -> None:
+    repository = FakeIdentityRepository()
+    owner = await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    organization_id = uuid4()
+    first = await create_organization(
+        repository,
+        organization_id=organization_id,
+        owner_principal_id=owner.id,
+        idempotency=_idempotency(),
+    )
+    replayed = await create_organization(
+        repository,
+        organization_id=organization_id,
+        owner_principal_id=owner.id,
+        idempotency=_idempotency(),
+    )
+    assert first.created is True
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert len(repository.organizations) == 1
+    assert len(repository.memberships) == 1
+
+
+@pytest.mark.asyncio
+async def test_member_add_conflicting_payload_rejected() -> None:
+    """org 级 mutation 的幂等键空间稳定（(org, scope, key)）：同 key + 不同 digest 冲突。
+
+    bootstrap 不适用冲突断言：S0 idempotency 键空间含 organization_id，不同 org 的
+    bootstrap 是独立幂等域，同 key + 不同 payload 不会污染既有数据。
+    """
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(),
+    )
+    with pytest.raises(IdempotencyConflict):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(digest_digit="2"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_create_workspace_command_is_idempotent_on_replay() -> None:
+    repository = FakeIdentityRepository()
+    owner = await create_user(repository, issuer="https://idp.example.com", subject="alice")
+    organization_id = uuid4()
+    await create_organization(
+        repository, organization_id=organization_id, owner_principal_id=owner.id
+    )
+    workspace_id = uuid4()
+    first = await create_workspace(
+        repository,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name="Sales",
+        idempotency=_idempotency(),
+    )
+    replayed = await create_workspace(
+        repository,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name="Sales",
+        idempotency=_idempotency(),
+    )
+    assert first.created is True
+    assert first.response == {
+        "id": str(workspace_id),
+        "organization_id": str(organization_id),
+        "name": "Sales",
+    }
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert len(repository.workspaces) == 1
+
+
+@pytest.mark.asyncio
+async def test_disabled_principal_cannot_gain_new_membership() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    await disable_principal(repository, principal.id)
+    organization_id, workspace_id = uuid4(), uuid4()
+    with pytest.raises(PrincipalDisabledError):
+        await add_org_membership(
+            repository, principal_id=principal.id, organization_id=organization_id
+        )
+    with pytest.raises(PrincipalDisabledError):
+        await add_workspace_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+        )
+    with pytest.raises(PrincipalDisabledError):
+        await add_group_member(
+            repository,
+            group_id=uuid4(),
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            principal_id=principal.id,
+        )
+
+
+@pytest.mark.asyncio
+async def test_principal_can_join_multiple_organizations() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    org_a, org_b = uuid4(), uuid4()
+    outcome_a = await add_org_membership(
+        repository, principal_id=principal.id, organization_id=org_a
+    )
+    outcome_b = await add_org_membership(
+        repository, principal_id=principal.id, organization_id=org_b
+    )
+    assert outcome_a.created is True
+    assert outcome_b.created is True
+    assert (outcome_a.response["principal_id"], outcome_a.response["organization_id"]) == (
+        str(principal.id),
+        str(org_a),
+    )
+    assert (outcome_b.response["principal_id"], outcome_b.response["organization_id"]) == (
+        str(principal.id),
+        str(org_b),
+    )
+    assert (
+        await repository.get_membership(principal_id=principal.id, organization_id=org_a)
+    ) is not None
+    assert (
+        await repository.get_membership(principal_id=principal.id, organization_id=org_b)
+    ) is not None
+
+
+@pytest.mark.asyncio
+async def test_role_bindings_do_not_cross_organization_and_workspace_scope() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id, workspace_id = uuid4(), uuid4()
+    outcome = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"owner"}),
+    )
+    workspace_membership = await add_workspace_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        role_bindings=frozenset({"builder"}),
+    )
+    assert outcome.response["role_bindings"] == ["owner"]
+    assert workspace_membership.role_bindings == frozenset({"builder"})
+    assert "builder" not in outcome.response["role_bindings"]
+    assert "owner" not in workspace_membership.role_bindings
+
+
+@pytest.mark.asyncio
+async def test_member_add_and_remove_are_idempotent_on_replay() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    first = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(),
+    )
+    replayed = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(),
+    )
+    assert first.created is True
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert len(repository.memberships) == 1
+
+    removal = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="remove-key"),
+    )
+    assert removal.created is True
+    assert len(repository.memberships) == 0
+    removal_replay = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="remove-key"),
+    )
+    assert removal_replay.created is False
+
+
+@pytest.mark.asyncio
+async def test_group_member_add_is_idempotent_on_retry() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id, workspace_id = uuid4(), uuid4()
+    group_id = uuid4()
+    await create_group(
+        repository,
+        group_id=group_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name="Finance",
+    )
+    first = await add_group_member(
+        repository,
+        group_id=group_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        principal_id=principal.id,
+    )
+    second = await add_group_member(
+        repository,
+        group_id=group_id,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        principal_id=principal.id,
+    )
+    assert first == second
+    members = await repository.list_group_members(
+        group_id=group_id, organization_id=organization_id, workspace_id=workspace_id
+    )
+    assert members == [first]
+
+
+@pytest.mark.asyncio
+async def test_same_name_groups_in_different_workspaces_of_same_org_allowed() -> None:
+    repository = FakeIdentityRepository()
+    organization_id, first_workspace, second_workspace = uuid4(), uuid4(), uuid4()
+    await create_group(
+        repository,
+        group_id=uuid4(),
+        organization_id=organization_id,
+        workspace_id=first_workspace,
+        name="Finance",
+    )
+    await create_group(
+        repository,
+        group_id=uuid4(),
+        organization_id=organization_id,
+        workspace_id=second_workspace,
+        name="Finance",
+    )
+    assert len(repository.groups) == 2
+
+
+@pytest.mark.asyncio
+async def test_disabled_principal_can_still_be_removed_from_membership() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository, principal_id=principal.id, organization_id=organization_id
+    )
+    await disable_principal(repository, principal.id)
+    removal = await remove_org_membership(
+        repository, principal_id=principal.id, organization_id=organization_id
+    )
+    assert removal.created is True
+
+
+@pytest.mark.asyncio
+async def test_command_outcome_is_frozen() -> None:
+    outcome = CommandOutcome(created=True, response={"id": str(uuid4())})
+    with pytest.raises(ValidationError):
+        outcome.created = False  # type: ignore[misc]
+
+
+# --------------------------------------------------------------------------- P0 修复契约（租户接管 / 资源冲突 / canonical digest）
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_rejects_existing_organization() -> None:
+    """已存在组织 + 无既有幂等记录：必须拒绝，且不得写 Owner membership（租户接管）。"""
+    repository = FakeIdentityRepository()
+    attacker = await create_user(
+        repository, issuer="https://idp.example.com", subject="attacker"
+    )
+    victim_owner = await create_user(
+        repository, issuer="https://idp.example.com", subject="victim-owner"
+    )
+    victim_organization_id = uuid4()
+    victim = await create_organization(
+        repository,
+        organization_id=victim_organization_id,
+        owner_principal_id=victim_owner.id,
+    )
+    assert victim.created is True
+    with pytest.raises(OrganizationExistsError):
+        await create_organization(
+            repository,
+            organization_id=victim_organization_id,
+            owner_principal_id=attacker.id,
+            idempotency=_idempotency(key="takeover-key"),
+        )
+    assert len(repository.memberships) == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_foreign_principal_cannot_replay_creators_request() -> None:
+    """另一 principal 使用合法创建者的相同 key/body：拒绝，不得获得任何 membership。"""
+    repository = FakeIdentityRepository()
+    creator = await create_user(
+        repository, issuer="https://idp.example.com", subject="creator"
+    )
+    foreign = await create_user(
+        repository, issuer="https://idp.example.com", subject="foreign"
+    )
+    organization_id = uuid4()
+    first = await create_organization(
+        repository,
+        organization_id=organization_id,
+        owner_principal_id=creator.id,
+        idempotency=_idempotency(),
+    )
+    assert first.created is True
+    with pytest.raises(OrganizationExistsError):
+        await create_organization(
+            repository,
+            organization_id=organization_id,
+            owner_principal_id=foreign.id,
+            idempotency=_idempotency(),
+        )
+    assert len(repository.memberships) == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_creator_replay_returns_original_without_new_owner() -> None:
+    """合法创建者相同 key/body 重试：created=False 且响应与首次一致，只有一条 membership。"""
+    repository = FakeIdentityRepository()
+    creator = await create_user(
+        repository, issuer="https://idp.example.com", subject="creator"
+    )
+    organization_id = uuid4()
+    first = await create_organization(
+        repository,
+        organization_id=organization_id,
+        owner_principal_id=creator.id,
+        idempotency=_idempotency(),
+    )
+    replayed = await create_organization(
+        repository,
+        organization_id=organization_id,
+        owner_principal_id=creator.id,
+        idempotency=_idempotency(),
+    )
+    assert first.created is True
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert len(repository.organizations) == 1
+    assert len(repository.memberships) == 1
+
+
+@pytest.mark.asyncio
+async def test_workspace_existing_id_with_new_key_conflicts() -> None:
+    """已存在 workspace_id + 新幂等键：409，数据库原资源不变，不写新幂等记录。"""
+    repository = FakeIdentityRepository()
+    organization_id, workspace_id = uuid4(), uuid4()
+    created, _ = await repository.create_workspace(
+        workspace_id, organization_id=organization_id, name="Original"
+    )
+    assert created is True
+    with pytest.raises(ResourceConflictError):
+        await create_workspace(
+            repository,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Original",
+            idempotency=_idempotency(key="new-key"),
+        )
+    with pytest.raises(ResourceConflictError):
+        await create_workspace(
+            repository,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Renamed",
+            idempotency=_idempotency(key="another-key"),
+        )
+    assert repository.workspaces[workspace_id].name == "Original"
+    assert (("organization.workspace.create", "new-key")) not in repository.idempotency
+
+
+@pytest.mark.asyncio
+async def test_workspace_creator_replay_returns_original_response() -> None:
+    """原始 key + 原始 payload 的真实重放仍返回 200（created=False）与首次响应。"""
+    repository = FakeIdentityRepository()
+    organization_id, workspace_id = uuid4(), uuid4()
+    first = await create_workspace(
+        repository,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name="Sales",
+        idempotency=_idempotency(key="ws-key"),
+    )
+    replayed = await create_workspace(
+        repository,
+        organization_id=organization_id,
+        workspace_id=workspace_id,
+        name="Sales",
+        idempotency=_idempotency(key="ws-key"),
+    )
+    assert first.created is True
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert len(repository.workspaces) == 1
+
+
+@pytest.mark.asyncio
+async def test_group_existing_id_with_new_key_conflicts() -> None:
+    repository = FakeIdentityRepository()
+    organization_id, workspace_id, group_id = uuid4(), uuid4(), uuid4()
+    created, _ = await repository.create_group(
+        group_id, organization_id=organization_id, workspace_id=workspace_id, name="Finance"
+    )
+    assert created is True
+    with pytest.raises(ResourceConflictError):
+        await create_group(
+            repository,
+            group_id=group_id,
+            organization_id=organization_id,
+            workspace_id=workspace_id,
+            name="Finance",
+            idempotency=_idempotency(key="new-key"),
+        )
+    assert repository.groups[group_id].name == "Finance"
+
+
+@pytest.mark.asyncio
+async def test_member_add_existing_membership_with_new_key_conflicts() -> None:
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(),
+    )
+    with pytest.raises(ResourceConflictError):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(key="new-key"),
+        )
+    assert repository.memberships[(principal.id, organization_id)].role_bindings == frozenset()
+
+
+def test_request_digest_is_invariant_to_mapping_key_order_and_unicode_form() -> None:
+    """canonical digest 必须复用 RFC 8785/JCS + NFC：键序与 NFC/NFD 等价文本不改变 digest。"""
+    first = canonical_request_digest(
+        "POST", "/api/v1/workspaces/x/groups", {"name": "caf\u00e9", "group_id": "abc"}
+    )
+    reordered = canonical_request_digest(
+        "POST", "/api/v1/workspaces/x/groups", {"group_id": "abc", "name": "cafe\u0301"}
+    )
+    assert first == reordered
+
+
+def test_request_digest_changes_when_method_path_or_body_differ() -> None:
+    base = canonical_request_digest("POST", "/p", {"a": 1})
+    assert canonical_request_digest("GET", "/p", {"a": 1}) != base
+    assert canonical_request_digest("POST", "/q", {"a": 1}) != base
+    assert canonical_request_digest("POST", "/p", {"a": 2}) != base
+
+
+def test_request_digest_uses_sha256_canonical_format() -> None:
+    digest_text = canonical_request_digest("POST", "/p", {"a": 1})
+    assert digest_text.startswith("sha256:")
+    assert len(digest_text) == 7 + 64
+
+
+# --------------------------------------------------------------------------- ABA 幂等重放契约（Repair-3）
+
+
+@pytest.mark.asyncio
+async def test_stale_add_replay_does_not_resurrect_deleted_membership() -> None:
+    """ADD 完成后 DELETE，重放旧 ADD：只返回原始结果，membership 必须保持不存在。
+
+    重放旧请求绝不能覆盖请求完成之后产生的新状态（旧 ADD 不得复活已被删除的 membership）。
+    """
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    first = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-old"),
+    )
+    removal = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-new"),
+    )
+    assert first.created is True
+    assert removal.created is True
+    records_before = len(repository.idempotency)
+
+    replayed = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-old"),
+    )
+    assert replayed.created is False
+    assert replayed.response == first.response
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) is None
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_stale_delete_replay_does_not_remove_replacement_membership() -> None:
+    """DELETE 后用新 key 重新 ADD，重放旧 DELETE：只返回原结果，替代 membership 保留。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-first"),
+    )
+    removal = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-old"),
+    )
+    assert removal.created is True
+    replacement = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"builder"}),
+        idempotency=_idempotency(key="add-replacement"),
+    )
+    assert replacement.created is True
+    records_before = len(repository.idempotency)
+
+    replayed = await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-old"),
+    )
+    assert replayed.created is False
+    assert replayed.response == removal.response
+    membership = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    assert membership is not None
+    assert membership.role_bindings == frozenset({"builder"})
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_conflicting_member_add_replay_is_side_effect_free() -> None:
+    """已存在 key 但 digest 不同：任何 INSERT/DELETE 之前 409，membership 逐字段不变。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(),
+    )
+    existing = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    with pytest.raises(IdempotencyConflict):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(digest_digit="2"),
+        )
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) == existing
+
+    await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="remove-key"),
+    )
+    records_before = len(repository.idempotency)
+    with pytest.raises(IdempotencyConflict):
+        await add_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            role_bindings=frozenset({"owner"}),
+            idempotency=_idempotency(digest_digit="2"),
+        )
+    assert (
+        await repository.get_membership(
+            principal_id=principal.id, organization_id=organization_id
+        )
+    ) is None
+    assert len(repository.idempotency) == records_before
+
+
+@pytest.mark.asyncio
+async def test_conflicting_member_remove_replay_is_side_effect_free() -> None:
+    """DELETE key 被不同 digest 复用：任何 DELETE 之前 409，替代 membership 保留。"""
+    repository = FakeIdentityRepository()
+    principal = await create_user(
+        repository, issuer="https://idp.example.com", subject="alice"
+    )
+    organization_id = uuid4()
+    await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"member"}),
+        idempotency=_idempotency(key="add-key"),
+    )
+    await remove_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        idempotency=_idempotency(key="delete-key"),
+    )
+    replacement = await add_org_membership(
+        repository,
+        principal_id=principal.id,
+        organization_id=organization_id,
+        role_bindings=frozenset({"builder"}),
+        idempotency=_idempotency(key="add-replacement"),
+    )
+    assert replacement.created is True
+    records_before = len(repository.idempotency)
+
+    with pytest.raises(IdempotencyConflict):
+        await remove_org_membership(
+            repository,
+            principal_id=principal.id,
+            organization_id=organization_id,
+            idempotency=_idempotency(key="delete-key", digest_digit="2"),
+        )
+    membership = await repository.get_membership(
+        principal_id=principal.id, organization_id=organization_id
+    )
+    assert membership is not None
+    assert membership.role_bindings == frozenset({"builder"})
+    assert len(repository.idempotency) == records_before

@@ -1,0 +1,312 @@
+# S11 local-product 主 compose（specs/s11 §2）：应用面 + 全部基础设施 fragment。
+#
+# 纪律（specs/s11 §1/§8 + tests/contract/deploy 冻结契约）：
+# - 部署文件只承载已实现能力，不制造 HA/SLO——这里是 CPU-only 单机 local product；
+# - Docker startup 只允许 fixture/replay（ZHIWEI_RELEASE_MODE=fixture_only），
+#   compose 内不出现 live 凭据；
+# - `docker compose up -d --wait` 是 S11 Gate 命令，healthcheck 缺失即失败；
+# - 管理端口仅 loopback 发布；应用端口不直接发布（统一经 proxy）；
+# - master key 走 Docker secrets（secrets.example/ 占位，operator 覆盖），绝不挂给
+#   Keycloak（S1 验收阻断 4 沿袭）。
+#
+# OIDC issuer 双视图解法：issuer 固定为 http://keycloak.local:8081/realms/zhiwei。
+# api 容器经 extra_hosts host-gateway 到达宿主 loopback 发布的 8081；浏览器（宿主）
+# 依赖 install.md 记录的一条 /etc/hosts 条目（127.0.0.1 keycloak.local）。
+# 两侧 Host 头一致 → Keycloak token iss 一致（dev 模式 iss = 请求 Host）。
+
+name: zhiwei-local
+
+include:
+  - ./profiles/data.yaml
+  - ./profiles/identity.yaml
+  - ./profiles/observability.yaml
+  - ./profiles/temporal.yaml
+  - ./profiles/search.yaml
+  - ./profiles/object.yaml
+  - ./profiles/kv.yaml
+  - ./profiles/reference.yaml
+
+services:
+  # ---------------------------------------------------------------- 应用面
+  # 一次性迁移任务：业务 + identity 两个 database 都走到 head。
+  migrate:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: zhiwei/app:local-product
+    # alembic 单流消费 ZHIWEI_DATABASE_URL——业务与 identity 两个 database 各跑一遍
+    # （identity 表 auth_sessions/oidc_login_attempts 等由同一迁移流承载，split-DB
+    # 部署下 identity 库漏迁移会让 /auth/login 500，见 e2e auth 路由测试）。
+    command:
+      - sh
+      - -c
+      - |
+        alembic -c /app/alembic.ini upgrade head
+        ZHIWEI_DATABASE_URL="$$ZHIWEI_IDENTITY_DATABASE_URL" alembic -c /app/alembic.ini upgrade head
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_DATABASE_URL: "postgresql+asyncpg://zhiwei_migrator:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei"
+      ZHIWEI_IDENTITY_DATABASE_URL: "postgresql+asyncpg://zhiwei_migrator:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei_identity"
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: zhiwei/app:local-product
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+      ZHIWEI_DATABASE_URL: "postgresql+asyncpg://zhiwei_app:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei"
+      ZHIWEI_IDENTITY_DATABASE_URL: "postgresql+asyncpg://zhiwei_identity:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei_identity"
+      ZHIWEI_OBJECT_STORE_ROOT: /var/lib/zhiwei/objects
+      ZHIWEI_OIDC_ISSUER: "http://keycloak.local:8081/realms/zhiwei"
+      ZHIWEI_OIDC_CLIENT_ID: zhiwei-bff
+      ZHIWEI_OIDC_CLIENT_SECRET: "${ZHIWEI_OIDC_CLIENT_SECRET:-s1-dev-client-secret-only}"
+      ZHIWEI_OIDC_REDIRECT_URI: "https://keycloak.local:8443/auth/callback"
+      ZHIWEI_IDENTITY_MASTER_KEY_FILE: /run/secrets/zhiwei_identity_master_key
+      ZHIWEI_OPA_BASE_URL: "http://opa:8181"
+      ZHIWEI_TEMPORAL_TARGET: "temporal:7233"
+      ZHIWEI_REDIS_URL: "redis://redis:6379/0"
+      # 信任 proxy 转发的 X-Forwarded-Proto/Host（CSRF Origin 校验按 https 源比对；
+      # uvicorn 默认只信 127.0.0.1，容器拓扑下 proxy 是独立 IP）
+      UVICORN_FORWARDED_ALLOW_IPS: "*"
+    extra_hosts:
+      # issuer host 解析到宿主网关 → 宿主 loopback 发布的 Keycloak 端口
+      - "keycloak.local:host-gateway"
+    secrets:
+      - zhiwei_identity_master_key
+    volumes:
+      - zhiwei_local_objects:/var/lib/zhiwei/objects
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+      opa: { condition: service_healthy }
+      keycloak: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-m", "zhiwei.healthcheck", "http://127.0.0.1:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  agent-worker:
+    image: zhiwei/app:local-product
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "zhiwei.workers.main", "agent"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+      ZHIWEI_DATABASE_URL: "postgresql+asyncpg://zhiwei_app:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei"
+      ZHIWEI_TEMPORAL_TARGET: "temporal:7233"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  outbox-dispatcher:
+    image: zhiwei/app:local-product
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    # dispatcher 双角色：ZHIWEI_DATABASE_URL 用 zhiwei_app（载荷面，FORCE RLS 生效）；
+    # ZHIWEI_DISPATCHER_DISCOVERY_URL 用 zhiwei_dispatcher（bypass，仅租户对发现 SQL）。
+    command: ["python", "-m", "zhiwei.workers.main", "dispatcher"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+      ZHIWEI_DATABASE_URL: "postgresql+asyncpg://zhiwei_app:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei"
+      ZHIWEI_DISPATCHER_DISCOVERY_URL: "postgresql+asyncpg://zhiwei_dispatcher:${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}@postgres:5432/zhiwei"
+      ZHIWEI_TEMPORAL_TARGET: "temporal:7233"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+
+  capability-runner:
+    image: zhiwei/app:local-product
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "zhiwei.workers.main", "capability-runner"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+      ZHIWEI_OPA_BASE_URL: "http://opa:8181"
+      ZHIWEI_IDENTITY_MASTER_KEY_FILE: /run/secrets/capability_ipc_secret
+      ZHIWEI_TEMPORAL_TARGET: "temporal:7233"
+    secrets:
+      - capability_ipc_secret
+    depends_on:
+      temporal: { condition: service_healthy }
+      opa: { condition: service_healthy }
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+
+  # ---------------------------------------------------------------- 边缘面
+  web:
+    build:
+      context: ../../apps/web
+      dockerfile: Dockerfile
+    image: zhiwei/web:local-product
+    user: "101:101"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx:uid=101,gid=101
+      - /var/run:uid=101,gid=101
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+
+  # 一次性 dev TLS 证书生成：__Host-+Secure 会话 cookie 要求浏览器走 TLS（见 proxy
+  # 端口注释）。自签名、CN/SAN=keycloak.local、仅本地发布；真实部署由 operator 换发
+  # 正式证书（k8s reference 用 Ingress TLS）。
+  proxy-tls-certgen:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: zhiwei/app:local-product
+    # root 一次性：卷根由镜像中不存在的挂载路径初始化（root 属主），且需 chown 给
+    # nginx 的 101 用户；产物 server.key 640 仅 101 可读，server.crt 644 公开。
+    user: "0"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        if [ ! -s /certs/server.crt ] || [ ! -s /certs/server.key ]; then
+          openssl req -x509 -newkey rsa:2048 -sha256 -days 3650 -nodes \
+            -keyout /certs/server.key -out /certs/server.crt \
+            -subj "/CN=keycloak.local" \
+            -addext "subjectAltName=DNS:keycloak.local,IP:127.0.0.1"
+        fi
+        chown 101:0 /certs/server.key
+        chmod 640 /certs/server.key
+        chmod 644 /certs/server.crt
+    volumes:
+      - proxy_tls:/certs
+    restart: "no"
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+
+  proxy:
+    image: nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de
+    user: "101:101"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx:uid=101,gid=101
+      - /var/run:uid=101,gid=101
+    volumes:
+      - ./configs/proxy/nginx.conf:/etc/nginx/nginx.conf:ro
+      - proxy_tls:/etc/nginx/tls:ro
+    ports:
+      # 唯一发布入口；管理/运维端口一律 loopback 或 internal。
+      # HTTP :8090 供非浏览器探活/e2e；浏览器 OIDC 旅程走 TLS :8443——session
+      # cookie 是 __Host- + Secure（auth.py _cookie_flags 冻结契约），纯 HTTP 源
+      # 浏览器拒绝该 cookie，登录无法完成（e2e test_proxy_tls_listener_for_browser_oidc）。
+      - "127.0.0.1:8090:8080"
+      - "127.0.0.1:8443:8443"
+    depends_on:
+      proxy-tls-certgen: { condition: service_completed_successfully }
+      api: { condition: service_healthy }
+      web: { condition: service_healthy }
+    networks: [internal, edge]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 5s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 128M }
+
+networks:
+  internal: {}
+  edge: {}
+
+volumes:
+  zhiwei_local_objects: {}
+  proxy_tls: {}
+
+secrets:
+  zhiwei_identity_master_key:
+    file: ./secrets.example/zhiwei_identity_master_key
+  capability_ipc_secret:
+    file: ./secrets.example/capability_ipc_secret

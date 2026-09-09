@@ -1,0 +1,159 @@
+{
+  "book": "shuihu",
+  "seed": 20260811,
+  "corpus_version": "v1.0.0",
+  "perturbation_count": 7,
+  "perturbations": [
+    {
+      "id": "SH-P01",
+      "kind": "swap",
+      "key_field": "rank",
+      "keys": [
+        18,
+        24
+      ],
+      "field": "name",
+      "before": [
+        "徐宁",
+        "穆弘"
+      ],
+      "after": [
+        "穆弘",
+        "徐宁"
+      ],
+      "rationale": "座次 18/24 的人物互换，排名类世界知识必错"
+    },
+    {
+      "id": "SH-P02",
+      "kind": "swap",
+      "key_field": "rank",
+      "keys": [
+        18,
+        24
+      ],
+      "field": "nickname",
+      "before": [
+        "金枪手",
+        "没遮拦"
+      ],
+      "after": [
+        "没遮拦",
+        "金枪手"
+      ],
+      "rationale": "绰号随人物一并互换，保持记录内部自洽"
+    },
+    {
+      "id": "SH-P03",
+      "kind": "swap",
+      "key_field": "rank",
+      "keys": [
+        3,
+        4
+      ],
+      "field": "name",
+      "before": [
+        "吴用",
+        "公孙胜"
+      ],
+      "after": [
+        "公孙胜",
+        "吴用"
+      ],
+      "rationale": "吴用/公孙胜座次互换"
+    },
+    {
+      "id": "SH-P04",
+      "kind": "swap",
+      "key_field": "rank",
+      "keys": [
+        3,
+        4
+      ],
+      "field": "nickname",
+      "before": [
+        "智多星",
+        "入云龙"
+      ],
+      "after": [
+        "入云龙",
+        "智多星"
+      ],
+      "rationale": "同上，保持自洽"
+    },
+    {
+      "id": "SH-P05",
+      "kind": "rename",
+      "key_field": "rank",
+      "keys": [
+        13
+      ],
+      "field": "nickname",
+      "before": [
+        "花和尚"
+      ],
+      "after": [
+        "铁和尚"
+      ],
+      "rationale": "花和尚→铁和尚，强记忆绰号改写"
+    },
+    {
+      "id": "SH-P06",
+      "kind": "rename",
+      "key_field": "rank",
+      "keys": [
+        107
+      ],
+      "field": "nickname",
+      "before": [
+        "鼓上蚤"
+      ],
+      "after": [
+        "屋上鹞"
+      ],
+      "rationale": "鼓上蚤→屋上鹞"
+    },
+    {
+      "id": "SH-P07",
+      "kind": "retype",
+      "key_field": "rank",
+      "keys": [
+        15
+      ],
+      "field": "role_group",
+      "before": [
+        "马军五虎将"
+      ],
+      "after": [
+        "马军八骠骑"
+      ],
+      "rationale": "董平由五虎将改判八骠骑，影响按职司的聚合题"
+    }
+  ],
+  "conflicts": [
+    {
+      "id": "SH-C01",
+      "fact": "武松的战功数",
+      "doc_value": "表中值 + 7",
+      "expected_behavior": "报告两源分歧，给出 CellRef 与 DocRef"
+    },
+    {
+      "id": "SH-C02",
+      "fact": "马军五虎将的人数",
+      "doc_value": 6,
+      "expected_behavior": "报告文档声明 6 人与表中聚合结果不一致"
+    },
+    {
+      "id": "SH-C03",
+      "fact": "水军头领的人数",
+      "doc_value": "表中实际值 - 2",
+      "expected_behavior": "报告分歧"
+    },
+    {
+      "id": "SH-C04",
+      "fact": "最早上山的年份",
+      "doc_value": "表中最小值 - 3",
+      "expected_behavior": "报告分歧"
+    }
+  ],
+  "note": "ground truth 一律以本清单 + 扰动后语料为准，不以原著为准。凭世界知识作答的系统在受扰动字段上必然出错——这正是本清单存在的意义。"
+}

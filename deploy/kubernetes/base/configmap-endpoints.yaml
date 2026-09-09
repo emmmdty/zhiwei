@@ -1,0 +1,21 @@
+# 外部托管依赖端点（specs/s11 §3）：base 缺省是占位名，由 overlay patch 覆盖。
+# 真实端点属于部署期配置；DSN/client secret 走 Secret 引用，绝不写入 ConfigMap。
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zhiwei-endpoints
+  namespace: zhiwei
+data:
+  ZHIWEI_PROFILE: "production_reference"
+  ZHIWEI_RELEASE_MODE: "fixture_only"
+  ZHIWEI_DATABASE_URL: "postgresql+asyncpg://zhiwei_app@postgres.external:5432/zhiwei"
+  ZHIWEI_IDENTITY_DATABASE_URL: "postgresql+asyncpg://zhiwei_identity@postgres.external:5432/zhiwei_identity"
+  ZHIWEI_TEMPORAL_TARGET: "temporal.external:7233"
+  ZHIWEI_OPA_BASE_URL: "http://opa.external:8181"
+  ZHIWEI_REDIS_URL: "redis://redis.external:6379/0"
+  ZHIWEI_OBJECT_STORE_ROOT: "/var/lib/zhiwei/objects"
+  ZHIWEI_OIDC_ISSUER: "https://oidc.external/realms/zhiwei"
+  ZHIWEI_OIDC_CLIENT_ID: "zhiwei-bff"
+  ZHIWEI_OIDC_REDIRECT_URI: "https://zhiwei.external/auth/callback"
+  # Temporal persistence 与业务 PG 不同 database（specs/s11 §3 持久化分离）
+  ZHIWEI_TEMPORAL_DBNAME: "zhiwei_temporal"

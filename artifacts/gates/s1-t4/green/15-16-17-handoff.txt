@@ -1,0 +1,7 @@
+=== make handoff-check HANDOFF_BASE=2dcb1d5 ===
+[handoff] ✓ 锁定测试与 evals/ 相对 2dcb1d5 未漂移
+exit=0
+=== git diff --check 2dcb1d5..HEAD ===
+exit=0
+=== git status --short ===
+exit=0

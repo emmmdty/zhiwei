@@ -1,0 +1,155 @@
+schema_version: 1
+agent_id: ask-agent-v1
+name: Ask Agent
+description: >-
+  Plans and executes cross-source research tasks, producing evidence-backed
+  answers. Uses only Core task primitives. Verifies all Fact/Quote claims
+  before finalizing. Presents conflicts with source/version/time context.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- AskTaskSpec input contract
+input:
+  required:
+    - question
+  properties:
+    question:
+      type: string
+      description: The user's research question
+    desired_artifact:
+      type: string
+      enum: [answer, summary, comparison, report]
+      default: answer
+    source_scope:
+      type: object
+      properties:
+        documents:
+          type: boolean
+          default: true
+        code:
+          type: boolean
+          default: true
+        github:
+          type: boolean
+          default: true
+        db:
+          type: boolean
+          default: true
+        api:
+          type: boolean
+          default: true
+    entity_scope:
+      type: array
+      items:
+        type: string
+      default: []
+    time_scope:
+      type: object
+      properties:
+        after:
+          type: string
+          format: date-time
+        before:
+          type: string
+          format: date-time
+    risk_level:
+      type: string
+      enum: [low, medium, high]
+      default: medium
+
+# ---------------------------------------------------------------- output contract
+output:
+  properties:
+    status:
+      type: string
+      enum: [completed, partial, abstained, failed, needs_clarification]
+    answer:
+      type: object
+      properties:
+        sections:
+          type: array
+          items:
+            type: object
+            properties:
+              heading:
+                type: string
+              content:
+                type: string
+              claims:
+                type: array
+        claims:
+          type: array
+          description: All claims produced by the research
+        conflicts:
+          type: array
+          description: Conflicting findings with source/version/time context
+        unknowns:
+          type: array
+          description: Questions that could not be answered
+        artifacts:
+          type: array
+          description: Structured outputs (tables, code snippets, etc.)
+        execution_summary:
+          type: object
+          properties:
+            sources_queried:
+              type: integer
+            claims_made:
+              type: integer
+            conflicts_found:
+              type: integer
+            evidence_verified:
+              type: integer
+            duration_ms:
+              type: integer
+        verification:
+          type: object
+          properties:
+            all_verified:
+              type: boolean
+            exit_code:
+              type: integer
+            check_count:
+              type: integer
+        next_actions:
+          type: array
+          items:
+            type: string
+    bundle_id:
+      type: string
+      description: Evidence bundle ID for the answer
+    run_id:
+      type: string
+      description: Runtime run ID
+
+# ---------------------------------------------------------------- lifecycle
+lifecycle:
+  initial: idle
+  transitions:
+    - from: idle
+      to: planning
+      trigger: question_received
+    - from: planning
+      to: researching
+      trigger: plan_approved
+    - from: planning
+      to: needs_clarification
+      trigger: clarification_needed
+    - from: researching
+      to: synthesizing
+      trigger: research_complete
+    - from: researching
+      to: needs_clarification
+      trigger: missing_sources
+    - from: synthesizing
+      to: verifying
+      trigger: synthesis_complete
+    - from: verifying
+      to: completed
+      trigger: verification_passed
+    - from: verifying
+      to: failed
+      trigger: verification_failed
+    - from: needs_clarification
+      to: planning
+      trigger: clarification_provided

@@ -1,0 +1,75 @@
+# S11 批 2（首集成）：reference MCP / OpenAPI / source——三分钟演示与能力绑定
+# 的本地参照服务（specs/s11 §6）。全部是仓内实现（src/zhiwei/reference/）的
+# 真实 HTTP 服务，CPU-only、fixture 数据；网络面 internal，不做宿主发布。
+services:
+  reference-mcp:
+    image: zhiwei/app:local-product
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "zhiwei.reference.server", "--role", "mcp", "--host", "0.0.0.0", "--port", "9101"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-m", "zhiwei.healthcheck", "http://127.0.0.1:9101/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+
+  reference-openapi:
+    image: zhiwei/app:local-product
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "zhiwei.reference.server", "--role", "openapi", "--host", "0.0.0.0", "--port", "9102"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-m", "zhiwei.healthcheck", "http://127.0.0.1:9102/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }
+
+  reference-source:
+    image: zhiwei/app:local-product
+    build:
+      context: ../../..
+      dockerfile: Dockerfile
+    command: ["python", "-m", "zhiwei.reference.server", "--role", "source", "--host", "0.0.0.0", "--port", "9103"]
+    user: "10001:10001"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      ZHIWEI_PROFILE: local_product
+      ZHIWEI_RELEASE_MODE: fixture_only
+    networks: [internal]
+    healthcheck:
+      test: ["CMD", "python", "-m", "zhiwei.healthcheck", "http://127.0.0.1:9103/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }

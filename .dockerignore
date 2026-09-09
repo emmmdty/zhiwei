@@ -1,0 +1,25 @@
+# 构建上下文只携带运行必需面：源码密钥、冻结资产、文档、部署密钥一律不进镜像
+# （tests/contract/deploy/test_app_image.py 用真实构建产物断言）。
+.git
+.env
+.env.*
+!.env.example
+tests
+evals
+docs
+demo
+apps/web/node_modules
+apps/web/src
+apps/web/e2e
+apps/web/test-results
+apps/web/playwright-report
+apps/web/dist
+deploy/compose/secrets
+deploy/compose/secrets.example
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.venv
+*.md
+!README.md

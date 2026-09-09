@@ -1,0 +1,168 @@
+schema_version: 1
+graph_id: ask-task-graph-v1
+name: Ask Task Graph
+description: >-
+  Task graph for cross-source research. Plans research, retrieves from
+  multiple sources, synthesizes findings, verifies evidence, and produces
+  a structured answer.
+version: 1
+frozen_at: 2026-09-04
+
+# ---------------------------------------------------------------- tasks
+tasks:
+  - id: intake
+    type: Intake
+    description: Parse and validate the user question and scope
+    inputs:
+      question: "{{question}}"
+      desired_artifact: "{{desired_artifact | default('answer')}}"
+      source_scope: "{{source_scope | default({})}}"
+      entity_scope: "{{entity_scope | default([])}}"
+      time_scope: "{{time_scope | default({})}}"
+      risk_level: "{{risk_level | default('medium')}}"
+    outputs:
+      - question_id
+      - parsed_scope
+      - risk_assessment
+
+  - id: plan
+    type: Plan
+    description: >-
+      Generate research plan using only Core primitives. Identifies
+      required sources, retrieval queries, and analysis steps.
+    depends_on: [intake]
+    inputs:
+      question_id: "{{intake.question_id}}"
+      parsed_scope: "{{intake.parsed_scope}}"
+      risk_assessment: "{{intake.risk_assessment}}"
+    outputs:
+      - plan_id
+      - retrieval_steps
+      - analysis_steps
+
+  - id: retrieve_docs
+    type: Retrieve
+    description: Retrieve from document sources (files, wikis, specs)
+    depends_on: [plan]
+    condition: "plan.retrieval_steps contains 'documents'"
+    inputs:
+      query: "{{plan.retrieval_steps}}"
+      source_type: documents
+    outputs:
+      - candidates
+      - query_id
+
+  - id: retrieve_code
+    type: Retrieve
+    description: Retrieve from code and GitHub sources
+    depends_on: [plan]
+    condition: "plan.retrieval_steps contains 'code'"
+    inputs:
+      query: "{{plan.retrieval_steps}}"
+      source_type: code
+    outputs:
+      - candidates
+      - query_id
+
+  - id: retrieve_db
+    type: Retrieve
+    description: Retrieve from database and API sources
+    depends_on: [plan]
+    condition: "plan.retrieval_steps contains 'db'"
+    inputs:
+      query: "{{plan.retrieval_steps}}"
+      source_type: db
+    outputs:
+      - candidates
+      - query_id
+
+  - id: analyze_findings
+    type: Analyze
+    description: >-
+      Synthesize findings from all sources. Identify claims, conflicts,
+      and unknowns. Each finding must carry evidence and status.
+    depends_on: [retrieve_docs, retrieve_code, retrieve_db]
+    inputs:
+      doc_candidates: "{{retrieve_docs.candidates}}"
+      code_candidates: "{{retrieve_code.candidates}}"
+      db_candidates: "{{retrieve_db.candidates}}"
+      plan: "{{plan}}"
+    outputs:
+      - findings
+      - claims
+      - conflicts
+      - unknowns
+
+  - id: verify_evidence
+    type: Verify
+    description: >-
+      Verify all Fact/Quote claims against evidence bundles. Ensures
+      no Fact/Quote claim has only reference_only evidence.
+    depends_on: [analyze_findings]
+    inputs:
+      claims: "{{analyze_findings.claims}}"
+      bundle: "{{analyze_findings.bundle}}"
+    outputs:
+      - verification_result
+      - verified_claims
+      - failed_claims
+
+  - id: synthesize_answer
+    type: Synthesize
+    description: >-
+      Produce structured answer with sections, claims, conflicts,
+      unknowns, artifacts, execution summary, and next actions.
+    depends_on: [verify_evidence]
+    inputs:
+      findings: "{{analyze_findings.findings}}"
+      claims: "{{verify_evidence.verified_claims}}"
+      conflicts: "{{analyze_findings.conflicts}}"
+      unknowns: "{{analyze_findings.unknowns}}"
+      verification: "{{verify_evidence.verification_result}}"
+    outputs:
+      - answer
+      - bundle_id
+
+  - id: emit_answer
+    type: EmitArtifact
+    description: Emit the structured answer artifact
+    depends_on: [synthesize_answer]
+    inputs:
+      answer: "{{synthesize_answer.answer}}"
+      bundle_id: "{{synthesize_answer.bundle_id}}"
+    outputs:
+      - artifact_id
+
+  - id: finish
+    type: Finish
+    description: Complete the run with final status
+    depends_on: [emit_answer]
+    inputs:
+      status: completed
+      artifact_id: "{{emit_answer.artifact_id}}"
+      bundle_id: "{{synthesize_answer.bundle_id}}"
+
+# ---------------------------------------------------------------- edges
+edges:
+  - from: intake
+    to: plan
+  - from: plan
+    to: retrieve_docs
+  - from: plan
+    to: retrieve_code
+  - from: plan
+    to: retrieve_db
+  - from: retrieve_docs
+    to: analyze_findings
+  - from: retrieve_code
+    to: analyze_findings
+  - from: retrieve_db
+    to: analyze_findings
+  - from: analyze_findings
+    to: verify_evidence
+  - from: verify_evidence
+    to: synthesize_answer
+  - from: synthesize_answer
+    to: emit_answer
+  - from: emit_answer
+    to: finish

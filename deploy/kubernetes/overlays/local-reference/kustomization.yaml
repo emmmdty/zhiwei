@@ -1,0 +1,22 @@
+# local-reference overlay：compose local-product 的 K8s 对位（specs/s11 §2）。
+# 参考态服务全部是单副本参考实现——显式非 HA，不承诺任何可用性指标（specs/s11 §8）。
+# 应用镜像用本地构建 tag（production-reference 才要求 registry 限定名）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: zhiwei-local
+resources:
+  - ../../base
+  - reference-services.yaml
+images:
+  - name: zhiwei/app
+    newTag: local-product
+  - name: zhiwei/web
+    newTag: local-product
+patches:
+  - path: patch-endpoints-local.yaml
+    target: {kind: ConfigMap, name: zhiwei-endpoints}
+  - target: {kind: Job, name: zhiwei-migrate}
+    patch: |
+      - op: replace
+        path: /spec/ttlSecondsAfterFinished
+        value: 300

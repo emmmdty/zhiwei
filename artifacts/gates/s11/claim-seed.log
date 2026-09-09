@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "/home/tjk/myProjects/internship-projects/zhiwei/deploy/seed_s9_gate_claims.py", line 339, in <module>
+    raise SystemExit(asyncio.run(seed(parser.parse_args().runs_json)))
+                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/deploy/seed_s9_gate_claims.py", line 220, in seed
+    artifact = await EvalFoundationService(session, context, store).verify_sealed(
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/src/zhiwei/evals/runs.py", line 496, in verify_sealed
+    raise EvalRunNotFound("EvalRun is missing from tenant scope")
+zhiwei.evals.runs.EvalRunNotFound: EvalRun is missing from tenant scope

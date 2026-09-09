@@ -1,0 +1,47 @@
+schema_version: 1
+pack_id: change-brief
+name: Change Brief
+description: >-
+  Third-app pack: turns a GitHub commit/PR trigger into a verified change brief.
+  Retrieves code/GitHub knowledge, analyzes change impact, verifies the brief,
+  and emits an artifact with affected symbols/dependencies/tests, related
+  PRs/issues/checks, risks, unknowns, and CodeRef/GitHubRef evidence. Uses only
+  Core task primitives and public extension points.
+version: 1
+frozen_at: 2026-09-06
+
+# ---------------------------------------------------------------- capabilities
+capabilities:
+  - knowledge.retrieve@1
+  - github.read@1
+
+# ---------------------------------------------------------------- required task primitives
+task_primitives:
+  - Retrieve
+  - Analyze
+  - Verify
+  - Synthesize
+  - EmitArtifact
+  - Finish
+
+# ---------------------------------------------------------------- core dependencies
+core_deps:
+  - reference-knowledge
+
+# ---------------------------------------------------------------- source connectors
+source_connectors:
+  - github
+
+# ---------------------------------------------------------------- risk profile
+risk:
+  default: medium
+  escalation_rules:
+    - condition: "verification_failed == true"
+      risk: high
+    - condition: "unverified_symbol_claims == true"
+      risk: high
+    - condition: "impact_analysis_incomplete == true"
+      risk: medium
+
+# ---------------------------------------------------------------- sealed digest
+content_digest: sha256:0e13c27ab72abdff345ddd557fb4ef98ca3477eb55722add7cbaa37cddbb5ece

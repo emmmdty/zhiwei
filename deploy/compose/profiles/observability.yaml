@@ -1,0 +1,28 @@
+# S11 批 1：OTel backend（collector + metadata-only 管道，S9 先例沿用）。
+# 管道配置复用 deploy/observability/otel-collector-config.yaml（attributes 删正文键，
+# 与 telemetry/redaction.py 同一清单）；默认 file exporter，不向网络导出。
+# binary-only 镜像无容器内探活能力（ADR-012 登记）：--wait 按 running 判定就绪，
+# 补偿控制 = loopback 发布端口 + doctor --strict 宿主侧 TCP 探活。
+services:
+  otel-collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.128.0@sha256:1ab0baba0ee3695d823c46653d8a6e8894896e668ce8bd7ebe002e948d827bc7
+    command: ["--config=/etc/otel/config.yaml"]
+    # 镜像默认 user 10001（非 root 由镜像自身设计承载）；named volume 首挂时继承
+    # 镜像内目录属主，file exporter 可写。read_only rootfs + tmpfs /tmp。
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    volumes:
+      - ../../observability/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+      - zhiwei_local_otel_traces:/var/lib/otel/traces
+    ports:
+      # OTLP 入口只服务本机 SDK（S9 纪律沿袭）
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+
+volumes:
+  zhiwei_local_otel_traces: {}

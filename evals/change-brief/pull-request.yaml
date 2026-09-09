@@ -1,0 +1,62 @@
+# ChangeBrief 冻结语料 · pull-request：PR 触发 → 触发 PR 自身进入 related_prs，
+# github_refs 携带 pr_number（commit_sha 缺席），checks 按 PR ref 关联。
+unit_id: pull-request
+trigger:
+  repository: zhiwei-core
+  commit_or_pr:
+    kind: pull_request
+    ref: "217"
+files_changed:
+  - path: src/zhiwei/knowledge/query.py
+    symbols_before: [KnowledgeQuery]
+    symbols_after: [KnowledgeQuery]
+snapshot:
+  symbols:
+    - name: KnowledgeQuery
+      kind: class
+      file_path: src/zhiwei/knowledge/query.py
+      line_start: 12
+      line_end: 96
+      code_digest: sha256:5555555555555555555555555555555555555555555555555555555555555555
+      callers: [BriefComposer]
+      tests: ["tests/unit/knowledge/test_query.py::test_query_sources"]
+    - name: BriefComposer
+      kind: class
+      file_path: src/zhiwei/knowledge/composer.py
+      line_start: 20
+      line_end: 140
+      code_digest: sha256:6666666666666666666666666666666666666666666666666666666666666666
+      callers: []
+      tests: ["tests/unit/briefs/test_composer.py::test_compose"]
+  dependencies:
+    - name: pydantic
+      version_constraint: ">=2.7.0,<3"
+      consumers: [KnowledgeQuery]
+  prs:
+    - repository: zhiwei-core
+      pr_number: 217
+      touches: [src/zhiwei/knowledge/query.py]
+  issues:
+    - repository: zhiwei-core
+      issue_number: 77
+      mentions: [KnowledgeQuery]
+  checks:
+    - name: ci/pr-gate
+      status: passed
+      on_refs: ["217"]
+expected:
+  affected_symbols: [BriefComposer, KnowledgeQuery]
+  affected_dependencies: [pydantic]
+  affected_tests:
+    - "tests/unit/briefs/test_composer.py::test_compose"
+    - "tests/unit/knowledge/test_query.py::test_query_sources"
+  failed_tests:
+    - "tests/unit/knowledge/test_query.py::test_query_sources"
+  related_prs: [217]
+  related_issues: [77]
+  related_checks: [ci/pr-gate]
+  risks_severities: [medium]
+  unknowns_empty: true
+  min_code_refs: 2
+  min_github_refs: 1
+  no_fabricated_symbols: []

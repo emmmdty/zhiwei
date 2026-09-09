@@ -1,0 +1,20 @@
+# S11 批 2（首集成）：Redis——SSE 增量通道可选加速（settings.py 既有语义）。
+# 可重建缓存：不作为事实源（specs/s11 §4），无持久化。
+services:
+  redis:
+    image: redis:7.2-alpine@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    user: "999:999"
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp", "/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 3s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.25", memory: 256M }

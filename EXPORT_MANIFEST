@@ -1,0 +1,81 @@
+# 公开导出清单（scripts/public-export.sh 消费）。
+# 语法：`include <glob>` 收入导出树；`exclude <glob>` 从已收入集合剔除（后生效）；
+# 行内 # 之后与整行 # 为注释（含理由——每行必须能回答「为什么公开/不公开」）。
+# 原则：产品面公开、过程面本地（operator 裁决 2026-09-08，单仓库 orphan 分支方案）。
+
+# ---- 根面：产品与工程契约 ----
+include README.md              # 产品向入口（产品化重写后）
+include LICENSE                # Apache-2.0 全文
+include AGENTS.md              # 编码代理纪律——强工程信号（行业对照 4/5 头部项目公开）
+include .gitignore             # 仓库可用性
+include .dockerignore          # 镜像构建可用性
+include .env.example           # 配置模板（已核对：key 全空、无真实值）
+include Makefile               # make evals/determinism 入口（评测先行的可复现入口）
+include pyproject.toml         # 依赖与工具链定义
+include uv.lock                # 版本锁定（dev server 版本对齐的唯一入口）
+include alembic.ini            # 迁移配置
+include Dockerfile             # 应用镜像构建
+include EXPORT_MANIFEST        # 本文件——导出可复现性自身公开
+include scripts/public-export.sh  # 导出脚本——发布过程透明、可复现、无手工挑选
+
+# ---- 代码与测试 ----
+include src/zhiwei/**          # 产品本体
+include tests/**               # 测试即契约——最强工程信号
+include migrations/**          # schema 演进史（含 RLS/FORCE RLS 纪律）
+include policies/**            # OPA 策略（compose 起栈必需；fail-closed 可审计）
+include config/**              # provider endpoints 档案库（compose 起栈必需）
+include solution-packs/**      # 产品资产（evals 执行器直接引用）
+include scripts/**             # 工具脚本（capture-screens 等产品化产物）
+
+# ---- 评测资产（THIRD_PARTY_DATA 复核：novels 改编文本自创+公版名录、risk 合成）----
+include evals/**               # 评测先行纪律的资产面（CHECKSUMS 冻结不改动）
+include artifacts/gates/**     # Gate 证据 = 可信度核心（seal verbatim）
+include demo/**                # 演示旅程（脚本 + manifest）
+
+# ---- 部署面 ----
+include deploy/**              # compose/K8s 参考态 + init 脚本（口令为本地占位默认）
+include .github/workflows/**   # CI（已核对：无内部引用；触发分支=远端 main）
+
+# ---- 文档面：产品契约与决策（公开）----
+include docs/API.md            # API 契约
+include docs/ARCHITECTURE.md   # 系统架构
+include docs/DATA_MODEL.md     # 数据模型
+include docs/DECISIONS.md      # ADR-001~015（机制级决策——强工程信号）
+include docs/MODELS.md         # 模型与 Canonical Context
+include docs/PERMISSIONS.md    # 身份/权限/安全
+include docs/PRODUCT.md        # 产品章程
+include docs/CONVENTIONS.md    # 代码约定
+include docs/THIRD_PARTY_DATA.md  # 第三方数据/许可清单（发布复核留痕）
+include docs/adr/**            # ADR 伴随材料
+include docs/operations/**     # 运维手册（install/security/capacity 等）
+
+# ---- 视觉资产（Phase 2 产出：架构图 + 截图）----
+include assets/**              # 架构图 + 认证态截图（README 引用）
+
+# ---- 前端（产品面）----
+include apps/web/**            # Studio/Workbench 前端
+exclude apps/web/node_modules/**  # 依赖树不可入仓
+exclude apps/web/dist/**          # 构建产物不可入仓
+exclude apps/web/test-results/**  # e2e 运行产物不可入仓
+exclude apps/web/playwright-report/**  # e2e 报告不可入仓
+
+# ---- 过程面（本地保留，不公开）----
+exclude docs/handoffs/**           # 内部交接纪律——公开版以 artifacts/gates 为权威证据
+exclude docs/review/**             # 评审 findings/REMEDIATION/OPERATOR_DECISIONS——内部批评过程
+exclude data/**                    # 本地运行时数据（eval 对象存储 seal 字节）——本地面，不入公开树
+exclude docs/superpowers/**        # 内部计划（总设计/任务计划）
+exclude docs/DEV_ALLOCATION.md     # 档位分工（过程）
+exclude docs/PORTFOLIO_NARRATIVE.md  # 求职叙事（本地）
+exclude docs/ROADMAP.md            # 内部阶段规划 S0-S11（过程）
+exclude docs/BENCHMARK.md          # 历史实验口径（README claims 块已承担对外数字）
+exclude docs/EXPERIMENTS.md        # 实验台账（过程）
+exclude docs/RISK_EVAL.md          # 历史风险评测口径（过程）
+exclude docs/FINAL_AUDIT_REPORT.md    # 内部审计（过程）
+exclude docs/PHASE1_AUDIT_REPORT.md   # 内部审计（过程）
+exclude docs/IMPLEMENTATION_FEASIBILITY_AUDIT_1.2C.md  # 内部审计（过程）
+exclude CLAUDE.md                  # 工具专属过程文件（AGENTS.md 已承载公开信号）
+exclude findings.md                # 过程文件
+exclude progress.md                # 过程文件
+exclude task_plan.md               # 过程文件
+exclude spikes/**                  # 探索性 spike（过程）
+exclude EXPORT_MANIFEST.bak        # 编辑器残留

@@ -1,0 +1,20 @@
+# S11-T2 base：stateless 应用面 + 策略（specs/s11 §3）。
+# 默认即 production-reference 形态：外部托管依赖（ConfigMap endpoint + Secret 引用），
+# 本目录不含任何 StatefulSet/PVC——不自建数据库/IdP/KMS operator。
+# 镜像引用带 digest 占位由 overlay 决定；base 的 securityContext/resources/probes 是
+# 冻结策略面（tests/contract/deploy/test_kubernetes_reference.py 校验）。
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - configmap-endpoints.yaml
+  - api-deployment.yaml
+  - api-service.yaml
+  - agent-worker-deployment.yaml
+  - outbox-dispatcher-deployment.yaml
+  - capability-runner-deployment.yaml
+  - web-deployment.yaml
+  - web-service.yaml
+  - migrate-job.yaml
+  - network-policy.yaml
+  - pdb.yaml

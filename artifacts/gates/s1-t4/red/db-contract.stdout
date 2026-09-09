@@ -1,0 +1,408 @@
+FFFFFFFFF                                                                [100%]
+=================================== FAILURES ===================================
+_ test_db_claim_cas_allows_exactly_one_commit_for_concurrent_different_targets _
+
+migrated_database = None
+
+    @pytest.mark.asyncio
+    async def test_db_claim_cas_allows_exactly_one_commit_for_concurrent_different_targets(
+        migrated_database: None,
+    ) -> None:
+        """两个独立 transaction 同时为同一 principal 创建不同 target：claim/CAS 只允许一个提交。
+    
+        不依赖 sleep/测试速度制造竞态：txn1 先持有 principal 级 transaction-level advisory
+        lock 并写入 claim（true）；txn2 的并发调用被同一锁串行化——无论其调用落在 txn1 提交
+        之前（阻塞）还是之后（读到已提交 claim），都必须返回 false。org_b 随 txn2 回滚，
+        终态只有 org_a 一条 claim/一个 committed org。
+        """
+        principal_id = uuid4()
+        org_a = uuid4()
+        org_b = uuid4()
+        await _seed_principal(principal_id)
+        conn1 = await asyncpg.connect(APP_DSN)
+        conn2 = await asyncpg.connect(APP_DSN)
+        try:
+            t1 = conn1.transaction()
+            await t1.start()
+            t2 = conn2.transaction()
+            await t2.start()
+            for conn, org_id in ((conn1, org_a), (conn2, org_b)):
+                await conn.execute(
+                    "SELECT set_config('zhiwei.organization_id', $1, true)", str(org_id)
+                )
+                await conn.execute("SELECT set_config('zhiwei.workspace_id', '', true)")
+                await conn.execute(
+                    "INSERT INTO organizations (id, status, schema_version) VALUES ($1, 'active', 1)",
+                    org_id,
+                )
+>           first = await _claim_via_app(conn1, principal_id, org_a)
+                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:165: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+tests/integration/policy/test_bootstrap_claim_db_contract.py:125: in _claim_via_app
+    await conn.fetchval(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedFunctionError: function public.zhiwei_claim_organization_bootstrap(unknown, unknown) does not exist
+E   HINT:  No function matches the given name and argument types. You might need to add explicit type casts.
+
+asyncpg/protocol/protocol.pyx:165: UndefinedFunctionError
+---------------------------- Captured stderr setup -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0007_audit_metadata_nonempty -> 0006_audit_contract, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+INFO  [alembic.runtime.migration] Running downgrade 0006_audit_contract -> 0005_audit_structured, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running downgrade 0005_audit_structured -> 0004_refresh_fencing, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running downgrade 0004_refresh_fencing -> 0003_auth_sessions, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running downgrade 0003_auth_sessions -> 0002_identity, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running downgrade 0002_identity -> 0001_foundation, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running downgrade 0001_foundation -> , Create the S0 PostgreSQL foundation.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_foundation, Create the S0 PostgreSQL foundation.
+INFO  [alembic.runtime.migration] Running upgrade 0001_foundation -> 0002_identity, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running upgrade 0002_identity -> 0003_auth_sessions, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running upgrade 0003_auth_sessions -> 0004_refresh_fencing, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running upgrade 0004_refresh_fencing -> 0005_audit_structured, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running upgrade 0005_audit_structured -> 0006_audit_contract, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running upgrade 0006_audit_contract -> 0007_audit_metadata_nonempty, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+_________ test_db_claim_same_target_replay_true_and_row_never_updated __________
+
+migrated_database = None
+
+    @pytest.mark.asyncio
+    async def test_db_claim_same_target_replay_true_and_row_never_updated(
+        migrated_database: None,
+    ) -> None:
+        """claim 已存在且 target 相同 → true；既有 claim 永不更新/迁移到其他 target。"""
+        principal_id = uuid4()
+        org_a = uuid4()
+        org_b = uuid4()
+        await _seed_principal(principal_id)
+        await _seed_org(org_a)
+        await _seed_org(org_b)
+    
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+>           await connection.execute(
+                f"INSERT INTO {CLAIM_TABLE} "
+                "(principal_id, organization_id, schema_version) VALUES ($1, $2, 1)",
+                principal_id,
+                org_a,
+            )
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:214: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:357: in execute
+    _, status, _ = await self._execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+_____________ test_claim_table_direct_access_denied_for_all_roles ______________
+
+migrated_database = None
+
+    @pytest.mark.asyncio
+    async def test_claim_table_direct_access_denied_for_all_roles(
+        migrated_database: None,
+    ) -> None:
+        """zhiwei_app / zhiwei_identity / PUBLIC 均不能直接 SELECT/INSERT/UPDATE/DELETE claim 表。
+    
+        表不属于 tenant 数据面（无 RLS、owner=zhiwei_migrator），只允许经 SECURITY DEFINER
+        窄函数访问；不给任何角色直接表权限。
+        """
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            for role in ("zhiwei_app", "zhiwei_identity", "public"):
+                for privilege in ("SELECT", "INSERT", "UPDATE", "DELETE"):
+>                   granted = await connection.fetchval(
+                        "SELECT has_table_privilege($1, $2, $3)", role, CLAIM_TABLE, privilege
+                    )
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:259: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:205: UndefinedTableError
+____________ test_claim_function_execution_restricted_to_zhiwei_app ____________
+
+migrated_database = None
+
+    @pytest.mark.asyncio
+    async def test_claim_function_execution_restricted_to_zhiwei_app(
+        migrated_database: None,
+    ) -> None:
+        """只有 zhiwei_app 可执行窄函数；PUBLIC / zhiwei_identity 一律拒绝执行。"""
+        principal_id = uuid4()
+        org_id = uuid4()
+        await _seed_principal(principal_id)
+        await _seed_org(org_id)
+    
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            for role, expected in (
+                ("zhiwei_app", True),
+                ("zhiwei_identity", False),
+                ("public", False),
+            ):
+>               granted = await connection.fetchval(
+                    "SELECT has_function_privilege($1, $2, 'EXECUTE')",
+                    role,
+                    CLAIM_FUNCTION_SIGNATURE,
+                )
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:321: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:718: in fetchval
+    data = await self._execute(query, args, 1, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2033: in _do_execute
+    result = await executor(stmt, None)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedFunctionError: function "zhiwei_claim_organization_bootstrap(uuid, uuid)" does not exist
+
+asyncpg/protocol/protocol.pyx:205: UndefinedFunctionError
+_____________________ test_claim_function_catalog_contract _____________________
+
+migrated_database = None
+
+    @pytest.mark.asyncio
+    async def test_claim_function_catalog_contract(
+        migrated_database: None,
+    ) -> None:
+        """窄函数 catalog 契约：owner=migrator、SECURITY DEFINER、search_path=pg_catalog,public、
+        无动态 SQL（prosrc 不含 EXECUTE）、返回 boolean、两个 uuid 参数。"""
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+            row = await connection.fetchrow(
+                "SELECT p.prosecdef, p.prokind, p.proconfig, p.prosrc, p.pronargs, "
+                "pg_get_userbyid(p.proowner) AS owner, pg_get_function_result(p.oid) AS result_type "
+                "FROM pg_catalog.pg_proc AS p "
+                "JOIN pg_catalog.pg_namespace AS n ON n.oid = p.pronamespace "
+                "WHERE n.nspname = 'public' AND p.proname = $1",
+                CLAIM_FUNCTION,
+            )
+>           assert row is not None, "窄函数必须存在"
+E           AssertionError: 窄函数必须存在
+E           assert None is not None
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:371: AssertionError
+_______ test_backfill_creates_claims_from_historical_idempotency_records _______
+
+migrated_database = None
+
+    def test_backfill_creates_claims_from_historical_idempotency_records(
+        migrated_database: None,
+    ) -> None:
+        """0007 → head：历史 `organization.create:<principal>` 幂等记录 backfill 为 claim。"""
+        config = _alembic_config()
+        command.downgrade(config, "0007_audit_metadata_nonempty")
+        principal_id = uuid4()
+        org_id = uuid4()
+        asyncio.run(_seed_principal(principal_id))
+        asyncio.run(_seed_org(org_id))
+        asyncio.run(_seed_bootstrap_idempotency(principal_id, org_id))
+        command.upgrade(config, "head")
+    
+>       asyncio.run(_verify_backfill(principal_id, org_id))
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:445: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py:190: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+tests/integration/policy/test_bootstrap_claim_db_contract.py:452: in _verify_backfill
+    row = await connection.fetchrow(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:752: in fetchrow
+    data = await self._execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1873: in _execute
+    result, _ = await self.__execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:1970: in __execute
+    result, stmt = await self._do_execute(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:2013: in _do_execute
+    stmt = await self._get_statement(
+.venv/lib/python3.11/site-packages/asyncpg/connection.py:443: in _get_statement
+    statement = await self._protocol.prepare(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+>   ???
+E   asyncpg.exceptions.UndefinedTableError: relation "organization_bootstrap_claims" does not exist
+
+asyncpg/protocol/protocol.pyx:165: UndefinedTableError
+----------------------------- Captured stderr call -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+______________ test_backfill_fails_closed_on_ambiguous_principal _______________
+
+migrated_database = None
+
+    def test_backfill_fails_closed_on_ambiguous_principal(
+        migrated_database: None,
+    ) -> None:
+        """同一 principal 已有多个不同 bootstrap targets → migration fail closed，绝不静默选第一个。"""
+        config = _alembic_config()
+        command.downgrade(config, "0007_audit_metadata_nonempty")
+        principal_id = uuid4()
+        org_x = uuid4()
+        org_y = uuid4()
+        asyncio.run(_seed_principal(principal_id))
+        asyncio.run(_seed_org(org_x))
+        asyncio.run(_seed_org(org_y))
+        asyncio.run(_seed_bootstrap_idempotency(principal_id, org_x))
+        asyncio.run(_seed_bootstrap_idempotency(principal_id, org_y))
+    
+>       with pytest.raises(RuntimeError, match="ambiguous bootstrap history"):
+E       Failed: DID NOT RAISE RuntimeError
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:481: Failed
+----------------------------- Captured stderr call -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+________________ test_backfill_fails_closed_on_malformed_scope _________________
+
+migrated_database = None
+
+    def test_backfill_fails_closed_on_malformed_scope(
+        migrated_database: None,
+    ) -> None:
+        """0007 预置不可解析的 `organization.create:<suffix>` → upgrade 必须 fail closed。
+    
+        四轮 RED 机制修订新增：scope 后缀不是合法 UUID 的历史记录与「多 target 歧义」
+        同属不可自动裁决的历史——migration 必须明确 RuntimeError（unparseable owner
+        principal），禁止静默跳过或猜测。RED（无 0008）：upgrade head 是空操作不抛错，
+        本用例以 DID NOT RAISE 失败；GREEN（0008）：backfill 检测到 malformed scope →
+        RuntimeError，transactional DDL 整体回滚。artifact 只有在本用例实际运行后才能
+        写「已实验验证」。
+        """
+        config = _alembic_config()
+        command.downgrade(config, "0007_audit_metadata_nonempty")
+        org_id = uuid4()
+        asyncio.run(_seed_org(org_id))
+        asyncio.run(
+            _seed_bootstrap_idempotency(
+                uuid4(), org_id, scope=f"{BOOTSTRAP_SCOPE_PREFIX}not-a-uuid"
+            )
+        )
+    
+>       with pytest.raises(RuntimeError, match="unparseable owner principal"):
+E       Failed: DID NOT RAISE RuntimeError
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:515: Failed
+----------------------------- Captured stderr call -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+_ test_downgrade_head_to_0007_drops_claims_table_and_function_upgrade_restores _
+
+migrated_database = None
+
+    def test_downgrade_head_to_0007_drops_claims_table_and_function_upgrade_restores(
+        migrated_database: None,
+    ) -> None:
+        """head → 0007 → head 可逆：downgrade 全撤 claim 表与窄函数，upgrade 全部重建。"""
+        config = _alembic_config()
+        command.downgrade(config, "0007_audit_metadata_nonempty")
+    
+        asyncio.run(_assert_schema_missing(CLAIM_TABLE, CLAIM_FUNCTION))
+    
+        command.upgrade(config, "head")
+    
+>       asyncio.run(_assert_schema_present(CLAIM_TABLE, CLAIM_FUNCTION))
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:538: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py:190: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+../../../.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py:654: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+table = 'organization_bootstrap_claims'
+function = 'zhiwei_claim_organization_bootstrap'
+
+    async def _assert_schema_present(table: str, function: str) -> None:
+        connection = await asyncpg.connect(ADMIN_DSN)
+        try:
+>           assert await connection.fetchval(
+                "SELECT count(*) FROM pg_class WHERE relname = $1", table
+            ) == 1
+E           assert 0 == 1
+
+tests/integration/policy/test_bootstrap_claim_db_contract.py:557: AssertionError
+----------------------------- Captured stderr call -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+=========================== short test summary info ============================
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_db_claim_cas_allows_exactly_one_commit_for_concurrent_different_targets
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_db_claim_same_target_replay_true_and_row_never_updated
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_claim_table_direct_access_denied_for_all_roles
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_claim_function_execution_restricted_to_zhiwei_app
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_claim_function_catalog_contract
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_backfill_creates_claims_from_historical_idempotency_records
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_backfill_fails_closed_on_ambiguous_principal
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_backfill_fails_closed_on_malformed_scope
+FAILED tests/integration/policy/test_bootstrap_claim_db_contract.py::test_downgrade_head_to_0007_drops_claims_table_and_function_upgrade_restores
+9 failed in 1.78s
+EXIT=1

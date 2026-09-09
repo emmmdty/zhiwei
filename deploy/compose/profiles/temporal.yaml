@@ -1,0 +1,74 @@
+# S11 批 2（首集成）→ E-R1 方案 b 精确对齐（2026-09-08 operator 确认）：
+# temporal 服务端 = temporalio/server:1.31.2，schema setup = temporalio/admin-tools:1.31.2
+# （同版本 sql-tool + schema 文件，digest pin）。对齐目标 = dev server：SDK temporalio
+# 1.32.0（uv.lock 锁定）默认 dev server 实证为 Server 1.31.2
+# （GetSystemInfo.server_version）；版本变更的唯一入口是 uv.lock 中 temporalio 版本。
+# auto-setup 无 1.31.2 tag（Hub 实测最高 1.29.7），server 镜像无 schema 工具与
+# config 模板渲染——setup 拆为一次性服务，config 为静态模板由一次性服务渲染到
+# 共享卷 /etc/temporal/config（server 默认发现路径：WORKDIR=/etc/temporal + env
+# development；server 1.31 的 --root/TEMPORAL_ROOT 全局 flag 已废弃且不被内部
+# 加载器消费，实测 env-only 回退，因此不依赖 root/env 指路）。
+# DB（zhiwei_local_temporal / temporal_visibility）与 zhiwei_temporal 角色仍由
+# profiles/data.yaml 的 init 脚本在空卷首启时预建（角色无 CREATEDB）。
+services:
+  temporal-schema-setup:
+    image: temporalio/admin-tools:1.31.2@sha256:dbc5fcd6ee8f0f4d808bf765af9a87dea9d8a283abfdcfbd2fc148496ba66107
+    # 一次性 root：渲染产物写入由 server 镜像路径初始化的卷（docker 对镜像中不存在的
+    # 挂载路径以 root 属主建卷根，temporal 用户不可写）；server 侧只读不受影响。
+    user: "0"
+    environment:
+      ZHIWEI_PG_PASSWORD: "${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}"
+    # 与 auto-setup 的 setup 序列等价：setup-schema -v 0.0 在已初始化库上为 no-op
+    # （auto-setup 每次启动无条件执行，幂等性同源），update-schema 以 versioned
+    # 目录把既有 schema 升级到本版本。
+    command:
+      - sh
+      - -c
+      - |
+        set -eu
+        SQL="temporal-sql-tool --plugin postgres12 --ep postgres -p 5432 -u zhiwei_temporal --pw $$ZHIWEI_PG_PASSWORD"
+        $$SQL --db zhiwei_local_temporal setup-schema -v 0.0
+        $$SQL --db zhiwei_local_temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+        $$SQL --db temporal_visibility setup-schema -v 0.0
+        $$SQL --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+        mkdir -p /out
+        sed "s/__ZHIWEI_PG_PASSWORD__/$$ZHIWEI_PG_PASSWORD/" \
+          /mnt/cfg/development.yaml.template > /out/development.yaml
+        cp /mnt/cfg/dynamicconfig.yaml /out/dynamicconfig.yaml
+    volumes:
+      - ../configs/temporal:/mnt/cfg:ro
+      - temporal_server_config:/out
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+  temporal:
+    image: temporalio/server:1.31.2@sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da
+    depends_on:
+      postgres: { condition: service_healthy }
+      temporal-schema-setup: { condition: service_completed_successfully }
+    volumes:
+      - temporal_server_config:/etc/temporal/config
+    # 镜像默认 entrypoint 是裸 `temporal-server start`——start 子命令不继承全局
+    # env 默认值（实测回退 env-only 配置，Cassandra 零值报错），显式 --env 指向
+    # 共享卷中的 development.yaml。
+    command: ["temporal-server", "--env", "development", "start"]
+    healthcheck:
+      # server 镜像是 busybox（无 bash 与 /dev/tcp；其 nc 对 refused 也返回 0，不可用），
+      # 以 7233 LISTEN 态为健康锚点（bind 成功即四服务同进程就绪的前提）。
+      test: ["CMD-SHELL", "netstat -tln | grep -q ':7233'"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+volumes:
+  temporal_server_config: {}

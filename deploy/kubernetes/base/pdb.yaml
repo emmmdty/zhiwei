@@ -1,0 +1,51 @@
+# stateless 工作负载 PDB（specs/s11 §3）：滚动/驱逐时至少保留一个副本。
+# 注意：PDB 存在不等于 HA 承诺（specs/s11 §8——没有跨节点 HA 证据不写 HA）。
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+  namespace: zhiwei
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: api}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agent-worker
+  namespace: zhiwei
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: agent-worker}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: outbox-dispatcher
+  namespace: zhiwei
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: outbox-dispatcher}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: capability-runner
+  namespace: zhiwei
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: capability-runner}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web
+  namespace: zhiwei
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: web}

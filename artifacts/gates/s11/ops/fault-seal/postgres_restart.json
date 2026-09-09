@@ -1,0 +1,43 @@
+{
+  "seal_version": 1,
+  "scenario_id": "postgres_restart",
+  "dependency": "postgres",
+  "fault_class": "restart",
+  "terminal": "recover",
+  "backend": "compose",
+  "passed": true,
+  "failure_reason": null,
+  "raw_events": [
+    {
+      "service": "postgres",
+      "action": "stop+up --wait"
+    }
+  ],
+  "recovery_time_ms": 6692,
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "sealed_at": "2026-09-08T02:02:08.364366+00:00"
+  },
+  "image_digests": {
+    "image_0": "zhiwei/app:local-product",
+    "image_1": "dxflrs/garage:v1.1.0@sha256:fdb8272fcbe643eef830ee17874d5d4ed623a86501f1acbac8012583113b1c26",
+    "image_2": "zhiwei/app:local-product",
+    "image_3": "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.128.0@sha256:1ab0baba0ee3695d823c46653d8a6e8894896e668ce8bd7ebe002e948d827bc7",
+    "image_4": "opensearchproject/opensearch:2.19.2@sha256:69588c664014fa3d3260ed5dd337f8538fec94790dad00bfbe92301eaaaac240",
+    "image_5": "zhiwei/app:local-product",
+    "image_6": "zhiwei/app:local-product",
+    "image_7": "zhiwei/web:local-product",
+    "image_8": "openpolicyagent/opa:1.19.0-debug@sha256:ec3c7a29a21ce96d71231cb4befa2561205fe84e5a2dc3cc46ac7bc8bd21b3a4",
+    "image_9": "zhiwei/app:local-product",
+    "image_10": "postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94",
+    "image_11": "nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+    "image_12": "zhiwei/app:local-product",
+    "image_13": "quay.io/keycloak/keycloak:26.1@sha256:be6a86215213145bfb4fb3e2b3ab982a806d00262655abdcf3ffa6a38d241c7c",
+    "image_14": "temporalio/auto-setup:1.28.1@sha256:607d68caa111338d754771efb876c92dfcdae06d056e4530bb31cd0f37406e6a",
+    "image_15": "zhiwei/app:local-product",
+    "image_16": "zhiwei/app:local-product",
+    "image_17": "redis:7.2-alpine@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8"
+  },
+  "seal_digest": "f56a5313a46df7d49148111a225009af1c47688713f3919845a23bac0a5b3e2b"
+}

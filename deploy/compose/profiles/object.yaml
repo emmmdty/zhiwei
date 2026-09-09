@@ -1,0 +1,23 @@
+# S11 批 2（首集成）：Garage——S3 兼容对象存储参考实现（spec §2 组件）。
+# local-product 应用面走 POSIX object store（object_store/posix.py 既有实现）；
+# Garage 承载 S3 兼容参考面（backup 出口与 production reference 的 S3 对位），
+# 管理面 loopback 发布供 ops CLI/演示使用。
+# binary-only 镜像无容器内探活能力（ADR-012 登记）：--wait 按 running 判定就绪，
+# 补偿控制 = loopback 发布端口 + doctor --strict 宿主侧 TCP 探活。
+services:
+  garage:
+    image: dxflrs/garage:v1.1.0@sha256:fdb8272fcbe643eef830ee17874d5d4ed623a86501f1acbac8012583113b1c26
+    volumes:
+      - ../configs/garage/garage.toml:/etc/garage.toml:ro
+      - zhiwei_local_garage:/var/lib/garage
+    ports:
+      # S3 API + admin RPC 仅 loopback
+      - "127.0.0.1:3910:3900"
+      - "127.0.0.1:3911:3901"
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 512M }
+
+volumes:
+  zhiwei_local_garage: {}

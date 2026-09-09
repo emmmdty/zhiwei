@@ -1,0 +1,8 @@
+skill_id: impact-analysis
+description: >-
+  Impact analysis over retrieved code knowledge: derives affected
+  symbols/dependencies/tests from the retrieved candidates. Declared entry
+  module runtime/impact_analysis.py exposes analyze_impact(repository,
+  commit_or_pr, candidates); the runtime implementation lands in S10-T6 via
+  public extension points.
+entry: runtime/impact_analysis.py

@@ -1,0 +1,2 @@
+# 空 dynamicconfig：与 auto-setup 生成的 dynamicconfig/docker.yaml 等价（ES 未启用，
+# 无动态覆盖项）。保留文件使 server 的 dynamicConfigClient 有可加载的路径。

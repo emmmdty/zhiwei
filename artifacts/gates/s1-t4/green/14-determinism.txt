@@ -1,0 +1,4 @@
+=== make determinism ===
+[determinism] ✓ 两次干净重建产物逐字节一致
+[checksums] 21 个产物 → evals/CHECKSUMS.sha256
+exit=0

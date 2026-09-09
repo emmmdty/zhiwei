@@ -1,0 +1,28 @@
+# S11 批 1（有真实栈先例）：PostgreSQL——业务/identity/Temporal 三个 database 共置一个
+# 实例（local-product 形态）；production reference 由 K8s overlay 指向外部托管 PG。
+# Temporal 独立 database（zhiwei_local_temporal / temporal_visibility）——spec §3 分离
+# 要求以「不同 database/account」承载；init SQL 同步创建 dispatcher bypass 角色
+# （outbox RLS 租户对发现专用，见 src/zhiwei/workers/main.py 模块说明）。
+services:
+  postgres:
+    image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+    environment:
+      POSTGRES_PASSWORD: "${ZHIWEI_PG_PASSWORD:-zhiwei-dev-pg-only}"
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - ../configs/postgres/init-local-product.sh:/docker-entrypoint-initdb.d/00-init.sh:ro
+      - zhiwei_local_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d zhiwei"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+volumes:
+  zhiwei_local_postgres: {}

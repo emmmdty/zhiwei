@@ -1,0 +1,4 @@
+=== DB contract (GREEN) ===
+.........                                                                [100%]
+9 passed in 2.77s
+exit=0

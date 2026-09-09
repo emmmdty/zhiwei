@@ -1,0 +1,191 @@
+{
+  "bundle_id": "55756db6-a3f0-5cba-971f-175b2cc905e6",
+  "answer_id": "5421497d-c540-58d5-b3d8-0799a21d58bf",
+  "evidence_refs": [
+    {
+      "ref_id": "95805c45-43cc-515f-a2d4-ff682155993e",
+      "ref_type": "QueryReplay",
+      "reproducibility_level": "replayable",
+      "source_id": "ac4c2367-a367-53e6-99bf-f8810524922a",
+      "snapshot_digest": "sha256:61ab73f577ea146f1e23622a23fafb8e59b26dc47bfa0a0104c3eed6188caf47",
+      "classification": "PUBLIC",
+      "created_at": "2026-09-04T00:00:00Z",
+      "sql": "SELECT name FROM liangshan WHERE rank = ?",
+      "params": {
+        "positional": [
+          7
+        ]
+      }
+    },
+    {
+      "ref_id": "6aa948e6-8872-5fb2-ac47-23fa6dd4790f",
+      "ref_type": "CellRef",
+      "reproducibility_level": "copy_frozen",
+      "source_id": "ac4c2367-a367-53e6-99bf-f8810524922a",
+      "snapshot_digest": null,
+      "classification": "PUBLIC",
+      "created_at": "2026-09-04T00:00:00Z",
+      "table": "liangshan",
+      "column": "merit_count",
+      "row_locator": {
+        "rank": 7
+      },
+      "copy_frozen": {
+        "sql": "SELECT merit_count FROM liangshan WHERE rank = ?",
+        "typed_params": {
+          "rank": 7
+        },
+        "schema_snapshot_digest": "sha256:61ab73f577ea146f1e23622a23fafb8e59b26dc47bfa0a0104c3eed6188caf47",
+        "executed_at": "2026-09-04T00:00:00Z",
+        "result_copy_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+        "row_count": 1
+      }
+    },
+    {
+      "ref_id": "40812615-f203-53d3-b997-af034660468c",
+      "ref_type": "DocRef",
+      "reproducibility_level": "reference_only",
+      "source_id": "a99e712b-b360-5d38-ab77-072a887b10ce",
+      "snapshot_digest": null,
+      "classification": "PUBLIC",
+      "created_at": "2026-09-04T00:00:00Z",
+      "document_uri": "docs/zhaoan.md",
+      "section_path": "武松",
+      "content_hash": null,
+      "copy_frozen": null
+    }
+  ],
+  "claims": [
+    {
+      "claim_id": "9fba4361-bcce-5ecf-9711-df049cf2714d",
+      "claim_type": "Fact",
+      "status": "final",
+      "answer_id": "5421497d-c540-58d5-b3d8-0799a21d58bf",
+      "evidence_refs": [
+        {
+          "ref_id": "95805c45-43cc-515f-a2d4-ff682155993e",
+          "ref_type": "QueryReplay",
+          "reproducibility_level": "replayable",
+          "source_id": "ac4c2367-a367-53e6-99bf-f8810524922a",
+          "snapshot_digest": "sha256:61ab73f577ea146f1e23622a23fafb8e59b26dc47bfa0a0104c3eed6188caf47",
+          "classification": "PUBLIC",
+          "created_at": "2026-09-04T00:00:00Z",
+          "sql": "SELECT name FROM liangshan WHERE rank = ?",
+          "params": {
+            "positional": [
+              7
+            ]
+          }
+        },
+        {
+          "ref_id": "6aa948e6-8872-5fb2-ac47-23fa6dd4790f",
+          "ref_type": "CellRef",
+          "reproducibility_level": "copy_frozen",
+          "source_id": "ac4c2367-a367-53e6-99bf-f8810524922a",
+          "snapshot_digest": null,
+          "classification": "PUBLIC",
+          "created_at": "2026-09-04T00:00:00Z",
+          "table": "liangshan",
+          "column": "merit_count",
+          "row_locator": {
+            "rank": 7
+          },
+          "copy_frozen": {
+            "sql": "SELECT merit_count FROM liangshan WHERE rank = ?",
+            "typed_params": {
+              "rank": 7
+            },
+            "schema_snapshot_digest": "sha256:61ab73f577ea146f1e23622a23fafb8e59b26dc47bfa0a0104c3eed6188caf47",
+            "executed_at": "2026-09-04T00:00:00Z",
+            "result_copy_digest": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "row_count": 1
+          }
+        }
+      ],
+      "created_at": "2026-09-04T00:00:00Z",
+      "updated_at": "2026-09-04T00:00:00Z",
+      "schema_version": 1,
+      "answer_digest": "sha256:cbb125be9cb8690a93590ab22b8e78d7878ae06d1fab785786ef3d230b17bcc0",
+      "code_span": null,
+      "code_digest": null,
+      "canonical_value": {
+        "type": "int",
+        "value": 45
+      }
+    },
+    {
+      "claim_id": "6369630c-1e6f-59e3-b932-42f542487694",
+      "claim_type": "Quote",
+      "status": "final",
+      "answer_id": "5421497d-c540-58d5-b3d8-0799a21d58bf",
+      "evidence_refs": [
+        {
+          "ref_id": "95805c45-43cc-515f-a2d4-ff682155993e",
+          "ref_type": "QueryReplay",
+          "reproducibility_level": "replayable",
+          "source_id": "ac4c2367-a367-53e6-99bf-f8810524922a",
+          "snapshot_digest": "sha256:61ab73f577ea146f1e23622a23fafb8e59b26dc47bfa0a0104c3eed6188caf47",
+          "classification": "PUBLIC",
+          "created_at": "2026-09-04T00:00:00Z",
+          "sql": "SELECT name FROM liangshan WHERE rank = ?",
+          "params": {
+            "positional": [
+              7
+            ]
+          }
+        }
+      ],
+      "created_at": "2026-09-04T00:00:00Z",
+      "updated_at": "2026-09-04T00:00:00Z",
+      "schema_version": 1,
+      "answer_digest": "sha256:cbb125be9cb8690a93590ab22b8e78d7878ae06d1fab785786ef3d230b17bcc0",
+      "code_span": {
+        "file_path": "docs/zhaoan.md",
+        "line_start": 3,
+        "line_end": 3,
+        "column_start": null,
+        "column_end": null
+      },
+      "code_digest": null,
+      "canonical_value": {
+        "type": "text",
+        "value": "霹雳火"
+      },
+      "quote_text": "天罡星霹雳火秦明"
+    },
+    {
+      "claim_id": "752b97f0-3525-5fe6-bee6-ad51fd23ce72",
+      "claim_type": "Inference",
+      "status": "draft",
+      "answer_id": "5421497d-c540-58d5-b3d8-0799a21d58bf",
+      "evidence_refs": [],
+      "created_at": "2026-09-04T00:00:00Z",
+      "updated_at": "2026-09-04T00:00:00Z",
+      "schema_version": 1,
+      "supporting_inputs": [
+        {
+          "ref_id": "40812615-f203-53d3-b997-af034660468c",
+          "ref_type": "DocRef",
+          "reproducibility_level": "reference_only",
+          "source_id": "a99e712b-b360-5d38-ab77-072a887b10ce",
+          "snapshot_digest": null,
+          "classification": "PUBLIC",
+          "created_at": "2026-09-04T00:00:00Z",
+          "document_uri": "docs/zhaoan.md",
+          "section_path": "武松",
+          "content_hash": null,
+          "copy_frozen": null
+        }
+      ],
+      "contradicting_inputs": []
+    }
+  ],
+  "created_at": "2026-09-04T00:00:00Z",
+  "schema_version": 1,
+  "metadata": {
+    "producer": "zhiwei-s6-fixture",
+    "result_copy_digests": {
+      "6aa948e6-8872-5fb2-ac47-23fa6dd4790f": "sha256:3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f"
+    }
+  }
+}

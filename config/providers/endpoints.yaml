@@ -1,0 +1,208 @@
+schema_version: 1
+
+# 本文件是**已审查 endpoint 的档案库**，不是允许清单。见 docs/DECISIONS.md ADR-011。
+#
+# 不在本文件中 ≠ 不能用，而是 = 属性未知。企业自部署的内部 LLM（vLLM/TGI/Ollama 等）由运维在
+# 部署期通过 OPENAI_BASE_URL 直接接入，本仓库无从预先枚举，也不应阻断——「能不能连」是运维决定，
+# 「能发什么数据、能声称什么能力」才是治理决定。
+#
+# 配置优先级（高 → 低）：
+#   1. Run / AgentVersion binding 显式指定的 model ref
+#   2. OPENAI_BASE_URL / OPENAI_MODEL / OPENAI_API_KEY   ← 部署期 override，高于本文件
+#   3. 下方 default_endpoint_id
+#
+# 真正的数据门禁是 network_zone × classification_ceiling，不是 URL 匹配：
+# 内网自部署 endpoint 数据不出信任边界，应当允许更高分类；公网第三方即便已登记也未必可以。
+default_endpoint_id: opencode-go
+
+# 本文件中**已登记**条目的共同属性，单条可覆盖。
+registered_defaults:
+  trust_tier: reviewed          # reviewed | operator_declared | unverified
+  network_zone: external        # internal | external | unknown
+  classification_ceiling: INTERNAL   # PUBLIC | INTERNAL | CONFIDENTIAL | RESTRICTED
+
+# 运行时经环境变量或管理台引入的未登记 endpoint 的强制起点。
+# 这是下限而非默认值：不可由本文件放宽，只能由 Security Admin 针对具体 endpoint 显式提升，
+# 且提升动作写 canonical event + audit。
+runtime_registration_floor:
+  trust_tier: unverified
+  network_zone: unknown
+  classification_ceiling: PUBLIC
+  capabilities: unknown         # 全部能力需 probe attestation 后才可假定
+  eligible_for_public_claims: false
+
+# allowlist 第二层门禁比对的是"规范化后的 origin + path"。规范化规则必须写死，
+# 否则 `chat/completions` 与 `/chat/completions` 会被判成两个不同的路径。
+path_normalization:
+  scheme: lowercase
+  host: lowercase_no_trailing_dot
+  leading_slash: required
+  trailing_slash: stripped
+  collapse_duplicate_slashes: true
+  percent_encoding: preserve_as_sent
+  query_and_fragment: must_be_empty_for_allowlist_match
+  comparison: exact_string_after_normalization
+
+endpoints:
+  - id: opencode-go
+    base_url: https://opencode.ai/zen/go/v1
+    # 默认 endpoint：使用 OpenAI 兼容标准键名。base_url_env 若被设置，其值必须等于上面的 base_url。
+    credential_env: OPENAI_API_KEY
+    base_url_env: OPENAI_BASE_URL
+    model_env: OPENAI_MODEL
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /responses, /messages, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: true
+    project_live_policy: allow_user_accepted_local_portfolio
+    docs_url: https://opencode.ai/docs/go/
+    docs_digest: sha256:b6b408b8a4a25a95b345a9cfb498e1afd3a990a9d47ee13152e74623b422b93a
+    terms_url: https://opencode.ai/legal/terms-of-service
+    terms_digest: sha256:e0da927d713f5ccc49511c8d1665053c94f033ddf8887eb936cf633cc82031e1
+    terms_reviewed_at: 2026-08-12
+    terms_review_due_at: 2026-09-12
+    privacy_url: https://opencode.ai/legal/privacy-policy
+    privacy_digest: sha256:fae5079c62898a22df303ad7b49f44489ff66ddbcba917d9a9d01afd4f7d1a3a
+    risk_acceptance_artifact: config/compliance/opencode-go-risk-acceptance.yaml
+
+  - id: minimax-standard
+    base_url: https://api.minimaxi.com/v1
+    credential_env: MINIMAX_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: kimi-standard
+    base_url: https://api.moonshot.cn/v1
+    credential_env: KIMI_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: glm-standard
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    credential_env: GLM_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: deepseek-standard
+    base_url: https://api.deepseek.com
+    credential_env: DEEPSEEK_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: qwen-standard-cn
+    base_url: https://{workspace_id}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    credential_env: DASHSCOPE_API_KEY
+    credential_mode: bearer
+    billing_mode: external_or_unknown
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: null
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: alibaba-token-plan
+    base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+    credential_env: ALIBABA_TOKEN_PLAN_API_KEY
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: false
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null
+
+  - id: volcano-coding-plan
+    base_url: https://ark.cn-beijing.volces.com/api/coding/v3
+    credential_env: VOLCANO_CODING_PLAN_API_KEY
+    credential_mode: bearer
+    billing_mode: subscription_allowance
+    allowed_paths: [/chat/completions, /models]
+    redirect_policy: deny_cross_origin
+    extra_spend_allowed: false
+    batch_eval_allowed: false
+    project_live_policy: deny
+    docs_url: null
+    docs_digest: null
+    terms_url: null
+    terms_digest: null
+    terms_reviewed_at: null
+    terms_review_due_at: null
+    privacy_url: null
+    privacy_digest: null
+    risk_acceptance_artifact: null

@@ -1,0 +1,565 @@
+FFFFFFFFFFFFF                                                            [100%]
+=================================== FAILURES ===================================
+__________ test_scim_user_create_writes_principal_identity_and_audit ___________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c80271d0>, <httpx.AsyncClient object at 0x7fd8c8066c90>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7f6d990>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7f6c990>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_create_writes_principal_identity_and_audit(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+        response = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body("u1"),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:757: AssertionError
+---------------------------- Captured stderr setup -----------------------------
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0008_bootstrap_claims -> 0007_audit_metadata_nonempty, S1-T4 四轮修复：Organization bootstrap 持久 claim（identity-global 最终围栏）。
+INFO  [alembic.runtime.migration] Running downgrade 0007_audit_metadata_nonempty -> 0006_audit_contract, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+INFO  [alembic.runtime.migration] Running downgrade 0006_audit_contract -> 0005_audit_structured, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running downgrade 0005_audit_structured -> 0004_refresh_fencing, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running downgrade 0004_refresh_fencing -> 0003_auth_sessions, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running downgrade 0003_auth_sessions -> 0002_identity, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running downgrade 0002_identity -> 0001_foundation, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running downgrade 0001_foundation -> , Create the S0 PostgreSQL foundation.
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade  -> 0001_foundation, Create the S0 PostgreSQL foundation.
+INFO  [alembic.runtime.migration] Running upgrade 0001_foundation -> 0002_identity, Create the S1 identity schema: principals, external identities, memberships and groups.
+INFO  [alembic.runtime.migration] Running upgrade 0002_identity -> 0003_auth_sessions, Create the S1-T2 auth/session/secret schema and identity-global role separation.
+INFO  [alembic.runtime.migration] Running upgrade 0003_auth_sessions -> 0004_refresh_fencing, S1-T2 验收修订：refresh ownership fencing（opaque owner token + calling phase）。
+INFO  [alembic.runtime.migration] Running upgrade 0004_refresh_fencing -> 0005_audit_structured, S1-T4：结构化审计字段（设计/验收确认方案，见 docs/handoffs/s1-t4-design-gap.md）。
+INFO  [alembic.runtime.migration] Running upgrade 0005_audit_structured -> 0006_audit_contract, S1-T4 修复：AuditRecord/DB CHECK 契约（repair addendum §3.1.6/§3.2）。
+INFO  [alembic.runtime.migration] Running upgrade 0006_audit_contract -> 0007_audit_metadata_nonempty, S1-T4 二轮修复：v2 审计 metadata 非空契约（空串拒绝，0006 历史不动）。
+INFO  [alembic.runtime.migration] Running upgrade 0007_audit_metadata_nonempty -> 0008_bootstrap_claims, S1-T4 四轮修复：Organization bootstrap 持久 claim（identity-global 最终围栏）。
+______________ test_scim_user_duplicate_external_id_conflict_409 _______________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c80d2650>, <httpx.AsyncClient object at 0x7fd8cb527d90>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c80e5490>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c80e7190>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_duplicate_external_id_conflict_409(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+        first = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body("dup"),
+        )
+>       assert first.status_code == 201
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:817: AssertionError
+___________ test_scim_user_concurrent_duplicate_external_id_one_wins ___________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7f6dd90>, <httpx.AsyncClient object at 0x7fd8c7dcddd0>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c8026590>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c8024350>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_concurrent_duplicate_external_id_one_wins(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+        async def post() -> int:
+            response = await client.post(
+                "/scim/v2/Users",
+                headers=_scim_headers(csrf, organization_id=org),
+                json=_user_body("race"),
+            )
+            return response.status_code
+    
+        codes = await asyncio.gather(post(), post())
+>       assert sorted(codes) == [201, 409]
+E       assert [404, 404] == [201, 409]
+E         
+E         At index 0 diff: 404 != 201
+E         Use -v to get more diff
+
+tests/integration/identity/test_scim_lifecycle.py:869: AssertionError
+___________________ test_scim_user_get_by_id_and_unknown_404 ___________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7da6c50>, <httpx.AsyncClient object at 0x7fd8c7b9bc10>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7d93710>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7d932d0>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_get_by_id_and_unknown_404(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       created = await _create_user(client, csrf, org, "getme")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:894: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7b9bc10>
+csrf = '24dc37e1c859b6447994d6972d1bf015ab2aaae7f240cb81702178a6440b1fa9'
+org = UUID('416681b1-c445-4948-8bbb-b42360754b36'), external_id = 'getme'
+
+    async def _create_user(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        external_id: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body(external_id),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:717: AssertionError
+_______ test_scim_user_disable_blocks_sessions_and_commands_and_reenable _______
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7b38150>, <httpx.AsyncClient object at 0x7fd8c7bf1c50>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7b99290>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7b9d390>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_disable_blocks_sessions_and_commands_and_reenable(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        ws = await _seed_workspace(org)
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _seed_workspace_membership(owner_id, org, ws, ["workspace_admin"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       victim = await _create_user(client, csrf, org, "victim")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:931: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7bf1c50>
+csrf = '0ed349bb7028168e0d30a58ea983af74b82411f02d37f5a27078ff3dd9ae2779'
+org = UUID('3203d6b1-7e39-48e9-be85-66632d45adf5'), external_id = 'victim'
+
+    async def _create_user(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        external_id: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body(external_id),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:717: AssertionError
+_________________ test_scim_user_put_username_mismatch_is_400 __________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7c6ba50>, <httpx.AsyncClient object at 0x7fd8c7cf24d0>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7b6a810>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7b17c90>)
+
+    @pytest.mark.asyncio
+    async def test_scim_user_put_username_mismatch_is_400(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       created = await _create_user(client, csrf, org, "fixed")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:1026: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7cf24d0>
+csrf = 'a12f28fa1567b983b6df9931a65a87a419d9586e908793ed46aa818b9c75aa85'
+org = UUID('cd65950e-af3f-43e3-a19c-e428d91dda70'), external_id = 'fixed'
+
+    async def _create_user(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        external_id: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body(external_id),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:717: AssertionError
+_________ test_scim_group_reconciliation_idempotent_and_bidirectional __________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c80f2bd0>, <httpx.AsyncClient object at 0x7fd8c80f2a10>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7bf0c50>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c80f0290>)
+
+    @pytest.mark.asyncio
+    async def test_scim_group_reconciliation_idempotent_and_bidirectional(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        ws = await _seed_workspace(org)
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _seed_workspace_membership(owner_id, org, ws, ["workspace_admin"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       user_a = await _create_user(client, csrf, org, "a")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:1056: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c80f2a10>
+csrf = 'b4296f6e7e500ef829c436df39eaca75eb1411f4f5ffab9e98fd943192a38827'
+org = UUID('7718dc4a-0b6d-4730-8fe0-f72366c6be51'), external_id = 'a'
+
+    async def _create_user(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        external_id: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Users",
+            headers=_scim_headers(csrf, organization_id=org),
+            json=_user_body(external_id),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:717: AssertionError
+______________ test_scim_group_duplicate_external_id_conflict_409 ______________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7effd10>, <httpx.AsyncClient object at 0x7fd8c7a5d610>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7cf1550>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7cf02d0>)
+
+    @pytest.mark.asyncio
+    async def test_scim_group_duplicate_external_id_conflict_409(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        ws = await _seed_workspace(org)
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _seed_workspace_membership(owner_id, org, ws, ["workspace_admin"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       first = await _create_group(client, csrf, org, ws, "dup")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:1155: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7a5d610>
+csrf = '9d5933f2ff538081630720d2c0abb4696047e7f39fe9688528d9b100a71af20f'
+org = UUID('3859d811-34af-4982-9128-3e4215ff49c6')
+ws = UUID('16f841f1-10f9-4c1d-82ff-72022627e7c8'), name = 'dup'
+
+    async def _create_group(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        ws: UUID,
+        name: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Groups",
+            headers=_scim_headers(csrf, organization_id=org, workspace_id=ws),
+            json=_group_body(name),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:733: AssertionError
+____________ test_scim_group_unsupported_operations_and_validation _____________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7cb5e50>, <httpx.AsyncClient object at 0x7fd8c7cd8550>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7e63750>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7e61450>)
+
+    @pytest.mark.asyncio
+    async def test_scim_group_unsupported_operations_and_validation(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        ws = await _seed_workspace(org)
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _seed_workspace_membership(owner_id, org, ws, ["workspace_admin"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+>       created = await _create_group(client, csrf, org, ws, "g")
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:1194: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7cd8550>
+csrf = '72f4e95f113cf5627f9ba041845d22b92f041f497d4f051a6663080677461de7'
+org = UUID('0bd6204a-8db0-4c76-ac2b-0b7662a93cd0')
+ws = UUID('702d4e1f-021a-4584-8ed5-0bb2923f6d7b'), name = 'g'
+
+    async def _create_group(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        ws: UUID,
+        name: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Groups",
+            headers=_scim_headers(csrf, organization_id=org, workspace_id=ws),
+            json=_group_body(name),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:733: AssertionError
+____________________ test_scim_group_cross_tenant_idor_404 _____________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7c0d510>, <httpx.AsyncClient object at 0x7fd8c7c98610>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7e61c90>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7cd80d0>)
+
+    @pytest.mark.asyncio
+    async def test_scim_group_cross_tenant_idor_404(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_a = await _reset_alice()
+        org_a = await _seed_org()
+        ws_a = await _seed_workspace(org_a, name="a")
+        await _seed_membership(owner_a, org_a, ["org_owner"])
+        await _seed_workspace_membership(owner_a, org_a, ws_a, ["workspace_admin"])
+        await _perform_login(client, idp)
+        csrf_a = await _csrf_token(client)
+    
+>       group = await _create_group(client, csrf_a, org_a, ws_a, "victim-group")
+                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/integration/identity/test_scim_lifecycle.py:1245: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+client = <httpx.AsyncClient object at 0x7fd8c7c98610>
+csrf = '26a861e4a5728f0602ec3010db799b2dc48972aece5059956ed9568e8134dcbb'
+org = UUID('6b7b9c35-3434-4233-bc72-56e45d033804')
+ws = UUID('2b7332cc-2914-417f-ba22-7e0833054334'), name = 'victim-group'
+
+    async def _create_group(
+        client: httpx.AsyncClient,
+        csrf: str,
+        org: UUID,
+        ws: UUID,
+        name: str,
+    ) -> dict:
+        response = await client.post(
+            "/scim/v2/Groups",
+            headers=_scim_headers(csrf, organization_id=org, workspace_id=ws),
+            json=_group_body(name),
+        )
+>       assert response.status_code == 201, response.text
+E       AssertionError: {"detail":"Not Found"}
+E       assert 404 == 201
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:733: AssertionError
+________________ test_scim_reads_and_mutations_are_policy_gated ________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c79507d0>, <httpx.AsyncClient object at 0x7fd8c7c8b2d0>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c79a8410>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c79a84d0>)
+
+    @pytest.mark.asyncio
+    async def test_scim_reads_and_mutations_are_policy_gated(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        member_id = await _seed_principal("member-oidc")
+        org = await _seed_org()
+        await _seed_membership(member_id, org, ["member"])
+        await _perform_login(client, idp, subject="member-oidc")
+        csrf = await _csrf_token(client)
+    
+        opa.deny = True
+>       _assert_scim_error(
+            await client.post(
+                "/scim/v2/Users",
+                headers=_scim_headers(csrf, organization_id=org),
+                json=_user_body("nope"),
+            ),
+            403,
+        )
+
+tests/integration/identity/test_scim_lifecycle.py:1295: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+response = <Response [404 Not Found]>, status = 403, scim_type = None
+
+    def _assert_scim_error(response, status: int, *, scim_type: str | None = None) -> dict:
+>       assert response.status_code == status
+E       assert 404 == 403
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:673: AssertionError
+____________________ test_scim_opa_unavailable_fails_closed ____________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c79fb490>, <httpx.AsyncClient object at 0x7fd8c79fb950>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7f48c10>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7f497d0>)
+
+    @pytest.mark.asyncio
+    async def test_scim_opa_unavailable_fails_closed(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+        opa.fail = RuntimeError("opa sidecar down")
+>       _assert_scim_error(
+            await client.post(
+                "/scim/v2/Users",
+                headers=_scim_headers(csrf, organization_id=org),
+                json=_user_body("nope"),
+            ),
+            403,
+        )
+
+tests/integration/identity/test_scim_lifecycle.py:1350: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+response = <Response [404 Not Found]>, status = 403, scim_type = None
+
+    def _assert_scim_error(response, status: int, *, scim_type: str | None = None) -> dict:
+>       assert response.status_code == status
+E       assert 404 == 403
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:673: AssertionError
+____________________ test_scim_session_and_csrf_enforcement ____________________
+
+migrated_database = None
+app_and_client = (<fastapi.applications.FastAPI object at 0x7fd8c7bf5150>, <httpx.AsyncClient object at 0x7fd8c7f4ec10>, <test_scim_lifecycle.FakeIdP object at 0x7fd8c7beb690>, <test_scim_lifecycle.FakeOPA object at 0x7fd8c7be9e50>)
+
+    @pytest.mark.asyncio
+    async def test_scim_session_and_csrf_enforcement(
+        migrated_database: None,
+        app_and_client: tuple[FastAPI, httpx.AsyncClient, FakeIdP, FakeOPA],
+    ) -> None:
+        app, client, idp, opa = app_and_client
+        owner_id = await _reset_alice()
+        org = await _seed_org()
+        await _seed_membership(owner_id, org, ["org_owner"])
+        await _perform_login(client, idp)
+        csrf = await _csrf_token(client)
+    
+        # 无 cookie → 401（SCIM 错误体）
+        async for anon in _client(app):
+>           _assert_scim_error(
+                await anon.post(
+                    "/scim/v2/Users",
+                    headers={"X-ZhiWei-Organization": str(org)},
+                    json=_user_body("anon"),
+                ),
+                401,
+            )
+
+tests/integration/identity/test_scim_lifecycle.py:1382: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+response = <Response [404 Not Found]>, status = 401, scim_type = None
+
+    def _assert_scim_error(response, status: int, *, scim_type: str | None = None) -> dict:
+>       assert response.status_code == status
+E       assert 404 == 401
+E        +  where 404 = <Response [404 Not Found]>.status_code
+
+tests/integration/identity/test_scim_lifecycle.py:673: AssertionError
+=========================== short test summary info ============================
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_create_writes_principal_identity_and_audit
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_duplicate_external_id_conflict_409
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_concurrent_duplicate_external_id_one_wins
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_get_by_id_and_unknown_404
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_disable_blocks_sessions_and_commands_and_reenable
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_user_put_username_mismatch_is_400
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_group_reconciliation_idempotent_and_bidirectional
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_group_duplicate_external_id_conflict_409
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_group_unsupported_operations_and_validation
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_group_cross_tenant_idor_404
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_reads_and_mutations_are_policy_gated
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_opa_unavailable_fails_closed
+FAILED tests/integration/identity/test_scim_lifecycle.py::test_scim_session_and_csrf_enforcement
+13 failed, 2 deselected in 3.99s

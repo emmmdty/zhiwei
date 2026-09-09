@@ -1,0 +1,223 @@
+"""`zhiwei runtime` 命令组：Agent Runtime 诊断与评测绑定。
+
+`replay-check --all-fixtures`：对 runtime-contract-v1 的每个契约场景，经生产命令
+路径真实执行一次，然后从 PG 载入已提交事件序列：两次 reduce 断言逐字段一致
+（deterministic replay）、终态断言、digest 链逐事件校验。不使用内存造的事件
+序列——重放证据必须来自 canonical 存储。
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Annotated, Any, NoReturn
+from uuid import UUID
+
+import click
+import typer
+
+from zhiwei.runtime.reducer import reduce
+
+app = typer.Typer(
+    help="Agent Runtime 诊断与评测绑定",
+    no_args_is_help=True,
+    pretty_exceptions_enable=False,
+)
+
+ALL_FIXTURES_FLAG = Annotated[bool, typer.Option("--all-fixtures", help="验证所有 fixture 事件序列")]
+
+
+def _emit_json(payload: dict[str, Any]) -> None:
+    click.echo(json.dumps(payload, ensure_ascii=False))
+
+
+async def load_events_twice_independently(
+    sessions: Any,
+    context: Any,
+    run_id: UUID,
+    *,
+    between: Any = None,
+) -> tuple[list[Any], list[Any]]:
+    """两次事件载入使用独立事务/会话（H-5，ADR-012 反例 7）。
+
+    同一事务内的两次 SELECT 共享快照——「双次载入」退化为恒真探针。独立
+    事务下，第二次载入观察得到载入间隙的并发写入（这正是确定性探针的
+    鉴别力来源）。`between` 钩子供测试注入并发写（生产路径不使用）。
+    """
+    from zhiwei.persistence.runtime_events import RuntimeEventStore
+    from zhiwei.persistence.tenant import tenant_session
+
+    async with tenant_session(sessions, context) as session:
+        events_a = await RuntimeEventStore(session, context).load_events(run_id)
+    if between is not None:
+        await between()
+    async with tenant_session(sessions, context) as session:
+        events_b = await RuntimeEventStore(session, context).load_events(run_id)
+    return list(events_a), list(events_b)
+
+
+def _fail(message: str) -> NoReturn:
+    click.echo(message, err=True)
+    raise typer.Exit(1)
+
+
+def _replay_check_all() -> dict[str, Any]:
+    """执行 runtime-contract 契约并从 PG 重放全部事件序列。"""
+    import asyncio
+
+    from zhiwei.cli.evals import _fresh_tenant, _settings_runtime
+    from zhiwei.evals.executors.agent_runtime import RuntimeEvalEnvironment
+    from zhiwei.evals.runtime_contracts import RUNTIME_CONTRACT_UNITS
+    from zhiwei.persistence.events import event_data_from_row, verify_event_chain
+    from zhiwei.persistence.models import CanonicalEvent
+    from zhiwei.persistence.tenant import tenant_session
+
+    _, _, _, _, sessions = _settings_runtime()
+    context, _, _ = _fresh_tenant()
+
+    async def _run() -> dict[str, Any]:
+        from sqlalchemy import select
+
+        from zhiwei.evals.executors.agent_runtime import AgentRuntimeExecutor
+
+        async with tenant_session(sessions, context) as session:
+            from zhiwei.persistence.repositories import TenantRepository
+
+            assert context.workspace_id is not None
+            repository = TenantRepository(session, context)
+            await repository.create_organization(context.organization_id, status="active")
+            await repository.create_workspace(context.workspace_id, name="S2-replay")
+
+        results: list[dict[str, Any]] = []
+        all_deterministic = True
+        runtime_env = await RuntimeEvalEnvironment.start(sessions=sessions, context=context)
+        async with runtime_env as env:
+            executor = AgentRuntimeExecutor(env)
+            for unit in RUNTIME_CONTRACT_UNITS:
+                outcome = await executor.execute(unit)
+                run_id = outcome.result.get("run_id")
+                if not run_id:
+                    all_deterministic = False
+                    results.append({
+                        "label": f"{unit.sample_id}/{unit.unit_id}",
+                        "deterministic": False,
+                        "error": "no run_id in outcome",
+                    })
+                    continue
+                import uuid as uuid_module
+
+                parsed_run_id = uuid_module.UUID(str(run_id))
+                # 两次独立载入（不同事务/会话）：确定性探针才有鉴别力——
+                # 同事务双 SELECT 共享快照，恒真（ADR-012 反例 7 / H-5）
+                events, events_again = await load_events_twice_independently(
+                    sessions, context, parsed_run_id
+                )
+                async with tenant_session(sessions, context) as session:
+                    rows = (
+                        await session.scalars(
+                            select(CanonicalEvent)
+                            .where(
+                                CanonicalEvent.organization_id == context.organization_id,
+                                CanonicalEvent.workspace_id == context.workspace_id,
+                                CanonicalEvent.run_id == parsed_run_id,
+                            )
+                            .order_by(CanonicalEvent.sequence_no)
+                        )
+                    ).all()
+                    chain_error: str | None = None
+                    try:
+                        verify_event_chain(event_data_from_row(row) for row in rows)
+                    except Exception as exc:
+                        chain_error = str(exc)
+
+                state_a = reduce(list(events))
+                state_b = reduce(list(events_again))
+                deterministic = state_a == state_b and chain_error is None
+                if not deterministic:
+                    all_deterministic = False
+                results.append({
+                    "label": f"{unit.sample_id}/{unit.unit_id}",
+                    "deterministic": deterministic,
+                    "terminal": state_a.is_terminal,
+                    "run_status": state_a.status,
+                    "tasks": len(state_a.tasks),
+                    "events": len(events),
+                    "chain_verified": chain_error is None,
+                    "chain_error": chain_error,
+                    "outcome_status": outcome.status.value,
+                })
+        return {
+            "status": "passed" if all_deterministic else "failed",
+            "fixture_count": len(results),
+            "results": results,
+        }
+
+    return asyncio.run(_run())
+
+
+@app.command("replay-check")
+def replay_check(
+    all_fixtures: ALL_FIXTURES_FLAG = True,
+) -> None:
+    """验证 reducer 确定性重放：相同 PG 事件序列必须产生相同 RunState。"""
+    payload = _replay_check_all()
+    _emit_json(payload)
+    if payload["status"] != "passed":
+        _fail("replay-check failed: non-deterministic replay or broken chain detected")
+
+
+@app.command("dead-letters")
+def dead_letters(
+    organization_id: Annotated[UUID, typer.Option("--organization-id", help="组织（显式恢复 RLS 上下文）")],
+    workspace_id: Annotated[UUID, typer.Option("--workspace-id", help="工作区（显式恢复 RLS 上下文）")],
+) -> None:
+    """列出 dead-letter 的 outbox 消息（operator 巡检入口；控制信号 dead-letter
+    即意图丢失，必须人工处置——见 handoff §4.5 B-7）。"""
+    import asyncio
+
+    from sqlalchemy import select
+
+    from zhiwei.cli.evals import _load_settings, _require_runtime
+    from zhiwei.persistence.database import create_database_engine, create_session_factory
+    from zhiwei.persistence.models import OutboxMessage
+    from zhiwei.persistence.tenant import TenantContext, tenant_session
+
+    database_url, _ = _require_runtime(_load_settings())
+
+    async def _run() -> dict[str, Any]:
+        context = TenantContext(organization_id=organization_id, workspace_id=workspace_id)
+        engine = create_database_engine(database_url)
+        try:
+            scoped = create_session_factory(engine)
+            async with tenant_session(scoped, context) as session:
+                rows = (
+                    await session.scalars(
+                        select(OutboxMessage)
+                        .where(
+                            OutboxMessage.organization_id == organization_id,
+                            OutboxMessage.workspace_id == workspace_id,
+                            OutboxMessage.status == "dead_letter",
+                        )
+                        .order_by(OutboxMessage.dead_lettered_at.desc())
+                    )
+                ).all()
+                return {
+                    "count": len(rows),
+                    "messages": [
+                        {
+                            "id": str(row.id),
+                            "topic": row.topic,
+                            "event_key": row.event_key,
+                            "attempts": row.attempts,
+                            "last_error": row.last_error,
+                            "dead_lettered_at": row.dead_lettered_at.isoformat()
+                            if row.dead_lettered_at
+                            else None,
+                            "payload": row.payload,
+                        }
+                        for row in rows
+                    ],
+                }
+        finally:
+            await engine.dispose()
+
+    _emit_json(asyncio.run(_run()))

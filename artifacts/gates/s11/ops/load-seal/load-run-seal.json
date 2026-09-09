@@ -1,0 +1,96 @@
+{
+  "status": "passed",
+  "profile": "local_product",
+  "per_workload": {
+    "ask": {
+      "workload": "ask",
+      "latency_samples_ms": [
+        2166.707
+      ],
+      "queue_wait_samples_ms": [
+        5.0
+      ],
+      "terminal_counts": {
+        "completed": 1
+      },
+      "error_count": 0,
+      "recovery_time_ms": 0
+    },
+    "discover": {
+      "workload": "discover",
+      "latency_samples_ms": [
+        6061.302
+      ],
+      "queue_wait_samples_ms": [
+        5.0
+      ],
+      "terminal_counts": {
+        "completed": 1
+      },
+      "error_count": 0,
+      "recovery_time_ms": 0
+    },
+    "sync-index": {
+      "workload": "sync-index",
+      "latency_samples_ms": [
+        0.233
+      ],
+      "queue_wait_samples_ms": [
+        0.0
+      ],
+      "terminal_counts": {
+        "completed": 1
+      },
+      "error_count": 0,
+      "recovery_time_ms": 0
+    },
+    "eval": {
+      "workload": "eval",
+      "latency_samples_ms": [
+        1945.808
+      ],
+      "queue_wait_samples_ms": [
+        5.0
+      ],
+      "terminal_counts": {
+        "completed": 1
+      },
+      "error_count": 0,
+      "recovery_time_ms": 0
+    }
+  },
+  "p50_ms": 2166.707,
+  "p95_ms": 6061.302,
+  "queue_wait_p50_ms": 5.0,
+  "queue_wait_p95_ms": 5.0,
+  "errors": 0,
+  "terminal_counts": {
+    "completed": 4
+  },
+  "recovery_time_ms": 0,
+  "resource_samples": {
+    "cpu_user_s": 7.56549,
+    "cpu_system_s": 0.5850219999999999,
+    "rss_kb": 378964.0
+  },
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.6.87.2-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "cpu_count": "8",
+    "generated_at": "2026-09-08T02:06:54.541959+00:00"
+  },
+  "uncertainty": {
+    "sample_count": 4,
+    "latency_stdev_ms": 2198.997
+  },
+  "cost_mode": "fixture_no_real_billing",
+  "slo_disclaimer": "\u672c\u62a5\u544a\u53ea\u8bb0\u5f55\u5355\u673a CPU-only fixture \u8d1f\u8f7d\u7684\u89c2\u6d4b\u503c\u4e0e\u4e0d\u786e\u5b9a\u6027\uff0c\u4e0d\u6784\u6210 SLO \u6216\u5bb9\u91cf\u627f\u8bfa\uff08specs/s11 \u00a78\uff1a\u6ca1\u6709\u6d4b\u91cf\u5c31\u4e0d\u627f\u8bfa\uff1b\u6ca1\u6709\u8de8\u8282\u70b9 HA/\u957f\u671f\u8fd0\u884c\u8bc1\u636e\u5c31\u4e0d\u5199 HA\uff09\u3002",
+  "ramp_observations": [
+    {
+      "concurrency": 1,
+      "p95_ms": 6061.302,
+      "throughput_per_s": 0.296
+    }
+  ],
+  "seal_version": 1
+}

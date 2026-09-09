@@ -1,0 +1,3 @@
+=== uv lock --check ===
+Resolved 127 packages in 1ms
+exit=0

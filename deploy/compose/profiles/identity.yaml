@@ -1,0 +1,60 @@
+# S11 批 1：identity 面——Keycloak（realm 注入沿袭 S1-T2 entrypoint 字符契约）与
+# OPA 侧车（bundle 从仓内 policies/ 构建，fail closed）。issuer 语义见 compose.yaml
+# 头注（keycloak.local 双视图）。
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1@sha256:be6a86215213145bfb4fb3e2b3ab982a806d00262655abdcf3ffa6a38d241c7c
+    entrypoint: ["/opt/keycloak/entrypoint.sh"]
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: "${KEYCLOAK_ADMIN_USERNAME:-zhiwei-admin}"
+      # 以下默认值只服务本地开发；真实部署必须由 operator 通过环境变量覆盖
+      KC_BOOTSTRAP_ADMIN_PASSWORD: "${KEYCLOAK_ADMIN_PASSWORD:-zhiwei-dev-admin-only}"
+      KEYCLOAK_TEST_CLIENT_SECRET: "${ZHIWEI_OIDC_CLIENT_SECRET:-s1-dev-client-secret-only}"
+      KEYCLOAK_TEST_USER_PASSWORD: "${ZHIWEI_LOCAL_USER_PASSWORD:-zhiwei-local-user-only}"
+    ports:
+      - "127.0.0.1:8081:8080"
+    volumes:
+      - ../keycloak/entrypoint.sh:/opt/keycloak/entrypoint.sh:ro
+      - ../keycloak/realm-template.json:/opt/keycloak/realm-template.json:ro
+      - zhiwei_local_keycloak:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "1.0", memory: 1G }
+
+  opa:
+    image: openpolicyagent/opa:1.19.0-debug@sha256:ec3c7a29a21ce96d71231cb4befa2561205fe84e5a2dc3cc46ac7bc8bd21b3a4
+    entrypoint: ["/bin/sh", "/opa-entrypoint/entrypoint.sh"]
+    environment:
+      OPA_BUNDLE_REVISION: "${OPA_BUNDLE_REVISION-s11-local-product}"
+    ports:
+      - "127.0.0.1:8182:8181"
+    volumes:
+      - ../opa/entrypoint.sh:/opa-entrypoint/entrypoint.sh:ro
+      - ../../../policies:/policies:ro
+    tmpfs:
+      - /tmp
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # debug 镜像无 wget/curl；用 opa 自身的 http.send builtin 探测 bundle 就绪
+      test: ["CMD", "opa", "eval", "--fail-defined", "http.send({\"method\": \"get\", \"url\": \"http://127.0.0.1:8181/health?bundles\", \"force_cache\": true}).status_code == 200"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks: [internal]
+    deploy:
+      resources:
+        limits: { cpus: "0.5", memory: 256M }
+
+volumes:
+  zhiwei_local_keycloak: {}

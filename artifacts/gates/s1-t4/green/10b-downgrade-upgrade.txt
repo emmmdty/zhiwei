@@ -1,0 +1,63 @@
+=== alembic downgrade 0007 ===
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running downgrade 0008_bootstrap_claims -> 0007_audit_metadata_nonempty, S1-T4 四轮修复：Organization bootstrap 持久 claim（identity-global 最终围栏）。
+exit=0
+=== alembic upgrade head (restore) ===
+INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 0007_audit_metadata_nonempty -> 0008_bootstrap_claims, S1-T4 四轮修复：Organization bootstrap 持久 claim（identity-global 最终围栏）。
+Traceback (most recent call last):
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/bin/alembic", line 10, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/config.py", line 1039, in main
+    CommandLine(prog=prog).main(argv=argv)
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/config.py", line 1029, in main
+    self.run_cmd(cfg, options)
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/config.py", line 963, in run_cmd
+    fn(
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/command.py", line 487, in upgrade
+    script.run_env()
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/script/base.py", line 550, in run_env
+    util.load_python_file(self.dir, "env.py")
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/util/pyfiles.py", line 114, in load_python_file
+    module = load_module_py(module_id, path)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/util/pyfiles.py", line 132, in load_module_py
+    spec.loader.exec_module(module)  # type: ignore
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "<frozen importlib._bootstrap_external>", line 940, in exec_module
+  File "<frozen importlib._bootstrap>", line 241, in _call_with_frames_removed
+  File "/home/tjk/myProjects/internship-projects/zhiwei/migrations/env.py", line 67, in <module>
+    asyncio.run(run_migrations_online())
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 190, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/.local/share/uv/python/cpython-3.11.15-linux-x86_64-gnu/lib/python3.11/asyncio/base_events.py", line 654, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/migrations/env.py", line 60, in run_migrations_online
+    await connection.run_sync(_run_sync_migrations)
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/sqlalchemy/ext/asyncio/engine.py", line 888, in run_sync
+    return await greenlet_spawn(
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/sqlalchemy/util/_concurrency_py3k.py", line 203, in greenlet_spawn
+    result = context.switch(value)
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/tjk/myProjects/internship-projects/zhiwei/migrations/env.py", line 52, in _run_sync_migrations
+    context.run_migrations()
+  File "<string>", line 8, in run_migrations
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/runtime/environment.py", line 967, in run_migrations
+    self.get_context().run_migrations(**kw)
+  File "/home/tjk/myProjects/internship-projects/zhiwei/.venv/lib/python3.11/site-packages/alembic/runtime/migration.py", line 621, in run_migrations
+    step.migration_fn(**kw)
+  File "/home/tjk/myProjects/internship-projects/zhiwei/migrations/versions/0008_organization_bootstrap_claims.py", line 92, in upgrade
+    _backfill_from_idempotency()
+  File "/home/tjk/myProjects/internship-projects/zhiwei/migrations/versions/0008_organization_bootstrap_claims.py", line 169, in _backfill_from_idempotency
+    raise RuntimeError(
+RuntimeError: ambiguous bootstrap history: principals with multiple bootstrap targets (3bb21ea6-bcb7-4a85-9e64-3262f4a3cb37: 8 targets, e6b2125c-30fb-4ee6-b226-26e5ad037b3a: 2 targets); refusing to backfill organization_bootstrap_claims (fail closed, never silently pick the first target)
+exit=1

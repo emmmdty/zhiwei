@@ -1,0 +1,22 @@
+=== make evals ===
+.venv/bin/python evals/scripts/build_corpus.py
+[build] xiyouji: 81 行，9 条扰动，4 处受控冲突
+[build] shuihu: 108 行，7 条扰动，4 处受控冲突
+[build] 完成 → evals/novels/
+.venv/bin/python evals/scripts/gen_questions.py
+[gen] xiyouji: 42 题（模板）  {'F1': 16, 'F3': 14, 'F4': 12}  template=24
+[gen] shuihu: 42 题（模板）  {'F1': 16, 'F3': 14, 'F4': 12}  template=23
+[gen] 模板题合计 84 题 → evals/questions/
+[gen] 手工题（F2/F5/F6 共 36 题）见 evals/questions/manual/
+.venv/bin/python evals/scripts/gen_manual_questions.py
+[manual] xiyouji: 18 题  {'F2': 8, 'F5': 6, 'F6': 4}
+[manual] shuihu: 18 题  {'F2': 8, 'F5': 6, 'F6': 4}
+[manual] 手工题合计 36 题 → evals/questions/manual/
+.venv/bin/python evals/scripts/gen_risk_data.py
+[risk] 36 期 · 营收 588 行 · 应收 720 行 · 供应 432 行 · 现金流 144 行
+[risk] 植入模式 14 条 {'easy': 4, 'medium': 6, 'hard': 4}，干扰项 7 条
+[risk] → evals/risk/
+[checksums] 21 个产物 → evals/CHECKSUMS.sha256
+.venv/bin/python evals/scripts/validate_corpus.py
+[validate] 110 项校验全部通过
+exit=0

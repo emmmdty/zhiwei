@@ -1,0 +1,27 @@
+# S9-T6 observability 部署参考：OTLP Collector + metadata-only 管道（specs/s9 §6）。
+#
+# 这是部署配置参考，不由测试执行。纪律：
+# - 应用默认 no-op/non-recording（telemetry.traces.TracerProviderFactory 只在显式
+#   TracingConfig 下安装 SDK provider）——生产接入观测 = operator 显式设置
+#   ZHIWEI_TRACING_EXPORTER / ZHIWEI_TRACING_ENDPOINT 并挂载本 compose fragment；
+# - collector 管道默认 metadata-only：attributes 处理器删除全部正文键
+#   （prompt/messages/result/completion/tool_args/input_values/output_values/…），
+#   与 src/zhiwei/telemetry/redaction.py 的 DEFAULT_BODY_KEYS 同一清单；
+# - 默认 exporter 是 file（本机卷），不向网络导出——打开网络 exporter 是
+#   operator 的显式变更，须连带复核数据分类门禁（总设计 §数据分类）。
+services:
+  otel-collector:
+    image: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-contrib:0.128.0
+    container_name: zhiwei-otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel/config.yaml:ro
+      - otel-traces:/var/lib/otel/traces
+    ports:
+      # 仅监听本机回环：OTLP 入口只服务本机 SDK；远程接入经 operator 反向代理。
+      - "127.0.0.1:4317:4317"
+      - "127.0.0.1:4318:4318"
+    restart: unless-stopped
+
+volumes:
+  otel-traces:

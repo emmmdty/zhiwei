@@ -1,0 +1,67 @@
+# default-deny 应用面 NetworkPolicy（specs/s11 §3）：显式放行依赖端口。
+# Ingress：仅来自 ingress/边缘与同 namespace；Egress：DNS + 外部托管依赖端点。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: zhiwei-app-default-deny
+  namespace: zhiwei
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [zhiwei]}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zhiwei}
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports:
+        - {port: 8000, protocol: TCP}
+        - {port: 8080, protocol: TCP}
+  egress:
+    # DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    # 应用出网：外部托管 PG/Temporal/OPA/Redis/OIDC 的端点由部署期网络策略放行；
+    # 这里放行全部 TCP 出 namespace，出口管控由 ingress/egress controller 与
+    # 数据分类门禁（network_zone × classification_ceiling，ADR-011）承载。
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}
+      ports:
+        - {port: 5432, protocol: TCP}
+        - {port: 7233, protocol: TCP}
+        - {port: 8181, protocol: TCP}
+        - {port: 6379, protocol: TCP}
+        - {port: 443, protocol: TCP}
+---
+# Capability Runner 独立 pod policy（specs/s11 §3）：只放行 OPA 判定与 Temporal。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: capability-runner-isolation
+  namespace: zhiwei
+spec:
+  podSelector:
+    matchLabels: {app: capability-runner}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: zhiwei}
+      ports:
+        - {port: 8000, protocol: TCP}
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]}
+      ports:
+        - {port: 7233, protocol: TCP}
+        - {port: 8181, protocol: TCP}

@@ -1,0 +1,48 @@
+# 迁移 Job（specs/s11 §3：migration job；§4：Alembic expand/migrate/contract）。
+# app Deployment 不在启动期跑迁移；升级路径由 T3 docs/operations/upgrade.md 编排。
+# 适用边界：本 Job 只用于**全新安装**（空库到 head，contract 对空库无害）。
+# 既有环境的升级必须走 `zhiwei ops upgrade-run`（destructive contract 需显式
+# --checkpoint，docs/operations/upgrade.md §2.6）——不得用本 Job 直达 head。
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: zhiwei-migrate
+  namespace: zhiwei
+  labels: {app: migrate, "app.kubernetes.io/name": zhiwei}
+spec:
+  backoffLimit: 3
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels: {app: migrate, "app.kubernetes.io/name": zhiwei}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: migrate
+          image: zhiwei/app:local-product
+          imagePullPolicy: IfNotPresent
+          command: ["alembic", "-c", "/app/alembic.ini", "upgrade", "head"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          envFrom:
+            - configMapRef: {name: zhiwei-endpoints}
+          env:
+            - name: ZHIWEI_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: migrator-url}}
+            - name: ZHIWEI_IDENTITY_DATABASE_URL
+              valueFrom: {secretKeyRef: {name: zhiwei-db, key: identity-url}}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - {name: tmp, emptyDir: {medium: Memory}}

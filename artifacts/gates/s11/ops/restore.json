@@ -1,0 +1,9 @@
+status: verified
+restored_databases: ('restore_0ca17445ff_zhiwei', 'restore_0ca17445ff_zhiwei_identity', 'restore_0ca17445ff_zhiwei_local_temporal')
+rls_isolated: True
+artifact_digests_ok: True
+projection_rebuilt: True
+search_rebuilt: True
+workflow_reconciled: True
+secret_rotation_ok: True
+claims_verified: True

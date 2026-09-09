@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capability-runner
+  namespace: zhiwei
+  labels: {app: capability-runner, "app.kubernetes.io/name": zhiwei}
+spec:
+  replicas: 2
+  selector: {matchLabels: {app: capability-runner}}
+  template:
+    metadata:
+      labels: {app: capability-runner, "app.kubernetes.io/name": zhiwei}
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: capability-runner
+          image: zhiwei/app:local-product
+          imagePullPolicy: IfNotPresent
+          # worker 按 queue/trust/workload 扩展：本 deployment 承载 agent 队列，
+          # 其余队列由独立 deployment/overlay 承载（specs/s11 §3）
+          command: ["python", "-m", "zhiwei.workers.main", "capability-runner"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          envFrom:
+            - configMapRef: {name: zhiwei-endpoints}
+          env:
+            - name: ZHIWEI_IDENTITY_MASTER_KEY_FILE
+              value: /run/secrets/capability_ipc_secret
+            - name: ZHIWEI_TEMPORAL_TARGET
+              valueFrom: {configMapKeyRef: {name: zhiwei-endpoints, key: ZHIWEI_TEMPORAL_TARGET}}
+            - name: ZHIWEI_OPA_BASE_URL
+              valueFrom: {configMapKeyRef: {name: zhiwei-endpoints, key: ZHIWEI_OPA_BASE_URL}}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: ipc-secret, mountPath: /run/secrets, readOnly: true}
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import pathlib,sys; sys.exit(0 if pathlib.Path('/tmp/ready').is_file() else 1)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: 500m, memory: 512Mi}
+      volumes:
+        - {name: tmp, emptyDir: {medium: Memory}}
+        - {name: ipc-secret, secret: {secretName: capability-ipc-secret, items: [{key: secret, path: capability_ipc_secret}]}}

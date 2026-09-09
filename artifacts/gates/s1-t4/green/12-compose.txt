@@ -1,0 +1,2 @@
+=== compose config ===
+exit=0

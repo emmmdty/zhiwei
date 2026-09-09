@@ -1,0 +1,444 @@
+# local-reference 的 in-cluster 参考态服务：单副本参考实现（非 HA，digest pin）。
+# 真实部署由 operator 决定；此处只承载「可渲染、可本地起」的参考面。
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: zhiwei-local
+  labels: {app: postgres}
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432, name: pg}]
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: temporal-server-config
+  namespace: zhiwei-local
+  labels: {app: temporal}
+data:
+  development.yaml.template: |
+    # temporalio/server:1.31.2 静态服务端配置（E-R1 方案 b 迁移，2026-09-08）。
+    # server 镜像无 dockerize/config 模板渲染（auto-setup 时代由 dockerize 从
+    # config_template.yaml 渲染），本文件是渲染后的静态形态，来源为 auto-setup:1.28.1
+    # 容器内实际生成的 /etc/temporal/config/docker.yaml（提取于 2026-09-08），两处改动：
+    #   1. 口令改占位符 __ZHIWEI_PG_PASSWORD__，由启动命令 sed 注入（保留 operator 以
+    #      ZHIWEI_PG_PASSWORD 覆盖的路径；口令含 sed 特殊字符时需转义——本地占位口令不受影响）；
+    #   2. membership.broadcastAddress 取 127.0.0.1：单进程承载全部四个服务，成员环不出
+    #      容器；前端由应用直连 temporal:7233，不依赖成员广播。
+    # dynamicConfigClient 指向挂载的空 dynamicconfig（与 auto-setup 生成的一致）。
+    log:
+        stdout: true
+        level: info
+
+    persistence:
+        numHistoryShards: 4
+        defaultStore: default
+        visibilityStore: visibility
+        datastores:
+            default:
+                sql:
+                    pluginName: "postgres12"
+                    databaseName: "zhiwei_local_temporal"
+                    connectAddr: "postgres:5432"
+                    connectProtocol: "tcp"
+                    user: "zhiwei_temporal"
+                    password: "__ZHIWEI_PG_PASSWORD__"
+                    maxConns: 20
+                    maxIdleConns: 20
+                    maxConnLifetime: 1h
+                    tls:
+                        enabled: false
+                        caFile:
+                        certFile:
+                        keyFile:
+                        enableHostVerification: false
+                        serverName:
+            visibility:
+                sql:
+                    pluginName: "postgres12"
+                    databaseName: "temporal_visibility"
+                    connectAddr: "postgres:5432"
+                    connectProtocol: "tcp"
+                    user: "zhiwei_temporal"
+                    password: "__ZHIWEI_PG_PASSWORD__"
+                    maxConns: 10
+                    maxIdleConns: 10
+                    maxConnLifetime: 1h
+                    tls:
+                        enabled: false
+                        caFile:
+                        certFile:
+                        keyFile:
+                        enableHostVerification: false
+                        serverName:
+
+    global:
+        membership:
+            maxJoinDuration: 30s
+            broadcastAddress: "127.0.0.1"
+        pprof:
+            port: 0
+        tls:
+            refreshInterval: 0s
+            expirationChecks:
+                warningWindow: 0s
+                errorWindow: 0s
+                checkInterval: 0s
+            internode:
+                server:
+                    requireClientAuth: false
+                    certFile:
+                    keyFile:
+                    certData:
+                    keyData:
+                client:
+                    serverName:
+                    disableHostVerification: false
+            frontend:
+                server:
+                    requireClientAuth: false
+                    certFile:
+                    keyFile:
+                    certData:
+                    keyData:
+                client:
+                    serverName:
+                    disableHostVerification: false
+        authorization:
+            jwtKeyProvider:
+                keySourceURIs:
+                refreshInterval: 1m
+            permissionsClaimName: permissions
+            authorizer:
+            claimMapper:
+    services:
+        frontend:
+            rpc:
+                grpcPort: 7233
+                membershipPort: 6933
+                bindOnIP: "0.0.0.0"
+                httpPort: 7243
+
+        matching:
+            rpc:
+                grpcPort: 7235
+                membershipPort: 6935
+                bindOnIP: "0.0.0.0"
+
+        history:
+            rpc:
+                grpcPort: 7234
+                membershipPort: 6934
+                bindOnIP: "0.0.0.0"
+
+        worker:
+            rpc:
+                grpcPort: 7239
+                membershipPort: 6939
+                bindOnIP: "0.0.0.0"
+
+    clusterMetadata:
+        enableGlobalNamespace: false
+        failoverVersionIncrement: 10
+        masterClusterName: "active"
+        currentClusterName: "active"
+        clusterInformation:
+            active:
+                enabled: true
+                initialFailoverVersion: 1
+                rpcName: "frontend"
+                rpcAddress: 127.0.0.1:7233
+                httpAddress: 127.0.0.1:7243
+
+    dcRedirectionPolicy:
+        policy: "noop"
+
+    archival:
+      history:
+        state: "enabled"
+        enableRead: true
+        provider:
+          filestore:
+            fileMode: "0666"
+            dirMode: "0766"
+      visibility:
+        state: "enabled"
+        enableRead: true
+        provider:
+          filestore:
+            fileMode: "0666"
+            dirMode: "0766"
+
+    namespaceDefaults:
+      archival:
+        history:
+          state: "disabled"
+          URI: "file:///tmp/temporal_archival/development"
+        visibility:
+          state: "disabled"
+          URI: "file:///tmp/temporal_vis_archival/development"
+
+    dynamicConfigClient:
+        filepath: "/etc/temporal/config/dynamicconfig.yaml"
+        pollInterval: "60s"
+  dynamicconfig.yaml: |
+    # 空 dynamicconfig：与 auto-setup 生成的 dynamicconfig/docker.yaml 等价（ES 未启用，
+    # 无动态覆盖项）。保留文件使 server 的 dynamicConfigClient 有可加载的路径。
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: zhiwei-local
+  labels: {app: postgres, "app.kubernetes.io/name": zhiwei-reference}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata:
+      labels: {app: postgres, "app.kubernetes.io/name": zhiwei-reference}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17.6-alpine@sha256:ef257d85f76e48da1c64832459b59fcaba1a4dac97bf5d7450c77753542eee94
+          ports: [{containerPort: 5432}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          env:
+            - {name: POSTGRES_PASSWORD, value: zhiwei-dev-pg-only}
+          readinessProbe:
+            exec: {command: ["pg_isready", "-U", "postgres"]}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec: {command: ["pg_isready", "-U", "postgres"]}
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: zhiwei-local
+  labels: {app: redis}
+spec:
+  selector: {app: redis}
+  ports: [{port: 6379, name: redis}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: zhiwei-local
+  labels: {app: redis, "app.kubernetes.io/name": zhiwei-reference}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: redis}}
+  template:
+    metadata:
+      labels: {app: redis, "app.kubernetes.io/name": zhiwei-reference}
+    spec:
+      containers:
+        - name: redis
+          image: redis:7.2-alpine@sha256:dfa18828cbc07b3ae6a95ec7343f6c214fdee2d836197b4be8e9904420762cd8
+          args: ["redis-server", "--save", "", "--appendonly", "no"]
+          ports: [{containerPort: 6379}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            exec: {command: ["redis-cli", "ping"]}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 250m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opa
+  namespace: zhiwei-local
+  labels: {app: opa}
+spec:
+  selector: {app: opa}
+  ports: [{port: 8181, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opa
+  namespace: zhiwei-local
+  labels: {app: opa, "app.kubernetes.io/name": zhiwei-reference}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: opa}}
+  template:
+    metadata:
+      labels: {app: opa, "app.kubernetes.io/name": zhiwei-reference}
+    spec:
+      containers:
+        - name: opa
+          image: openpolicyagent/opa:1.19.0-debug@sha256:ec3c7a29a21ce96d71231cb4befa2561205fe84e5a2dc3cc46ac7bc8bd21b3a4
+          args: ["run", "--server", "--addr", "0.0.0.0:8181"]
+          ports: [{containerPort: 8181}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /health, port: 8181}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: 8181}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: temporal
+  namespace: zhiwei-local
+  labels: {app: temporal}
+spec:
+  selector: {app: temporal}
+  ports: [{port: 7233, name: grpc}]
+---
+# E-R1 方案 b：server:1.31.2 + admin-tools:1.31.2 schema setup（与 compose 侧
+# profiles/temporal.yaml 同构；config 模板由 kustomization 的 configMapGenerator
+# 直接引用 compose 侧单一事实源文件渲染，无副本漂移面）。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: temporal
+  namespace: zhiwei-local
+  labels: {app: temporal, "app.kubernetes.io/name": zhiwei-reference}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: temporal}}
+  template:
+    metadata:
+      labels: {app: temporal, "app.kubernetes.io/name": zhiwei-reference}
+    spec:
+      initContainers:
+        - name: temporal-config-render
+          image: temporalio/server:1.31.2@sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da
+          command: ["sh", "-c", "mkdir -p /out && sed \"s/__ZHIWEI_PG_PASSWORD__/$POSTGRES_PWD/\" /in/development.yaml.template > /out/development.yaml && cp /in/dynamicconfig.yaml /out/dynamicconfig.yaml"]
+          env:
+            - {name: POSTGRES_PWD, value: zhiwei-dev-pg-only}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 128Mi}
+          volumeMounts:
+            - {name: config-template, mountPath: /in, readOnly: true}
+            - {name: server-config, mountPath: /out}
+        - name: temporal-schema-setup
+          image: temporalio/admin-tools:1.31.2@sha256:dbc5fcd6ee8f0f4d808bf765af9a87dea9d8a283abfdcfbd2fc148496ba66107
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              SQL="temporal-sql-tool --plugin postgres12 --ep postgres -p 5432 -u zhiwei_temporal --pw $$POSTGRES_PWD"
+              $$SQL --db zhiwei_temporal setup-schema -v 0.0
+              $$SQL --db zhiwei_temporal update-schema -d /etc/temporal/schema/postgresql/v12/temporal/versioned
+              $$SQL --db temporal_visibility setup-schema -v 0.0
+              $$SQL --db temporal_visibility update-schema -d /etc/temporal/schema/postgresql/v12/visibility/versioned
+          env:
+            - {name: POSTGRES_PWD, value: zhiwei-dev-pg-only}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 50m, memory: 128Mi}
+            limits: {cpu: 200m, memory: 256Mi}
+      containers:
+        - name: temporal
+          image: temporalio/server:1.31.2@sha256:b5ecdb8282bededae2a10c36e8d862e27d0bc2d247fc73c5416025997ab4a1da
+          # 镜像默认 entrypoint 是裸 `temporal-server start`——start 子命令不继承
+          # 全局 env 默认值（回退 env-only 配置，Cassandra 零值报错），显式 --env。
+          command: ["temporal-server", "--env", "development", "start"]
+          ports: [{containerPort: 7233}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: server-config, mountPath: /etc/temporal/config, readOnly: true}
+          readinessProbe:
+            tcpSocket: {port: 7233}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: 7233}
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "1", memory: 1Gi}
+      volumes:
+        - name: config-template
+          configMap: {name: temporal-server-config}
+        - name: server-config
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: opensearch
+  namespace: zhiwei-local
+  labels: {app: opensearch}
+spec:
+  selector: {app: opensearch}
+  ports: [{port: 9200, name: http}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opensearch
+  namespace: zhiwei-local
+  labels: {app: opensearch, "app.kubernetes.io/name": zhiwei-reference}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: opensearch}}
+  template:
+    metadata:
+      labels: {app: opensearch, "app.kubernetes.io/name": zhiwei-reference}
+    spec:
+      containers:
+        - name: opensearch
+          image: opensearchproject/opensearch:2.19.2@sha256:69588c664014fa3d3260ed5dd337f8538fec94790dad00bfbe92301eaaaac240
+          env:
+            - {name: discovery.type, value: single-node}
+            - {name: DISABLE_SECURITY_PLUGIN, value: "true"}
+            - {name: OPENSEARCH_JAVA_OPTS, value: "-Xms512m -Xmx512m"}
+          ports: [{containerPort: 9200}]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          readinessProbe:
+            httpGet: {path: /, port: 9200}
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /, port: 9200}
+            initialDelaySeconds: 90
+            periodSeconds: 30
+          resources:
+            requests: {cpu: 500m, memory: 1Gi}
+            limits: {cpu: "1", memory: 1Gi}

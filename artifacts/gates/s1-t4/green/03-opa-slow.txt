@@ -1,0 +1,4 @@
+=== real-OPA slow (GREEN) ===
+.............                                                            [100%]
+13 passed in 80.93s (0:01:20)
+exit=0

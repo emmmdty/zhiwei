@@ -1,0 +1,8 @@
+time=2026-09-08T10:06:41.179 level=WARN msg="Cluster Id in Cluster Metadata config is not a valid uuid. Generating a new Cluster Id" component=metadata-initializer
+time=2026-09-08T10:06:44.487 level=WARN msg="Cluster Id in Cluster Metadata config is not a valid uuid. Generating a new Cluster Id" component=metadata-initializer
+time=2026-09-08T10:06:51.648 level=WARN msg="Cluster Id in Cluster Metadata config is not a valid uuid. Generating a new Cluster Id" component=metadata-initializer
+status: passed
+p50_ms: 2166.707
+p95_ms: 6061.302
+errors: 0
+sealed: True
