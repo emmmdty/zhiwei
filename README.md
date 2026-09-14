@@ -25,6 +25,15 @@ uv run zhiwei dev up               # 全栈：18 个服务（Web/API/PG/Temporal
 以上命令全部离线确定性执行：**不调用真实 LLM**。live 模型调用需要显式配置 endpoint
 connection 并通过策略门禁 + operator 显式触发（见 docs/MODELS.md 附录 A 与 ADR-011）。
 
+## 公开应用体验
+
+【已验证】以下录屏展示从网页输入新问题开始的 Ask 研判，以及 Discover 对公开安全信号的人工
+复核边界：回答包含固定版本引用、资料图片、Markdown 表格、公式和可缩放流程图。
+
+[![观看知微公开应用演示](assets/demo/public-app-showcase.gif)](assets/demo/public-app-showcase.mp4)
+
+[观看完整 MP4 演示](assets/demo/public-app-showcase.mp4)
+
 ## 它解决什么问题
 
 不是「RAG + 工作流编排」的再包装。五个核心立场：
